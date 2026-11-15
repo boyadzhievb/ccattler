@@ -76,6 +76,11 @@ ssh_vm() {
     (cd "$VMHERD_DIR" && "$VMHERD_BIN" ssh "$vm_name" -- "$@")
 }
 
+scp_to_vm() {
+    local vm_name="$1" local_path="$2" remote_path="$3"
+    (cd "$VMHERD_DIR" && "$VMHERD_BIN" scp "$local_path" "${vm_name}:${remote_path}")
+}
+
 etcd_tls_flags() {
     echo "--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
 }
@@ -174,7 +179,7 @@ else
 fi
 
 # ============================================================
-# Check 5: node registration — all 4 nodes alive
+# Check 5: node registration — every worker node alive
 # ============================================================
 log "Check 5: node registration"
 STATUS_JSON=$(api_curl "${CTRL1_IP}" "/api/status" 2>/dev/null || echo "{}")
@@ -188,10 +193,12 @@ try:
 except:
     print(0)
 " 2>/dev/null || echo "0")
-if [[ "$ALIVE_NODES" -eq 4 ]]; then
-    pass "all 4 nodes alive"
+# Only workers run cca-agent (ha-deploy.yml), so only they register as nodes.
+EXPECTED_NODES=${#WORKER_NAMES[@]}
+if [[ "$ALIVE_NODES" -eq "$EXPECTED_NODES" ]]; then
+    pass "all $EXPECTED_NODES worker node(s) alive"
 elif [[ "$ALIVE_NODES" -ge 1 ]]; then
-    fail "only $ALIVE_NODES/4 nodes alive"
+    fail "only $ALIVE_NODES/$EXPECTED_NODES worker nodes alive"
 else
     fail "cannot read node status from API"
 fi
@@ -231,16 +238,16 @@ else
 fi
 
 # ============================================================
-# Check 7: VIP routing — curl whoami VIP from each node
+# Check 7: VIP routing — curl whoami VIP from each worker node
 # ============================================================
 log "Check 7: VIP routing"
 WHOAMI_VIP=$(api_curl "${CTRL1_IP}" "/api/status" 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    for svc in data.get('services', []):
-        if svc.get('name') == 'whoami' and svc.get('vip'):
-            print(svc['vip'])
+    for entry in data.get('networking', []):
+        if entry.get('service') == 'whoami' and entry.get('vip'):
+            print(entry['vip'])
             break
 except:
     pass
@@ -248,7 +255,8 @@ except:
 
 if [[ -n "$WHOAMI_VIP" ]]; then
     pass "whoami VIP assigned: $WHOAMI_VIP"
-    for vm_name in "${ALL_NAMES[@]}"; do
+    # VIP rules are installed by cca-agent, which runs only on workers.
+    for vm_name in "${WORKER_NAMES[@]}"; do
         if ssh_vm "$vm_name" "curl -sf --max-time 5 http://${WHOAMI_VIP}:80/" 2>/dev/null | grep -qi "hostname"; then
             pass "VIP reachable from $vm_name"
         else
