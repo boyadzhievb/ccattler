@@ -919,6 +919,7 @@ The debug API can run commands in any container, so users never reach it directl
 - An unreachable API server is an error naming its address. `--simulate` is the only way to run without one, and it never leaves the process.
 - The root key commands (`generate-root-key`, `root-key-status`, `rotate-root-key`) are the one exception: they work on local files and etcd while every API replica is stopped (Flow 30). Before connecting, they require etcd endpoints and a key at the path or its `.next`, and otherwise say they run only on a control-plane node.
 - Every route registered in `api/server.go` refuses a principal without grants (401/403/405) unless it is on the reviewed allowlist, and has a row in the `AUTHZ_GRAPH.md` route table (`TestEveryRouteRefusesPrincipalWithoutGrants`, `TestDocCrossCheckAuthzRouteTable`).
+- **Streams stay authorized while open (M216, [plan](plans/plan-stream-reauthorization.md)).** `/api/watch`, `/api/events/stream` and `/api/audit?follow=true` re-run authentication, the route's capability check and the visibility / tenant filter every 30 s (±20 %). A deleted user, an invalid token, a revoked grant or any change of the filter closes the stream within one interval; a real token expiry (JWT `exp`, mTLS `NotAfter`) closes it on time; streams without one end after 1 h. Store or webhook outages close a stream only after 3 failed checks in a row. The client receives a final `event: closed` frame and the CLI exits non-zero; the close is audited. All three routes share the 1000-stream cap.
 
 **What must NOT happen:**
 - A prefix such as `secret`, `s` or `enroll` returning keys from `secrets/`, `credentials/` or `enrollment/`
@@ -929,6 +930,9 @@ The debug API can run commands in any container, so users never reach it directl
 - A CLI command writing etcd behind the API: before M219, `cca apply`, `cca diff` and `cca token` on a control-plane host bypassed authorization, the policy gate and audit (adversarial cases `reader-cannot-apply`, `writer-cannot-create-join-token`)
 - An unreachable API silently replaced by a local simulation that prints a fake cluster (M218 finding A1)
 - A non-`/api/` route serving cluster data (the legacy `/status`, removed in M219)
+- A stream outliving its user, token or grant, or keeping the wider filter of a narrowed grant
+- An etcd leader election or a webhook blip cutting every open stream at once
+- A forced stream end the client cannot tell from a normal one (silent EOF, exit 0)
 
 ---
 
