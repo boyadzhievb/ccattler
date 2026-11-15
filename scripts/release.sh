@@ -26,6 +26,13 @@ CLAUDE_MD="${REPO_ROOT}/CLAUDE.md"
 MILESTONES_MD="${REPO_ROOT}/milestones.md"
 CHANGELOG_MD="${REPO_ROOT}/website/changelog.md"
 
+# sed_in_place edits the last argument (a file) in place on GNU and BSD/macOS
+# sed alike: `sed -i ''` works only on macOS, `-i.bak` on both.
+sed_in_place() {
+    local target_file="${*: -1}"
+    sed -i.bak "$@" && rm -f "${target_file}.bak"
+}
+
 # --- Argument parsing ---
 
 if [[ $# -lt 2 ]]; then
@@ -99,7 +106,7 @@ NEW_STATUS="**Latest release:** ${MILESTONE} — ${SHORT_TITLE} (${TAG}). Milest
 SAFE_STATUS=$(printf '%s' "$NEW_STATUS" | sed 's/[&\\/|]/\\&/g')
 
 # Replace the existing status line (old "Completed through" or new format).
-sed -i '' -E "s|^\*\*(Completed through\|Latest release):\*\*.*|${SAFE_STATUS}|" "$CLAUDE_MD"
+sed_in_place -E "s|^\*\*(Completed through\|Latest release):\*\*.*|${SAFE_STATUS}|" "$CLAUDE_MD"
 
 # --- Update changelog ---
 
@@ -111,7 +118,7 @@ TODAY=$(date +%Y-%m-%d)
 ANCHOR_ID=$(echo "$TAG" | tr '.' '-')
 
 # Remove <Badge text="latest" /> from the current latest entry.
-sed -i '' 's/ <Badge type="tip" text="latest" \/>//' "$CHANGELOG_MD"
+sed_in_place 's/ <Badge type="tip" text="latest" \/>//' "$CHANGELOG_MD"
 
 # Build the new changelog header.
 CHANGELOG_HEADER="## ${TAG} <Badge type=\"tip\" text=\"latest\" /> {#${ANCHOR_ID}}"
@@ -130,7 +137,7 @@ ${CHANGELOG_HEADER}
 ENTRY_EOF
 
 # Insert after the "All notable releases" line (line 3).
-sed -i '' "3r ${TEMP_ENTRY}" "$CHANGELOG_MD"
+sed_in_place "3r ${TEMP_ENTRY}" "$CHANGELOG_MD"
 rm -f "$TEMP_ENTRY"
 
 # --- Commit ---
