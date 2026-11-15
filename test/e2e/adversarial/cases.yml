@@ -140,6 +140,40 @@
       expect_exit: 1
       must_contain: ["forbidden", "cluster.admin"]
 
+# --- M219: configuration and enrollment go through the API ---
+
+- name: reader-cannot-apply
+  description: "M219: a reader cannot apply a configuration, even on the control plane (cca apply goes through /api/apply)"
+  identity: adv-reader
+  files:
+    - path: /tmp/adv-reader-apply.cca
+      content: |
+        service adv-reader-apply {
+            image nginx:1.27
+            instances 1
+        }
+  steps:
+    - command: "apply /tmp/adv-reader-apply.cca"
+      expect_exit: 1
+      must_contain: ["forbidden", "workload.create"]
+    # Nothing was written: before M219 this apply went straight to etcd.
+    - command: "get services"
+      as: adv-admin
+      expect_exit: 0
+      must_not_contain: ["adv-reader-apply"]
+
+- name: writer-cannot-create-join-token
+  description: "M219: a writer cannot create a node join token (cca token goes through /api/node/join-token)"
+  identity: adv-writer
+  steps:
+    - command: "token create --node-id adv-rogue-node"
+      expect_exit: 1
+      must_contain: ["forbidden", "cluster.admin"]
+    - command: "token list"
+      as: adv-admin
+      expect_exit: 0
+      must_not_contain: ["adv-rogue-node"]
+
 # --- Authorization: secret access ---
 
 - name: reader-cannot-read-secrets

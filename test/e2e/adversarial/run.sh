@@ -105,6 +105,23 @@ read_state_key_as() {
   echo "- Marker read \`$key\` as $identity → HTTP $http_code" >> "$TRANSCRIPT"
 }
 
+# Copy a case's files (files: [{path, content}]) to the control VM before its
+# steps, e.g. a configuration for cca apply. scp, never stdin to a remote
+# apply; any failure stops the run.
+stage_case_files() {
+  local index="$1" file_count f remote_path local_copy
+  file_count=$(yq ".[$index].files // [] | length" "$CASES_FILE")
+  for ((f=0; f<file_count; f++)); do
+    remote_path=$(yq ".[$index].files[$f].path" "$CASES_FILE")
+    local_copy=$(mktemp)
+    yq -r ".[$index].files[$f].content" "$CASES_FILE" > "$local_copy"
+    vmherd scp "$local_copy" "${CTRL_VM}:${remote_path}" >/dev/null 2>&1 \
+      || { rm -f "$local_copy"; fatal "cannot copy $remote_path to $CTRL_VM"; }
+    rm -f "$local_copy"
+    echo "- Staged \`$remote_path\` on $CTRL_VM" >> "$TRANSCRIPT"
+  done
+}
+
 # Run a cca command as admin on the control VM and capture output + exit code.
 # vmherd ssh requires the entire remote command as a single string argument.
 run_cca() {
@@ -230,6 +247,8 @@ run_case() {
     setup_cmd=$(yq ".[$index].setup[$s]" "$CASES_FILE")
     run_cca_or_fatal $setup_cmd
   done
+
+  stage_case_files "$index"
 
   # Capture token if needed.
   local capture_token
