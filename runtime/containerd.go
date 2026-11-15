@@ -558,6 +558,11 @@ func (containerdRuntime *ContainerdRuntime) ensureCNIInitialized() error {
 	if containerdRuntime.networkCIDR == "" {
 		return errors.New("networkCIDR not configured: call SetNetwork before Start")
 	}
+	// A cca0 left from an earlier node subnet makes the bridge plugin refuse
+	// every container (Flow 7, M222); runs once, before the first start.
+	if bridgeError := ensureBridgeAddressMatchesSubnet(cniBridgeName, containerdRuntime.networkCIDR); bridgeError != nil {
+		return fmt.Errorf("container bridge %s: %w", cniBridgeName, bridgeError)
+	}
 	conflistJSON := buildCNIConflist(containerdRuntime.networkName, containerdRuntime.networkCIDR)
 	cniInstance, initError := gocni.New(
 		gocni.WithMinNetworkCount(1),

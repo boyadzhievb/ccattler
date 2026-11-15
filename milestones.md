@@ -478,9 +478,24 @@ code-reviewer (CR) and security-audit (SEC) on `git diff 2d2a1b5..f705037`. Each
 - [x] CR-suggestion revoke-by-id REJECTED for M219: losing a token's value was unrevocable before M219 too; later milestone
 - [x] SEC test note REJECTED: `CCA_TOKEN` visible in `ps` on the test VM is test-only
 
+Found by the e2e-ha runs on ec6b698 (6.3; one run 24/24 green, 43718746992):
+
+- [x] cca-server stopped for good when its local etcd restarted (FIXED, not yet re-run). The cca-server units had `Requires=etcd.service`, so systemd stopped cca-server whenever the local etcd stopped and never started it again (a stop by systemd is no failure for `Restart=on-failure`). Every run without a deploy after a run whose check 9 restarted etcd on ctrl-3 failed with "cca-server on cca-ha-lan-ctrl-3 NOT responding" (43718129925, 43719008380). cca-server reaches the other etcd members and retries on its own. Fix: `Wants=etcd.service` (keeping `After=`) in the HA template, the `cca init` unit (single control plane, the deploy cluster) and the Lima setup. Test `TestSetupScriptServerUnitSurvivesEtcdRestart`
+- [x] cca-agent unit lost `Restart=on-failure` and had a corrupt DNS upstream when `storage_backend` is unset, e.g. the HA set (FIXED, not yet re-run). Ansible renders with `trim_blocks`, which ate the newline after `{% endif %}` in `cca-agent.service.j2`: the unit read `--dns-upstream 192.168.100.53:15353Restart=on-failure`. The deploy cluster sets `storage_backend` (NFS), so it never showed there. Fix: blank line after `{% endif %}`; rendering checked with Jinja `trim_blocks` both with and without `storage_backend` (the old template reproduces the bad line)
+- [ ] Open: run 43719182631 (with deploy) did not converge within 90 s after the deploy restarted every service; the logs do not show why (the green run converged in 27 s). Re-check after the two fixes above
+
 Found by Deploy Testbed 43704810336 on c83d85e (cluster checks, gate TLS T1–T18 and stability green; replay 18/1/2):
 
 - [x] Adversarial `run.sh` pattern checks were wrong on large output (FIXED; run by hand on the deploy cluster 2026-11-15 after Deploy Testbed 43704810336: 19 passed, 0 failed, 2 skipped, `audit-reader-own-tenant` passing both steps). Under `set -o pipefail`, `echo "$output" | grep -qi pattern` reports "no match" when `grep -q` exits at the first match and `echo` is killed by SIGPIPE (output above the 64 KiB pipe buffer). `audit-reader-own-tenant` failed although the admin's `audit --limit 500` output contained the marker (the audit log grew). Worse, `must_not_contain` would silently PASS on a large output that contains the forbidden string. Fix: here-strings (`grep -qi -- "$pattern" <<< "$output"`, `head -20 <<< "$output"`) in both checks, the transcript and the positive control; also removes the old "Broken pipe" message. Reproduced and checked locally with a 200 000-line output
+
+### Phase 222 — Container Bridge Keeps a Stale Subnet Address (M222, bug, blocks the M219 release)
+
+Found by the M219 HA runs 43719182631 and 43719570654 (2026-11-15): after a redeploy every container start failed with `CNI setup: plugin type="bridge" failed (add): failed to set bridge addr: "cca0" already has an IP address different from 10.67.102.1/24`. Each Ansible deploy picks a new random `cluster_cidr` (`group_vars/all.yml`, seed = deploy time), so the node gets a new `/24` (`network/node/{id}/subnet`, `allocateNextFreeSubnet`), but the existing `cca0` bridge keeps the previous gateway address. The worker role's "Remove stale cca0" task deletes `cca0` only when it is not a bridge. Invariant: Flow 7 in `design/runtime-invariant-flows.md`.
+
+- [x] Failing test first: `runtime/TestStaleBridgeAddresses` (7 cases: none, correct gateway, earlier gateway, both, wrong prefix length, IPv6 kept, subnet given as host address; invalid subnet is an error). Recorded failing (`undefined: staleBridgeAddresses`), passes now
+- [x] Containerd runtime: `ensureCNIInitialized` calls `ensureBridgeAddressMatchesSubnet(cca0, networkCIDR)` before `gocni.New` (`runtime/cni_bridge.go`): removes every IPv4 address except `firstHostAddress`/prefix with `ip addr del`, logs each, a missing bridge is fine. `TestEnsureBridgeAddressMatchesSubnetOnARealBridge` (root only) passes in `unshare --user --map-root-user --net`: earlier gateway removed, current kept
+- [x] `NETWORK_GRAPH.md`: "Container bridge cca0" section; nftables/iptables comments now name `cca-vip0`. Flow 7 updated. golangci-lint both tag sets 0 issues, `go test -race -short ./...` green
+- [ ] Verify: e2e-ha run with deploy, twice in a row (a new `cluster_cidr` each time), all checks green; Deploy Testbed green
 
 ### Phase 220 — AWS Provider Tests Against AWS Emulator (M220)
 

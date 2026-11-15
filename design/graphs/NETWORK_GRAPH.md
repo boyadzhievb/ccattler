@@ -346,6 +346,17 @@ VXLANReconciler.EnsureSubnetPublished(ctx)
             └── PUT network/node/{nodeID}/subnet = "{cidr}"
 ```
 
+### Container bridge cca0 (runtime/containerd.go, runtime/cni_bridge.go, M222)
+```
+ContainerdRuntime.ensureCNIInitialized()                       [once, before the first container start]
+├── ensureBridgeAddressMatchesSubnet("cca0", networkCIDR)      [networkCIDR = node subnet from AllocatedSubnet]
+│   ├── net.InterfaceByName("cca0")                            [missing → nothing to do, CNI creates it]
+│   ├── staleBridgeAddresses(addresses, networkCIDR)           [every IPv4 address except firstHostAddress/prefix]
+│   └── FOR EACH stale: deleteBridgeAddress → ip addr del {addr} dev cca0
+└── gocni.New(buildCNIConflist(networkName, networkCIDR))      [bridge plugin, isGateway → assigns {subnet}.1]
+```
+cca0 holds only the gateway of the node subnet; VIPs are on `cca-vip0`. A redeploy with a new `cluster_cidr` gives the node a new subnet, so the old gateway must go or the bridge plugin refuses every container (Flow 7).
+
 ### Store keys (VXLAN)
 
 | Key Pattern | Op | Purpose |

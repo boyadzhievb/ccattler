@@ -363,7 +363,7 @@ func runIptablesFilter(action string, chain string, ruleArgs []string) error {
 	return nil
 }
 
-// ensureDummyInterface creates the cca0 dummy interface and brings it up.
+// ensureDummyInterface creates the cca-vip0 dummy interface (VIPs) and brings it up.
 // The "ip link add" is idempotent — "already exists" is ignored, but other
 // errors (permission denied, unsupported type) are surfaced.
 func (iptablesDataPlane *IptablesDataPlane) ensureDummyInterface() error {
@@ -544,7 +544,7 @@ func removeVIPAddressFromInterface(virtualIP string) {
 	runCommand("ip", "addr", "del", virtualIP+"/32", "dev", vipDummyInterface)
 }
 
-// deleteDummyInterface removes the cca0 dummy network interface.
+// deleteDummyInterface removes the cca-vip0 dummy network interface.
 func deleteDummyInterface() {
 	runCommand("ip", "link", "del", vipDummyInterface)
 }

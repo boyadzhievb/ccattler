@@ -467,7 +467,7 @@ func sanitizeNftablesChainName(serviceName string) string {
 	return sanitized.String()
 }
 
-// ensureDummyInterface creates the cca0 dummy interface and brings it up.
+// ensureDummyInterface creates the cca-vip0 dummy interface (VIPs) and brings it up.
 func (nftablesDataPlane *NftablesDataPlane) ensureDummyInterface() error {
 	if err := runCommandIdempotent("ip", "link", "add", vipDummyInterface, "type", "dummy"); err != nil {
 		return fmt.Errorf("creating dummy interface %s: %w", vipDummyInterface, err)
@@ -478,7 +478,7 @@ func (nftablesDataPlane *NftablesDataPlane) ensureDummyInterface() error {
 	return nil
 }
 
-// ensureVIPAddress assigns a /32 VIP address to the cca0 dummy interface.
+// ensureVIPAddress assigns a /32 VIP address to the cca-vip0 dummy interface.
 func (nftablesDataPlane *NftablesDataPlane) ensureVIPAddress(virtualIP string) error {
 	if nftablesDataPlane.activeVIPAddresses[virtualIP] {
 		return nil

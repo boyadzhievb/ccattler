@@ -120,6 +120,10 @@ A single IP (`--advertise-address`) propagates to:
 - Cluster CIDR (`10.100.0.0/16`) matches nerdctl network subnet
 - VIP CIDR (`10.200.0.0/24`) doesn't overlap with cluster CIDR
 - `AllocateIP` is idempotent (same ID returns same IP)
+- The container bridge `cca0` carries exactly one IPv4 address: the gateway (first host address) of the node's subnet `network/node/{id}/subnet`. The node subnet changes when the cluster CIDR changes (every Ansible redeploy picks a new `cluster_cidr`). Before the first container start, the agent removes every other IPv4 address from an existing `cca0`; the CNI bridge plugin then assigns the gateway. VIPs live on `cca-vip0`, never on `cca0`, so this never touches them (M222)
+
+**What must NOT happen:**
+- A stale `cca0` address from an earlier subnet: the CNI bridge plugin refuses every container with "cca0 already has an IP address different from …" (e2e-ha runs 43719182631, 43719570654)
 
 **Cross-host traffic requires three facts:** remote node advertise address, instance host port mapping, and the endpoint fact. Missing any one causes fallback to container IP (unreachable cross-host).
 
