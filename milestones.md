@@ -488,6 +488,15 @@ Found by Deploy Testbed 43704810336 on c83d85e (cluster checks, gate TLS T1–T1
 
 - [x] Adversarial `run.sh` pattern checks were wrong on large output (FIXED; run by hand on the deploy cluster 2026-11-15 after Deploy Testbed 43704810336: 19 passed, 0 failed, 2 skipped, `audit-reader-own-tenant` passing both steps). Under `set -o pipefail`, `echo "$output" | grep -qi pattern` reports "no match" when `grep -q` exits at the first match and `echo` is killed by SIGPIPE (output above the 64 KiB pipe buffer). `audit-reader-own-tenant` failed although the admin's `audit --limit 500` output contained the marker (the audit log grew). Worse, `must_not_contain` would silently PASS on a large output that contains the forbidden string. Fix: here-strings (`grep -qi -- "$pattern" <<< "$output"`, `head -20 <<< "$output"`) in both checks, the transcript and the positive control; also removes the old "Broken pipe" message. Reproduced and checked locally with a 200 000-line output
 
+### Phase 224 — `/api/status` Serves a Stale Answer After a Write (M224, bug)
+
+Found by Deploy Testbed 43736523046 on 3355a6b (2026-11-15): "FAIL: gate-tls T14: cca get gates still shows TLS for tls-manual", although T14's handshake wait had seen HTTPS stop. `handleStatus` caches the cluster-wide answer for 2 s (`statusCache`) and nothing cleared it after a write, so `cca get`/`cca status` right after `cca apply` could show the state before the apply. Second bug in the same code: a `?all=true` answer (with stopped instances) was cached under the default key and served to plain status requests.
+
+- [x] Failing tests first: `api/TestStatusShowsApplyImmediately` ("status after apply does not show service fresh (stale cache)") and `TestStatusAllInstancesNotCachedAsDefault` ("plain status lists 1 instances, want 0"), both recorded failing
+- [x] Fix: `instrumentedHandler` calls `statusCache.InvalidateAll()` after every non-GET/HEAD request (all API writes go through it). `ResponseCache` has a generation: `handleStatus` takes it before reading the store and `Set` drops an answer built before an invalidation (a read in flight during the write cannot re-cache old data; `TestResponseCacheRefusesStaleGeneration`). Only the default (`all` unset) answer is cached. Unused `Invalidate(key)` replaced by `InvalidateAll`
+- [x] gofmt, golangci-lint 0 issues, `go test ./api` green
+- [ ] Deploy Testbed run (T14)
+
 ### Phase 223 — `cca fmt` Corrupts String Values (M223, bug)
 
 Found 2026-11-15 while adding `examples/wordpress.cca` (its format round-trip failed). The formatter quoted every string with Go's `%q`, but the DSL lexer has no escape sequences: a plain `"…"` holds any character except `"` and a line break, and `"""…"""` holds anything verbatim. So `cca fmt` broke or silently changed values: a line break or `"` became `\n` / `\"` (the file no longer parses: "unexpected character '\\'"), a backslash was doubled (`C:\data` → `C:\\data`) and a tab became the two characters `\t` (the file still parses, the value is different).

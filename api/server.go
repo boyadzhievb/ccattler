@@ -508,13 +508,17 @@ func (apiServer *Server) handleHealthz(responseWriter http.ResponseWriter, reque
 }
 
 // instrumentedHandler wraps an HTTP handler to record request count and duration
-// metrics. Watch and event stream endpoints are not wrapped because they are
-// long-lived SSE connections.
+// metrics, and clears the status cache after every write (non-GET) so a
+// client reads its own change. Watch and event stream endpoints are not
+// wrapped because they are long-lived SSE connections.
 func (apiServer *Server) instrumentedHandler(endpointName string, handler http.HandlerFunc) http.HandlerFunc {
 	return func(responseWriter http.ResponseWriter, request *http.Request) {
 		startTime := metrics.Timer()
 		wrappedWriter := &statusCapturingWriter{ResponseWriter: responseWriter, statusCode: 200}
 		handler(wrappedWriter, request)
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			apiServer.statusCache.InvalidateAll()
+		}
 		apiRequestDuration.ObserveSince(startTime, endpointName)
 		apiRequestsTotal.Inc(endpointName, request.Method, strconv.Itoa(wrappedWriter.statusCode))
 	}
@@ -1228,6 +1232,7 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 		}
 	}
 
+	cacheGeneration := apiServer.statusCache.Generation()
 	status, statusError := buildStatusFromStore(requestContext, apiServer.factStore, &visibility, includeAllInstances)
 	if statusError != nil {
 		writeJSONError(responseWriter, "status: "+statusError.Error(), http.StatusInternalServerError)
@@ -1239,8 +1244,8 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 		return
 	}
 
-	if visibility.allTeams {
-		apiServer.statusCache.Set("status", encoded)
+	if visibility.allTeams && !includeAllInstances {
+		apiServer.statusCache.Set("status", encoded, cacheGeneration)
 	}
 	_, _ = responseWriter.Write(encoded)
 }

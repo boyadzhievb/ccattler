@@ -11,7 +11,7 @@ import (
 func TestResponseCacheSetAndGet(t *testing.T) {
 	cache := NewResponseCache(5 * time.Second)
 
-	cache.Set("status", []byte(`{"services":[]}`))
+	cache.Set("status", []byte(`{"services":[]}`), cache.Generation())
 	result := cache.Get("status")
 
 	if result == nil {
@@ -35,7 +35,7 @@ func TestResponseCacheExpires(t *testing.T) {
 	cache := NewResponseCache(2 * time.Second)
 	cache.timeNow = func() time.Time { return currentTime }
 
-	cache.Set("status", []byte(`{"services":[]}`))
+	cache.Set("status", []byte(`{"services":[]}`), cache.Generation())
 
 	currentTime = currentTime.Add(3 * time.Second)
 
@@ -47,11 +47,25 @@ func TestResponseCacheExpires(t *testing.T) {
 func TestResponseCacheInvalidate(t *testing.T) {
 	cache := NewResponseCache(5 * time.Second)
 
-	cache.Set("status", []byte(`data`))
-	cache.Invalidate("status")
+	cache.Set("status", []byte(`data`), cache.Generation())
+	cache.InvalidateAll()
 
 	if cache.Get("status") != nil {
 		t.Error("expected nil after invalidation")
+	}
+}
+
+// TestResponseCacheRefusesStaleGeneration: a response built before an
+// invalidation must not be cached after it.
+func TestResponseCacheRefusesStaleGeneration(t *testing.T) {
+	cache := NewResponseCache(5 * time.Second)
+
+	generationBeforeWrite := cache.Generation()
+	cache.InvalidateAll()
+	cache.Set("status", []byte(`stale`), generationBeforeWrite)
+
+	if cache.Get("status") != nil {
+		t.Error("stale response was cached after invalidation")
 	}
 }
 
@@ -60,11 +74,11 @@ func TestResponseCacheCleanupExpired(t *testing.T) {
 	cache := NewResponseCache(1 * time.Second)
 	cache.timeNow = func() time.Time { return currentTime }
 
-	cache.Set("old", []byte(`old-data`))
+	cache.Set("old", []byte(`old-data`), cache.Generation())
 
 	currentTime = currentTime.Add(2 * time.Second)
 
-	cache.Set("fresh", []byte(`fresh-data`))
+	cache.Set("fresh", []byte(`fresh-data`), cache.Generation())
 
 	cache.CleanupExpired()
 
@@ -79,8 +93,8 @@ func TestResponseCacheCleanupExpired(t *testing.T) {
 func TestResponseCacheOverwrite(t *testing.T) {
 	cache := NewResponseCache(5 * time.Second)
 
-	cache.Set("status", []byte(`v1`))
-	cache.Set("status", []byte(`v2`))
+	cache.Set("status", []byte(`v1`), cache.Generation())
+	cache.Set("status", []byte(`v2`), cache.Generation())
 
 	result := cache.Get("status")
 	if string(result) != `v2` {
