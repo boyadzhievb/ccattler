@@ -27,6 +27,7 @@ env:
   ANSIBLE_DIR: deploy/ansible
   HA_VM_SET: lan
   HA_VMHERD_DIR: /mnt/disk2/home/bojan/ccattler/test/e2e/vm-ha-lan
+  HA_REGISTRY: 192.168.100.77:5000 # same as test/e2e/e2e-lan.ccv
 
 jobs:
   ha-e2e:
@@ -59,7 +60,10 @@ jobs:
         run: |
           vmherd_ssh_key=$(cd "$HA_VMHERD_DIR" && vmherd info ssh-key)
           cd "$ANSIBLE_DIR"
-          ansible-playbook -i lan-ha-inventory.ini ha-deploy.yml -v -e "vmherd_ssh_key=$vmherd_ssh_key"
+          # The registry is plain HTTP; containerd must be told (group_vars/all.yml
+          # sets it empty and outranks inventory vars, so it is passed here).
+          ansible-playbook -i lan-ha-inventory.ini ha-deploy.yml -v -e "vmherd_ssh_key=$vmherd_ssh_key" \
+            -e "insecure_registry=$HA_REGISTRY"
         env:
           ANSIBLE_HOST_KEY_CHECKING: "false"
 

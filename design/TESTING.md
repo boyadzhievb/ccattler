@@ -160,7 +160,7 @@ sudo systemctl stop actions.runner.boyadzhievb-ccattler.y510p.service
 (cd ~/actions-runner/_work/ccattler/ccattler/test/e2e/vm-lan && vmherd down)
 cd <repo copy>/test/e2e/vm-ha-lan && vmherd up
 cd ../../../deploy/ansible
-ansible-playbook -i lan-ha-inventory.ini ha-deploy.yml -e vmherd_ssh_key=$(cd ../../test/e2e/vm-ha-lan && vmherd info ssh-key)
+ansible-playbook -i lan-ha-inventory.ini ha-deploy.yml -e vmherd_ssh_key=$(cd ../../test/e2e/vm-ha-lan && vmherd info ssh-key) -e insecure_registry=192.168.100.77:5000
 # afterwards
 (cd <repo copy>/test/e2e/vm-ha-lan && vmherd down)
 (cd ~/actions-runner/_work/ccattler/ccattler/test/e2e/vm-lan && vmherd up)
