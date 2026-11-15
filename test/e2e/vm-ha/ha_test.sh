@@ -359,10 +359,13 @@ else
     log "Check 9: etcd member failure"
 
     # Stop etcd on ctrl-3 (least likely to be leader)
-    ETCD_VICTIM="cca-ha-ctrl-3"
+    ETCD_VICTIM="${CTRL_NAMES[2]}"
     ETCD_VICTIM_IP="$CTRL3_IP"
     log "  Stopping etcd on $ETCD_VICTIM"
-    ssh_vm "$ETCD_VICTIM" "sudo systemctl stop etcd" 2>/dev/null || true
+    # A stop that fails would make the quorum checks below pass without testing anything.
+    if ! ssh_vm "$ETCD_VICTIM" "sudo systemctl stop etcd"; then
+        fail "could not stop etcd on $ETCD_VICTIM; the quorum checks below are not meaningful"
+    fi
     sleep 3
 
     # Verify quorum holds with 2/3 members (check via ctrl-1 or ctrl-2, not victim ctrl-3)
