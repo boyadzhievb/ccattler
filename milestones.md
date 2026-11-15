@@ -452,7 +452,19 @@ Found by the M216 stream review (S-11, 2026-11-15). All watch, events and audit-
 - [x] Design note [design/plans/plan-per-principal-stream-cap.md](design/plans/plan-per-principal-stream-cap.md) (K8s, Consul, Nomad, Vault, AWS compared), reviewed by an independent agent (R-1 … R-8 resolved in the plan). Decisions 2026-11-15: D1 32 streams per principal per API server, 429, no admin exemption; D2 admin reserve **dropped**, replaced by a refusal log and `GET /api/streams` / `cca streams` (cluster.admin)
 - [x] Tests (plan "Tests"): `api/stream_slots_test.go` — `TestStreamCapRefusesPrincipalOverLimit`, `TestStreamCapAdmitsExactLimitUnderConcurrency` (64 parallel opens admit 32, `-race`), `TestStreamCapSharedIdentityShareOneAllowance`, `TestStreamSlotsFreedAfterGrantRevoked`, `TestStreamRefusalReleasesSlot`, `TestStreamSlotReleaseIsIdempotent`, `TestStreamSlotRefusesMissingPrincipal`, `TestStreamsEndpointRequiresClusterAdmin`; CLI `TestStreamCommandsReportCapRefusal` (failed first: events printed raw JSON), `TestStreamsCommandListsOpenStreams` (failed first: no command). Mutation check: without the per-principal check the three cap tests fail; a non-idempotent release fails the idempotence test
 - [x] Fix: `api/stream_slots.go` (`streamSlotRegistry`: one mutex, per-principal map, `sync.Once` release, refusal log ≤ 1/min/principal) replaces `reserveWatchConnection` and the seven manual releases; `GET /api/streams` + `cca streams` (`printRoleTable` renamed `printAlignedTable`, shared); `cca events --follow` uses `checkAPIResponseStatus`; AUTHZ graph (route table + "Stream slots"), `design/cli-reference.md`. gofmt, golangci-lint 0 issues, `go test ./...` green
-- [ ] Independent review, Deploy Testbed, replay case (`adv-reader` opens 33 watches)
+- [x] Independent review 2026-11-15 (`code-reviewer`: APPROVE; `security-audit`: posture strong) on 4b43dc9; findings below
+- [ ] Deploy Testbed, replay case (`adv-reader` opens 33 watches; `cca streams` as admin lists `user:adv-reader 32`)
+
+| # | Source | Finding | Verified at | Resolution |
+|---|---|---|---|---|
+| C-1 | both | Refusal log written while the registry mutex is held | `api/stream_slots.go` `reserve` → `logCapRefusal` | **fixed**: `claimRefusalLog` decides under the lock, `reserve` logs after unlocking |
+| C-2 | both | `/api/streams` registered without `instrumentedHandler` (no request metrics) | `api/server.go:428` | **fixed**: `instrumentedHandler("streams", …)` |
+| C-3 | code-reviewer | `TestStreamRefusalReleasesSlot` reset the total before checking it, hiding a total-count leak | `api/stream_slots_test.go` | **fixed**: counts asserted after the 400/403 opens and after the 503 opens, no reset |
+| C-4 | code-reviewer | Server-full checked first, so a principal at its own limit got 503 instead of the 429 naming it | `api/stream_slots.go` `reserve` | **fixed**: principal limit checked first; `TestStreamCapNamesPrincipalOnFullServer` |
+| C-5 | security-audit | Log injection: the human log format quoted only space/tab/`"`, so a `\n` or `\r` in an IdP principal wrote a forged line (pre-existing, newly reachable) | `logging/logging.go:191` | **fixed**: values with any control character are quoted; `logging/TestHumanFormatQuotesControlCharacters` failed first on `\r` and `\n` |
+| C-6 | security-audit | 32 principals at their limit fill the 1000 slots; nothing reserved for admins or nodes | `api/stream_slots.go`, `api/server.go:78` | **accepted** (D2 decision): documented in the plan's limits; remedies need no stream slot |
+| C-7 | security-audit | A webhook that varies `principal` per token gives each token its own allowance | `security/authn_webhook.go:162` | **accepted**: trusted configuration; documented in the plan |
+| C-8 | code-reviewer | `waitForOpenStreams` polls with `time.Sleep` | `api/stream_slots_test.go` | **rejected**: same bounded-deadline pattern as the existing stream tests; it observes a counter, not ordering |
 
 ### Phase 226 — Rate Limiter Trusts Any `X-Forwarded-For` (M226, bug)
 

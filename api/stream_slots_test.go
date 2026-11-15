@@ -212,15 +212,34 @@ func TestStreamRefusalReleasesSlot(t *testing.T) {
 			t.Errorf("%s: HTTP %d %s, want %d", routePath, statusCode, refusal, wantStatus)
 		}
 	}
+	if snapshot := harness.apiServer.streamSlots.snapshot(); snapshot.Total != 0 || len(snapshot.Principals) != 0 {
+		t.Errorf("refused watch opens left slots behind: %+v", snapshot)
+	}
 	harness.apiServer.streamSlots.setTotalOpenForTest(maxConcurrentWatchConnections)
 	for _, routePath := range streamRoutes {
 		if statusCode, _ := harness.tryOpenStream(routePath, "user:alice"); statusCode != http.StatusServiceUnavailable {
 			t.Errorf("%s with every slot taken: HTTP %d, want 503", routePath, statusCode)
 		}
 	}
-	harness.apiServer.streamSlots.setTotalOpenForTest(0)
-	if snapshot := harness.apiServer.streamSlots.snapshot(); snapshot.Total != 0 || len(snapshot.Principals) != 0 {
-		t.Errorf("refused opens left slots behind: %+v", snapshot)
+	if snapshot := harness.apiServer.streamSlots.snapshot(); snapshot.Total != maxConcurrentWatchConnections || len(snapshot.Principals) != 0 {
+		t.Errorf("opens refused on a full server changed the counts: %+v", snapshot)
+	}
+}
+
+// TestStreamCapNamesPrincipalOnFullServer (review CR-5): a principal at its
+// own limit is told so (429) even when the whole server is full, so the
+// refusal blames the right party.
+func TestStreamCapNamesPrincipalOnFullServer(t *testing.T) {
+	registry := newStreamSlotRegistry()
+	for range maxStreamsPerPrincipal {
+		registry.reserve("user:alice")
+	}
+	registry.setTotalOpenForTest(maxConcurrentWatchConnections)
+	if _, refusal := registry.reserve("user:alice"); refusal != streamSlotPrincipalFull {
+		t.Errorf("alice at her limit on a full server: refusal %q, want %q", refusal, streamSlotPrincipalFull)
+	}
+	if _, refusal := registry.reserve("user:bob"); refusal != streamSlotServerFull {
+		t.Errorf("bob on a full server: refusal %q, want %q", refusal, streamSlotServerFull)
 	}
 }
 

@@ -63,17 +63,23 @@ func newStreamSlotRegistry() *streamSlotRegistry {
 	return &streamSlotRegistry{openByPrincipal: map[string]int{}, lastRefusalLogAt: map[string]time.Time{}}
 }
 
-// reserve takes a slot for principal, or returns why not. The release frees
-// the slot once, however often it is called.
+// reserve takes a slot for principal, or returns why not. A principal at its
+// own limit is told so even when the server is full. The release frees the
+// slot once, however often it is called. Logging happens after the unlock.
 func (registry *streamSlotRegistry) reserve(principal string) (func(), streamSlotRefusal) {
 	registry.mutex.Lock()
+	if registry.openByPrincipal[principal] >= maxStreamsPerPrincipal {
+		shouldLog := registry.claimRefusalLog(principal)
+		registry.mutex.Unlock()
+		if shouldLog {
+			logging.Default().Warn("stream refused: principal at its open-stream limit",
+				"principal", principal, "limit", strconv.Itoa(maxStreamsPerPrincipal))
+		}
+		return nil, streamSlotPrincipalFull
+	}
 	defer registry.mutex.Unlock()
 	if registry.totalOpen >= maxConcurrentWatchConnections {
 		return nil, streamSlotServerFull
-	}
-	if registry.openByPrincipal[principal] >= maxStreamsPerPrincipal {
-		registry.logCapRefusal(principal)
-		return nil, streamSlotPrincipalFull
 	}
 	registry.totalOpen++
 	registry.openByPrincipal[principal]++
@@ -93,15 +99,15 @@ func (registry *streamSlotRegistry) release(principal string) {
 	}
 }
 
-// logCapRefusal logs that principal hit its cap, at most once per
-// streamRefusalLogInterval. The caller holds the mutex.
-func (registry *streamSlotRegistry) logCapRefusal(principal string) {
+// claimRefusalLog reports whether principal's cap refusal should be logged
+// now (at most once per streamRefusalLogInterval) and records it. The caller
+// holds the mutex and writes the log line after unlocking.
+func (registry *streamSlotRegistry) claimRefusalLog(principal string) bool {
 	if time.Since(registry.lastRefusalLogAt[principal]) < streamRefusalLogInterval {
-		return
+		return false
 	}
 	registry.lastRefusalLogAt[principal] = time.Now()
-	logging.Default().Warn("stream refused: principal at its open-stream limit",
-		"principal", principal, "open_streams", strconv.Itoa(registry.openByPrincipal[principal]), "limit", strconv.Itoa(maxStreamsPerPrincipal))
+	return true
 }
 
 // snapshot returns the open streams per principal, most first.

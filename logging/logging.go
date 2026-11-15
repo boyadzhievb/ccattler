@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Level represents the severity of a log message.
@@ -188,7 +189,9 @@ func (logger *Logger) writeHuman(timestamp time.Time, level Level, message strin
 
 	for fieldIndex := 0; fieldIndex+1 < len(keyValues); fieldIndex += 2 {
 		value := keyValues[fieldIndex+1]
-		if strings.ContainsAny(value, " \t\"") {
+		// Quote control characters too: a newline in a value (an IdP-supplied
+		// principal) must not start a forged log line.
+		if strings.ContainsAny(value, " \"") || strings.ContainsFunc(value, unicode.IsControl) {
 			line += fmt.Sprintf(" %s=%q", keyValues[fieldIndex], value)
 		} else {
 			line += fmt.Sprintf(" %s=%s", keyValues[fieldIndex], value)

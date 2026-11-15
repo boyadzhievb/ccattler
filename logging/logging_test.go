@@ -203,3 +203,17 @@ func TestHumanFormatQuotesValuesWithSpaces(t *testing.T) {
 		t.Errorf("expected unquoted value without spaces, got: %s", output)
 	}
 }
+
+// TestHumanFormatQuotesControlCharacters (M225 review SA-2): a value with a
+// newline or carriage return (an IdP-supplied principal name) is quoted, so
+// it cannot start a forged log line.
+func TestHumanFormatQuotesControlCharacters(t *testing.T) {
+	for _, forgedValue := range []string{"user:eve\n12:00:00.000_INFO_admin-granted", "user:eve\rINFO_forged"} {
+		buffer := &bytes.Buffer{}
+		logger := New(buffer, LevelInfo, FormatHuman)
+		logger.Warn("stream refused", "principal", forgedValue)
+		if lineCount := strings.Count(buffer.String(), "\n"); lineCount != 1 || strings.Contains(buffer.String(), "\r") {
+			t.Errorf("value %q produced %d lines: %q", forgedValue, lineCount, buffer.String())
+		}
+	}
+}

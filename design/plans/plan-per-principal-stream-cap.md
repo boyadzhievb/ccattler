@@ -74,6 +74,13 @@ known and stable for the stream's life: it is the natural key.
 8. **CLI:** `cca events --follow` and `cca audit --follow` print the server's error message and exit 1 on a
    non-stream answer, like `cca watch` does (today events prints `unexpected response: {raw JSON}`).
 
+Documented limits (M225 security review):
+- *Ceiling:* 1000 / 32 means about 32 distinct principals at their limit fill a server; later principals
+  (nodes and admins included) get 503 until slots free. Accepted with D2: the remedies (revoke, delete,
+  `cca streams`) are not streams. A reserve or per-class sub-cap can follow if this is seen in practice.
+- *Webhook principals must be stable per identity:* a webhook that puts a session or request id in
+  `principal` gives every token its own allowance. The webhook is trusted server configuration.
+
 Failure analysis:
 - *Map leak:* every reserve returns a release that runs exactly once (`sync.Once`); the entry is deleted at
   zero. Tests assert both counts are 0 after every refusal path and after streams close.
