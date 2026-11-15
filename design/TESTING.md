@@ -24,7 +24,8 @@ go run ./cmd/cca/ readiness            # test suite across 16 areas, readiness r
 | Extended and upgrade E2E (still the default `--env test`, the retired bare-metal nodes) | `test/e2e/cluster_test.sh --extended`, `--from-release --upgrade` | `e2e-extended.yml`, `upgrade-test.yml` (runner label `e2e`), manual dispatch |
 | E2E on the deploy cluster (Airflow and heavy workloads) | `test/e2e/cluster_test.sh --env deploy` | `deploy-testbed.yml` (runner label `deploy`), manual dispatch |
 | Placement and tenant quota (12 scenarios, deploy cluster) | `test/e2e/placement_test.sh` | by hand; no workflow runs it |
-| HA failover (bare-metal node addresses, not the `vm-ha-lan` set) | `test/e2e/baremetal_ha_test.sh` | `e2e-ha.yml`, manual dispatch |
+| HA failover on the `vm-ha-lan` set (testbed-100.77) | `HA_VM_SET=lan HA_VMHERD_DIR=… test/e2e/vm-ha/ha_test.sh` | `e2e-ha.yml` (runner labels `e2e` + `ha`), manual dispatch; refuses to run while the e2e set is up |
+| HA failover on the retired bare-metal nodes | `test/e2e/baremetal_ha_test.sh` | by hand; no workflow runs it |
 | Deploy cluster health | `test/e2e/health_check.sh` | `health-check.yml`, hourly |
 
 ## Examples
@@ -155,7 +156,7 @@ Bridged 3 control-plane + 1 worker set for HA checks (`test/e2e/vm-ha-lan/Herdfi
 
 ```sh
 # on testbed-100.77
-sudo systemctl stop actions.runner.boyadzhievb-ccattler.testbed-100-43.service
+sudo systemctl stop actions.runner.boyadzhievb-ccattler.y510p.service
 (cd ~/actions-runner/_work/ccattler/ccattler/test/e2e/vm-lan && vmherd down)
 cd <repo copy>/test/e2e/vm-ha-lan && vmherd up
 cd ../../../deploy/ansible
@@ -163,7 +164,7 @@ ansible-playbook -i lan-ha-inventory.ini ha-deploy.yml -e vmherd_ssh_key=$(cd ..
 # afterwards
 (cd <repo copy>/test/e2e/vm-ha-lan && vmherd down)
 (cd ~/actions-runner/_work/ccattler/ccattler/test/e2e/vm-lan && vmherd up)
-sudo systemctl start actions.runner.boyadzhievb-ccattler.testbed-100-43.service
+sudo systemctl start actions.runner.boyadzhievb-ccattler.y510p.service
 ```
 
 The HA servers listen on the host IP only: on a control-plane host use `CCA_API=<host ip>:9770 sudo -E cca …`.

@@ -14,21 +14,41 @@
 # Usage:
 #   ./test/e2e/vm-ha/ha_test.sh
 #   ./test/e2e/vm-ha/ha_test.sh --skip-failover   # skip destructive tests
+#   HA_VM_SET=lan HA_VMHERD_DIR=<dir of the running vm-ha-lan set> ./test/e2e/vm-ha/ha_test.sh
+#                                                  # vm-ha-lan on testbed-100.77 (e2e-ha.yml)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-VMHERD_DIR="$SCRIPT_DIR"
-
-CTRL1_IP="192.168.125.11"
-CTRL2_IP="192.168.125.12"
-CTRL3_IP="192.168.125.13"
-WORKER1_IP="192.168.125.21"
+# HA_VM_SET picks the VM set: "vmherd" (default, test/e2e/vm-ha, NAT
+# 192.168.125.x) or "lan" (test/e2e/vm-ha-lan on testbed-100.77, bridged
+# 192.168.100.53–.56; used by the e2e-ha workflow).
+case "${HA_VM_SET:-vmherd}" in
+    vmherd)
+        VMHERD_DIR="$SCRIPT_DIR"
+        CTRL1_IP="192.168.125.11"; CTRL2_IP="192.168.125.12"; CTRL3_IP="192.168.125.13"
+        WORKER1_IP="192.168.125.21"
+        NAME_PREFIX="cca-ha"
+        VALUES_FILE="$SCRIPT_DIR/../deploy.ccv"
+        ;;
+    lan)
+        VMHERD_DIR="$SCRIPT_DIR/../vm-ha-lan"
+        CTRL1_IP="192.168.100.53"; CTRL2_IP="192.168.100.54"; CTRL3_IP="192.168.100.55"
+        WORKER1_IP="192.168.100.56"
+        NAME_PREFIX="cca-ha-lan"
+        # Registry on testbed-100.77, reachable from the bridged VMs.
+        VALUES_FILE="$SCRIPT_DIR/../e2e-lan.ccv"
+        ;;
+    *) echo "unknown HA_VM_SET=${HA_VM_SET} (vmherd or lan)" >&2; exit 2 ;;
+esac
+# vmherd keeps VM state per directory: point HA_VMHERD_DIR at the directory
+# the running set was created from, or vmherd would address another set.
+VMHERD_DIR="${HA_VMHERD_DIR:-$VMHERD_DIR}"
 
 CTRL_IPS=("$CTRL1_IP" "$CTRL2_IP" "$CTRL3_IP")
-CTRL_NAMES=("cca-ha-ctrl-1" "cca-ha-ctrl-2" "cca-ha-ctrl-3")
-WORKER_NAMES=("cca-ha-worker-1")
+CTRL_NAMES=("${NAME_PREFIX}-ctrl-1" "${NAME_PREFIX}-ctrl-2" "${NAME_PREFIX}-ctrl-3")
+WORKER_NAMES=("${NAME_PREFIX}-worker-1")
 ALL_NAMES=("${CTRL_NAMES[@]}" "${WORKER_NAMES[@]}")
 
 ETCD_ENDPOINTS="https://${CTRL1_IP}:2379,https://${CTRL2_IP}:2379,https://${CTRL3_IP}:2379"
@@ -179,7 +199,7 @@ fi
 # Check 6: deploy test workload and verify placement
 # ============================================================
 log "Check 6: workload deployment"
-scp_to_vm "${CTRL_NAMES[0]}" "$SCRIPT_DIR/../deploy.ccv" "/tmp/e2e-values.ccv"
+scp_to_vm "${CTRL_NAMES[0]}" "$VALUES_FILE" "/tmp/e2e-values.ccv"
 scp_to_vm "${CTRL_NAMES[0]}" "$SCRIPT_DIR/ha-test.cca" "/tmp/ha-test.cca"
 ssh_vm "${CTRL_NAMES[0]}" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv /tmp/ha-test.cca" \
     || fail "cca apply of ha-test.cca on ${CTRL_NAMES[0]} failed (see the error above)"
