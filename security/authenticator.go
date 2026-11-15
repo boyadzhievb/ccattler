@@ -4,9 +4,16 @@
 package security
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 )
+
+// ErrAuthenticationUnavailable marks a credential that could not be checked
+// because a dependency failed (store read, webhook unreachable), as opposed
+// to a credential that was checked and refused. Open streams tolerate a few
+// in a row (M216); a new request is still refused.
+var ErrAuthenticationUnavailable = errors.New("authentication unavailable")
 
 // Authenticator maps an HTTP request to a principal identity. Implementations
 // inspect credentials (certificates, tokens, headers) and return an

@@ -120,18 +120,20 @@ func (authenticator *WebhookAuthenticator) callWebhook(tokenString string) (*Aut
 		"application/json",
 		bytes.NewReader(requestBody),
 	) //nolint:gosec // URL is from server configuration
+	// Unreachable, failing or garbled webhook: the token was not checked
+	// (ErrAuthenticationUnavailable); "authenticated": false below is a refusal.
 	if requestError != nil {
-		return nil, fmt.Errorf("request failed: %w", requestError)
+		return nil, fmt.Errorf("request failed: %w: %w", ErrAuthenticationUnavailable, requestError)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
 
 	if httpResponse.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from webhook", httpResponse.StatusCode)
+		return nil, fmt.Errorf("HTTP %d from webhook: %w", httpResponse.StatusCode, ErrAuthenticationUnavailable)
 	}
 
 	var response webhookResponse
 	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&response); decodeError != nil {
-		return nil, fmt.Errorf("decode response: %w", decodeError)
+		return nil, fmt.Errorf("decode response: %w: %w", ErrAuthenticationUnavailable, decodeError)
 	}
 
 	if !response.Authenticated {

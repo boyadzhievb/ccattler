@@ -1,6 +1,6 @@
 # Stream re-authorization (M216 open item)
 
-Status: plan, 2026-11-15. Reviewed by security-audit (verdict "sound with changes"); its findings F1–F10 are folded in below. Nothing implemented yet.
+Status: steps 1–3 implemented 2026-11-15 (Go level); replay `stream` step type, replay rows and the independent review still open. Reviewed by security-audit (verdict "sound with changes"); its findings F1–F10 are folded in below.
 
 ## Problem
 

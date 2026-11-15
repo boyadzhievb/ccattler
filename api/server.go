@@ -97,31 +97,32 @@ const (
 // Server is the CCattler HTTP API server that provides endpoints for reading,
 // querying, and modifying the fact store.
 type Server struct {
-	factStore                  store.StateStore
-	eventLog                   *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
-	enrollmentService          *security.EnrollmentService
-	workloadTokenIssuer        *security.WorkloadTokenIssuer // workloadTokenIssuer signs workload identity JWTs and serves OIDC discovery.
-	userTokenIssuer            *security.UserTokenIssuer     // userTokenIssuer mints user authentication JWTs for the login flow.
-	watchMultiplexer           *WatchMultiplexer
-	secretStore                *security.SecretStore            // secretStore handles encrypted secret CRUD.
-	keyringAdministration      KeyringAdministration            // keyringAdministration runs the legacy key migration and retirement gates (Flow 29).
-	buildVersion               string                           // buildVersion is this server's cca version, compared with replica reports.
-	secretDeliveryService      *security.SecretDeliveryService  // secretDeliveryService serves POST /api/node/secrets (Flow 27); nil disables it.
-	gateKeyDeliveryService     *security.GateKeyDeliveryService // gateKeyDeliveryService serves POST /api/node/gate-keys (Flow 28); nil disables it.
-	policyGate                 *tenant.PolicyGate               // policyGate is the optional admission pipeline for /api/apply.
-	authenticatorChain         *security.AuthenticatorChain     // authenticatorChain maps requests to principals.
-	apiAuthorizer              *security.APIAuthorizer          // apiAuthorizer checks capability-based API permissions.
-	tenantAuditView            *tenant.TenantAuditView          // tenantAuditView provides scoped audit log views per tenant.
-	auditStore                 store.StateStore                 // auditStore is the raw store for querying persisted audit entries.
-	serverMode                 ServerMode
-	requirePrincipal           bool // requirePrincipal enables 401 on requests without a principal in context.
-	mux                        *http.ServeMux
-	rateLimiter                *RateLimiter
-	statusCache                *ResponseCache
-	listener                   net.Listener
-	activeWatchConnectionCount atomic.Int64             // activeWatchConnectionCount tracks concurrent SSE connections.
-	externalOIDCConfig         *ExternalOIDCLoginConfig // externalOIDCConfig holds external IdP parameters for browser login.
-	agentDebugClientTLS        *tls.Config              // agentDebugClientTLS is the mTLS client config for the agent debug proxy; nil allows loopback only.
+	factStore                     store.StateStore
+	eventLog                      *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
+	enrollmentService             *security.EnrollmentService
+	workloadTokenIssuer           *security.WorkloadTokenIssuer // workloadTokenIssuer signs workload identity JWTs and serves OIDC discovery.
+	userTokenIssuer               *security.UserTokenIssuer     // userTokenIssuer mints user authentication JWTs for the login flow.
+	watchMultiplexer              *WatchMultiplexer
+	secretStore                   *security.SecretStore            // secretStore handles encrypted secret CRUD.
+	keyringAdministration         KeyringAdministration            // keyringAdministration runs the legacy key migration and retirement gates (Flow 29).
+	buildVersion                  string                           // buildVersion is this server's cca version, compared with replica reports.
+	secretDeliveryService         *security.SecretDeliveryService  // secretDeliveryService serves POST /api/node/secrets (Flow 27); nil disables it.
+	gateKeyDeliveryService        *security.GateKeyDeliveryService // gateKeyDeliveryService serves POST /api/node/gate-keys (Flow 28); nil disables it.
+	policyGate                    *tenant.PolicyGate               // policyGate is the optional admission pipeline for /api/apply.
+	authenticatorChain            *security.AuthenticatorChain     // authenticatorChain maps requests to principals.
+	apiAuthorizer                 *security.APIAuthorizer          // apiAuthorizer checks capability-based API permissions.
+	tenantAuditView               *tenant.TenantAuditView          // tenantAuditView provides scoped audit log views per tenant.
+	auditStore                    store.StateStore                 // auditStore is the raw store for querying persisted audit entries.
+	serverMode                    ServerMode
+	requirePrincipal              bool // requirePrincipal enables 401 on requests without a principal in context.
+	mux                           *http.ServeMux
+	rateLimiter                   *RateLimiter
+	statusCache                   *ResponseCache
+	listener                      net.Listener
+	activeWatchConnectionCount    atomic.Int64             // activeWatchConnectionCount tracks concurrent SSE connections.
+	streamReauthorizationInterval time.Duration            // streamReauthorizationInterval is how often open streams re-check access (M216).
+	externalOIDCConfig            *ExternalOIDCLoginConfig // externalOIDCConfig holds external IdP parameters for browser login.
+	agentDebugClientTLS           *tls.Config              // agentDebugClientTLS is the mTLS client config for the agent debug proxy; nil allows loopback only.
 }
 
 // ExternalOIDCLoginConfig holds the external identity provider parameters that
@@ -234,6 +235,8 @@ func NewServer(factStore store.StateStore) *Server {
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(),
 		statusCache: NewResponseCache(defaultStatusCacheTTL),
+
+		streamReauthorizationInterval: defaultStreamReauthorizationInterval,
 	}
 	apiServer.registerRoutes()
 	return apiServer
@@ -331,19 +334,29 @@ func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler
 			return
 		}
 		if result != nil {
-			enrichedContext := security.WithPrincipal(request.Context(), result.Principal)
-			enrichedContext = security.WithAuthMethod(enrichedContext, result.AuthMethod)
-			principalStruct := security.Principal{
-				Kind:       result.PrincipalKind,
-				Name:       security.PrincipalFromKindAndName(result.Principal).Name,
-				Groups:     result.Groups,
-				Attributes: result.Attributes,
-			}
-			enrichedContext = security.WithPrincipalStruct(enrichedContext, principalStruct)
-			request = request.WithContext(enrichedContext)
+			request = request.WithContext(contextWithAuthenticationResult(request.Context(), result))
 		}
 		wrappedHandler.ServeHTTP(responseWriter, request)
 	})
+}
+
+// contextWithAuthenticationResult stores the principal (string and typed) and
+// the authentication method of result in ctx. Used per request and by stream
+// re-checks, so both see the same principal.
+func contextWithAuthenticationResult(ctx context.Context, result *security.AuthenticationResult) context.Context {
+	enrichedContext := security.WithPrincipal(ctx, result.Principal)
+	enrichedContext = security.WithAuthMethod(enrichedContext, result.AuthMethod)
+	return security.WithPrincipalStruct(enrichedContext, principalFromAuthenticationResult(result))
+}
+
+// principalFromAuthenticationResult builds the typed principal of result.
+func principalFromAuthenticationResult(result *security.AuthenticationResult) security.Principal {
+	return security.Principal{
+		Kind:       result.PrincipalKind,
+		Name:       security.PrincipalFromKindAndName(result.Principal).Name,
+		Groups:     result.Groups,
+		Attributes: result.Attributes,
+	}
 }
 
 // requireCapability checks whether the request's principal has the given
@@ -367,14 +380,14 @@ func (apiServer *Server) requireCapability(responseWriter http.ResponseWriter, r
 func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/state", apiServer.instrumentedHandler("state", apiServer.handleState))
 	apiServer.mux.HandleFunc("/api/apply", apiServer.instrumentedHandler("apply", apiServer.handleApply))
-	apiServer.mux.HandleFunc("/api/watch", apiServer.handleWatch)
+	apiServer.mux.HandleFunc("/api/watch", apiServer.withStreamReauthorization(watchStreamAccess, apiServer.handleWatch))
 	apiServer.mux.HandleFunc("/api/scale", apiServer.instrumentedHandler("scale", apiServer.handleScale))
 	apiServer.mux.HandleFunc("/api/restart", apiServer.instrumentedHandler("restart", apiServer.handleRestart))
 	apiServer.mux.HandleFunc("/api/rollout/restart", apiServer.instrumentedHandler("rollout-restart", apiServer.handleRolloutRestart))
 	apiServer.mux.HandleFunc("/api/status", apiServer.instrumentedHandler("status", apiServer.handleStatus))
 	apiServer.mux.HandleFunc("/api/logs", apiServer.instrumentedHandler("logs", apiServer.handleLogs))
 	apiServer.mux.HandleFunc("/api/describe", apiServer.instrumentedHandler("describe", apiServer.handleDescribe))
-	apiServer.mux.HandleFunc("/api/events/stream", apiServer.handleEventStream)
+	apiServer.mux.HandleFunc("/api/events/stream", apiServer.withStreamReauthorization(eventStreamAccess, apiServer.handleEventStream))
 	apiServer.mux.HandleFunc("/api/diff", apiServer.instrumentedHandler("diff", apiServer.handleDiff))
 	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
 	apiServer.mux.HandleFunc("/api/activate", apiServer.instrumentedHandler("activate", apiServer.handleActivate))
@@ -395,7 +408,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/role", apiServer.instrumentedHandler("role", apiServer.handleRole))
 	apiServer.mux.HandleFunc("/api/role/check", apiServer.instrumentedHandler("role-check", apiServer.handleRoleCheck))
 	apiServer.mux.HandleFunc("/api/gc", apiServer.instrumentedHandler("gc", apiServer.handleGC))
-	apiServer.mux.HandleFunc("/api/audit", apiServer.handleAudit)
+	apiServer.mux.HandleFunc("/api/audit", apiServer.withStreamReauthorization(auditFollowAccess, apiServer.handleAudit))
 	apiServer.mux.HandleFunc("/api/auth/whoami", apiServer.instrumentedHandler("whoami", apiServer.handleAuthWhoami))
 	apiServer.mux.HandleFunc("/api/auth/oidc-config", apiServer.instrumentedHandler("oidc-config", apiServer.handleAuthOIDCConfig))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
@@ -1370,6 +1383,12 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+
+	// Audit-follow shares the stream cap with watch and events (M216 review F6).
+	if !apiServer.reserveWatchConnection(responseWriter) {
+		return
+	}
+	defer apiServer.activeWatchConnectionCount.Add(-1)
 
 	watchContext, cancelWatch := context.WithCancel(request.Context())
 	defer cancelWatch()

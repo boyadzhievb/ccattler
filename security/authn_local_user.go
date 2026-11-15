@@ -50,7 +50,7 @@ func (localUserAuthenticator *LocalUserRecordAuthenticator) Authenticate(request
 		return nil, fmt.Errorf("user token: user %q does not exist", userName)
 	}
 	if getError != nil {
-		return nil, fmt.Errorf("user token: read user %q: %w", userName, getError)
+		return nil, fmt.Errorf("user token: read user %q: %w: %w", userName, ErrAuthenticationUnavailable, getError)
 	}
 	if result.UserRecordRevision == 0 {
 		return nil, fmt.Errorf("user token: missing revision claim for user %q", userName)

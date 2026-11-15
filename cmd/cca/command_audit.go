@@ -5,7 +5,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -170,10 +169,12 @@ func executeAuditFollow(requestURL string) {
 		"TIMESTAMP", "PRINCIPAL", "ACTION", "TARGET", "DECISION", "AUTH_METHOD")
 	fmt.Println(headerLine)
 
-	scanner := bufio.NewScanner(httpResponse.Body)
+	scanner := newSSELineScanner(httpResponse.Body)
+	var closeTracker streamCloseTracker
+	defer closeTracker.exitIfClosedByServer()
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		if closeTracker.observe(line) || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		jsonPayload := strings.TrimPrefix(line, "data: ")

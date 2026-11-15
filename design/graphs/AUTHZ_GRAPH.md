@@ -222,14 +222,14 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/oidc/jwks` | GET | none (public) | — | token verifiers |
 | `/api/state` | GET | `workload.read` (visibility) | cluster or team | `cca exec`, `cca images`, `cca get instance` lookups |
 | `/api/apply` | POST | `workload.create` + per-fact `RequiredCapabilityForFactWrite` | cluster | none yet (M219 4.2: `cca apply`) |
-| `/api/watch` | GET (stream) | `workload.read` (visibility) | cluster or team | `cca watch` |
+| `/api/watch` | GET (stream) | `workload.read` (visibility); re-checked while open (stream re-authorization) | cluster or team | `cca watch` |
 | `/api/scale` | POST | `scaling.write` | cluster | `cca scale` |
 | `/api/restart` | POST | `workload.update` | cluster | `cca restart` |
 | `/api/rollout/restart` | POST | `workload.update` | cluster | `cca rollout restart` |
 | `/api/status` | GET | `workload.read` (visibility) | cluster or team | `cca get`, `cca top` (M219 3.2: `cca status`) |
 | `/api/logs` | GET | `workload.read` | cluster | `cca events` |
 | `/api/describe` | GET | `workload.read` | cluster | `cca describe` |
-| `/api/events/stream` | GET (stream) | `workload.read` | cluster | `cca events --follow` |
+| `/api/events/stream` | GET (stream) | `workload.read`; re-checked while open | cluster | `cca events --follow` |
 | `/api/diff` | POST | `workload.read` | cluster | `cca diff` (remote path) |
 | `/api/metric` | POST | `workload.update` | cluster | `cca metric set` |
 | `/api/activate` | POST | `workload.update` | cluster | none (no caller in the code) |
@@ -250,7 +250,7 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/api/role` | GET, POST, DELETE | `cluster.admin` | cluster | `cca role list/grant/revoke` |
 | `/api/role/check` | POST | `cluster.admin` | cluster | `cca role check` |
 | `/api/gc` | POST | `cluster.admin` | cluster | `cca gc instances` |
-| `/api/audit` | GET (+ follow stream) | `workload.read`; tenant filter, teamless non-admin 403 | cluster | `cca audit` |
+| `/api/audit` | GET (+ follow stream) | `workload.read`; tenant filter, teamless non-admin 403; follow re-checked while open, shares the stream cap | cluster | `cca audit` |
 | `/api/auth/whoami` | GET | none (any authenticated caller) | — | `cca login` |
 | `/api/auth/oidc-config` | GET | none (public) | — | `cca login` |
 | `/healthz` | any | none (public) | — | `cca health`, load balancers |
@@ -259,6 +259,26 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 CLI paths that do not use these routes: none (M219). `cca token` uses `/api/node/join-token` (5.2). `cca status`
 moved to `/api/status` (3.2); `cca apply` / `cca diff` use `/api/apply` and `/api/diff` only (4.2),
 except `--simulate`, which never leaves the process.
+
+### Stream re-authorization (api/stream_reauthorization.go, M216)
+```
+withStreamReauthorization(accessCheck, handler)        [registered for /api/watch, /api/events/stream, /api/audit]
+├── no chain, or /api/audit without follow=true → handler
+├── authenticatorChain.Authenticate(request) + accessCheck  [refused at open → handler answers 401/403 itself]
+├── go streamReauthorizer.watch(streamContext)
+│   ├── deadline: ExpiresAt for oidc/mtls, else now + streamMaximumLifetime (1 h)
+│   └── every streamReauthorizationInterval (30 s ±20 %): recheck()
+│       ├── Authenticate(original request)   [ErrAuthenticationUnavailable: tolerated 2×, closes on the 3rd]
+│       ├── principal unchanged
+│       └── accessCheck(principal) unchanged
+│           ├── watchStreamAccess    → resolveWorkloadVisibility (teams:* or teams:a,b)
+│           ├── eventStreamAccess    → AuthorizeAPI(workload.read, cluster)
+│           └── auditFollowAccess    → eventStreamAccess + resolveAuditTenantFilter
+│       on refusal/change → end(): log, audit stream.close (deny), cancel streamContext
+├── handler(streamResponseWriter{write deadline 30 s}, request.WithContext(streamContext))
+└── ended by the re-check → writeCloseFrame: "event: closed / data: {reason}"
+```
+CLI: `streamCloseTracker` (cmd/cca/stream_close.go) in `cca watch`, `events --follow`, `audit --follow` prints the reason and exits 1. `ErrAuthenticationUnavailable` is returned by `LocalUserRecordAuthenticator` (store read) and the webhook (unreachable, non-200, undecodable).
 
 ---
 

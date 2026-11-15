@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -31,10 +30,6 @@ const (
 	// configValueDisplayWidth is the maximum number of characters shown for
 	// config values in the "get config" CLI table.
 	configValueDisplayWidth = 50
-
-	// sseWatchReadBufferSize is the byte-buffer size used when streaming
-	// SSE watch events from the API server.
-	sseWatchReadBufferSize = 4096
 
 	// hoursPerDay converts certificate time-until-expiry into whole days.
 	hoursPerDay = 24
@@ -146,10 +141,12 @@ func executeEventsFollowMode(serviceFilter string) {
 
 	fmt.Printf("%-24s  %-22s  %-30s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
 
-	scanner := bufio.NewScanner(httpResponse.Body)
+	scanner := newSSELineScanner(httpResponse.Body)
+	var closeTracker streamCloseTracker
+	defer closeTracker.exitIfClosedByServer()
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		if closeTracker.observe(line) || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		eventJSON := strings.TrimPrefix(line, "data: ")
@@ -2030,17 +2027,21 @@ func executeWatchCommand(prefix string) {
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
 
+	if httpResponse.StatusCode != http.StatusOK {
+		errorBody, _ := io.ReadAll(io.LimitReader(httpResponse.Body, apiErrorBodyLimit))
+		fmt.Fprintf(os.Stderr, "error: %s\n", extractAPIErrorMessage(errorBody))
+		os.Exit(1)
+	}
+
 	fmt.Printf("watching %s ...\n", prefix)
-	buffer := make([]byte, sseWatchReadBufferSize)
-	for {
-		bytesRead, readErr := httpResponse.Body.Read(buffer)
-		if bytesRead > 0 {
-			fmt.Print(string(buffer[:bytesRead]))
-		}
-		if readErr != nil {
-			return
+	scanner := newSSELineScanner(httpResponse.Body)
+	var closeTracker streamCloseTracker
+	for scanner.Scan() {
+		if line := scanner.Text(); !closeTracker.observe(line) {
+			fmt.Println(line)
 		}
 	}
+	closeTracker.exitIfClosedByServer()
 }
 
 // executeSecretCommand dispatches cca secret subcommands: set, get, list,
