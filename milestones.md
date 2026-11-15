@@ -449,9 +449,18 @@ Stream review table (2026-11-15, `code-reviewer` + `security-audit` on 3355a6b a
 
 Found by the M216 stream review (S-11, 2026-11-15). All watch, events and audit-follow streams share one cap of 1000 (`reserveWatchConnection`), so one user with `workload.read` can open 1000 idle streams and lock every other user, admins included, out of streaming.
 
-- [ ] Design note (compare K8s, Consul, Vault limits): per-principal limit, headroom kept for cluster admins, error text
-- [ ] Failing test first: one principal at its limit is refused (429 or 503), another principal still opens a stream
-- [ ] Fix, unit tests, deploy-cluster check
+- [x] Design note [design/plans/plan-per-principal-stream-cap.md](design/plans/plan-per-principal-stream-cap.md) (K8s, Consul, Nomad, Vault, AWS compared), reviewed by an independent agent (R-1 … R-8 resolved in the plan). Decisions 2026-11-15: D1 32 streams per principal per API server, 429, no admin exemption; D2 admin reserve **dropped**, replaced by a refusal log and `GET /api/streams` / `cca streams` (cluster.admin)
+- [ ] Failing tests first (plan "Tests"): 33rd stream refused, 64 parallel opens admit 32 (`-race`), shared `user:local-admin` allowance, revoke frees the slots, every refusal path releases both counts, `/api/streams` needs cluster.admin, `cca events --follow` prints the 429 message
+- [ ] Fix: `reserveStreamSlot` (one mutex, per-principal map, idempotent release) replaces the seven manual releases; `/api/streams`, `cca streams`; CLI error path for events/audit follow; graphs, `design/cli-reference.md`
+- [ ] Independent review, Deploy Testbed, replay case (`adv-reader` opens 33 watches)
+
+### Phase 226 — Rate Limiter Trusts Any `X-Forwarded-For` (M226, bug)
+
+Found by the M225 design review (R-6, 2026-11-15), verified: `extractClientIP` (`api/rate_limiter.go:147`) takes the first `X-Forwarded-For` address from any client, though its comment says "when a trusted proxy is configured" (no such check exists). The limiter runs before authentication, so a client that sends a new made-up address on each request gets a fresh token bucket every time and is never limited.
+
+- [ ] Failing test first: one client sending 200 requests with a different `X-Forwarded-For` each is limited like one without the header
+- [ ] Fix: use `RemoteAddr` only, unless a trusted-proxy list is configured (design note: does any deployment put a proxy in front of the API?)
+- [ ] Unit tests, Deploy Testbed
 
 ### Phase 217 — Scale API Safety (M217)
 
@@ -894,7 +903,8 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M217 — Scale API Safety | 217 | Bug fix (M214 run 1): scale has no upper bound (100000 accepted, 436 instances created), accepts undeclared services (orphan instances), and reports success on store errors. |
 | M218 — CLI Remote Correctness | 218 | Bug fix (M214 run 1): remote `cca apply` silently simulates instead of applying; `whoami` ignores contexts; `get secrets` vs `secret list`; local-only commands fail with raw etcd errors. |
 | M219 — CLI/API Authorization Alignment | 219 | CLI and API share one authorization model: `cca apply`/`diff`/`status`/`token` go only through the API (`--simulate` for local), legacy `/status` removed, `/api/node/join-token` (cluster.admin, audited), credentials never over plain HTTP to another host, `cca run` memory-only, apply checks the capability of every fact it deletes, diff hides unreadable state. Also in this release: M216 (user delete revokes access; `/api/gc` needs cluster.admin), M222 (container bridge drops a stale subnet address after redeploy), HA fixes (cca-server survives an etcd restart, agent unit keeps `Restart=`), M214 adversarial replay in CI, M220 AWS emulator tests, M221 key provider naming, otel 1.47 / x/crypto 0.59. Still open: M216 SSE streams after user delete, M220 CI job, M221 review. |
-| M225 — Per-Principal Stream Cap | 225 | Found by the M216 stream review: watch, events and audit-follow share one cap of 1000 streams, so one `workload.read` user can lock everyone (admins included) out of streaming. Per-principal limit with admin headroom. |
+| M225 — Per-Principal Stream Cap | 225 | Found by the M216 stream review: watch, events and audit-follow share one cap of 1000 streams, so one `workload.read` user can lock everyone else out of streaming. 32 open streams per principal per API server (429), `cca streams` shows who holds them. |
+| M226 — Rate Limiter Trusts Any `X-Forwarded-For` | 226 | Bug fix (M225 design review): the per-IP rate limiter takes `X-Forwarded-For` from any client, so a new made-up address per request bypasses it. Use the connection address unless a trusted proxy is configured. |
 | M191 — Multi-Port Service VIPs | 191 | Found during M170: `NetworkController` gives each service one VIP port (`servicePorts[svc][0]`), so `expose 8081` on a second port never reaches the data plane, although M124 claimed per-port VIPs. One VIP per service with every exposed port: `network/vip/service/{name}/port/{port}` (legacy single `port` key migrated), `ServiceVIPConfig.Ports`, nftables/iptables/eBPF dispatch per port, `/api/status` networking entry per port, cloud LB per-port config. E2E: whoami-multiport answers on 8081 through the VIP from every node (hard failure, not a warning). Design in `design/networking.md` first. Depends: M183 (eBPF data plane). |
 | M211 — Workload Identity & Safe Instance Creation | 211 | Bug fix: jobs and stateful services share instance IDs `{name}-{n}`, controller puts overwrite existing instances, and an instance's workload is a bare name string. Typed owner reference, create-only instance creation, cross-kind name uniqueness at apply. |
 | M212 — Jobs Run on Real Agents | 212 | Bug fix: agents read the image only from `desired/service/{name}/image`, so job instances run only with a same-named service's image. Agents resolve job instances from `desired/job/…`. |
