@@ -386,7 +386,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("[Unit]\n")
 	scriptBuilder.WriteString("Description=CCattler Server\n")
 	scriptBuilder.WriteString("After=network.target etcd.service\n")
-	scriptBuilder.WriteString("Requires=etcd.service\n\n")
+	// Wants, not Requires: Requires stops cca-server whenever etcd stops and
+	// never starts it again (M219 HA run); cca-server retries etcd itself.
+	scriptBuilder.WriteString("Wants=etcd.service\n\n")
 	scriptBuilder.WriteString("[Service]\n")
 	scriptBuilder.WriteString("Type=simple\n")
 	fmt.Fprintf(&scriptBuilder, "ExecStart=/usr/local/bin/cca server \\\n")

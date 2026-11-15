@@ -1,7 +1,10 @@
 [Unit]
 Description=CCattler Server — {{ inventory_hostname }} (HA)
 After=network.target etcd.service
-Requires=etcd.service
+# Wants, not Requires: Requires stops cca-server whenever the local etcd
+# stops and never starts it again; cca-server reaches the other etcd members
+# and retries on its own (found by the M219 HA run, check 9).
+Wants=etcd.service
 
 [Service]
 Type=simple

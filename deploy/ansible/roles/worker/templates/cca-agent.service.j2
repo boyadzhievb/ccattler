@@ -26,6 +26,7 @@ ExecStart=/usr/local/bin/cca agent \
   --storage-backend {{ storage_backend }} \
   --storage-dir {{ storage_directory }}
 {% endif %}
+
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
