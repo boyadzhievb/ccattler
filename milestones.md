@@ -495,7 +495,7 @@ Found by Deploy Testbed 43736523046 on 3355a6b (2026-11-15): "FAIL: gate-tls T14
 - [x] Failing tests first: `api/TestStatusShowsApplyImmediately` ("status after apply does not show service fresh (stale cache)") and `TestStatusAllInstancesNotCachedAsDefault` ("plain status lists 1 instances, want 0"), both recorded failing
 - [x] Fix: `instrumentedHandler` calls `statusCache.InvalidateAll()` after every non-GET/HEAD request (all API writes go through it). `ResponseCache` has a generation: `handleStatus` takes it before reading the store and `Set` drops an answer built before an invalidation (a read in flight during the write cannot re-cache old data; `TestResponseCacheRefusesStaleGeneration`). Only the default (`all` unset) answer is cached. Unused `Invalidate(key)` replaced by `InvalidateAll`
 - [x] gofmt, golangci-lint 0 issues, `go test ./api` green
-- [ ] Deploy Testbed run (T14)
+- [x] Deploy Testbed run (T14): 43746468186 on d614167 green, T14 passes
 
 ### Phase 223 — `cca fmt` Corrupts String Values (M223, bug)
 
