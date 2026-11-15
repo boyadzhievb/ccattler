@@ -1,6 +1,6 @@
 # Stream re-authorization (M216 open item)
 
-Status: steps 1–3 implemented 2026-11-15 (Go level); replay `stream` step type, replay rows and the independent review still open. Reviewed by security-audit (verdict "sound with changes"); its findings F1–F10 are folded in below.
+Status: steps 1–4 done 2026-11-15 (Go level; replay `stream` step and two rows, run on the deploy cluster: 23 passed, 0 failed, 2 skipped). Open: independent review (step 5). Reviewed by security-audit before implementation (verdict "sound with changes"); its findings F1–F10 are folded in below.
 
 ## Problem
 
