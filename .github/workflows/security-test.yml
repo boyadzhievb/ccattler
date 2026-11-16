@@ -9,7 +9,6 @@ on:
       - 'controllers/auth*.go'
       - 'controllers/network_policy*.go'
       - 'agent/credentials*.go'
-      - 'agent/kms_secrets*.go'
       - 'agent/secret_api*.go'
       - 'integration/abac_policy_test.go'
       - 'integration/security_evidence_test.go'
@@ -24,7 +23,6 @@ on:
       - 'controllers/auth*.go'
       - 'controllers/network_policy*.go'
       - 'agent/credentials*.go'
-      - 'agent/kms_secrets*.go'
       - 'agent/secret_api*.go'
       - 'integration/abac_policy_test.go'
       - 'integration/security_evidence_test.go'
@@ -57,7 +55,7 @@ jobs:
         run: go test -race -count=1 -timeout=3m -v -run "TestAuth|TestNetworkPolicy" ./controllers/...
 
       - name: Agent credential and secret API tests
-        run: go test -race -count=1 -timeout=3m -v -run "TestCredential|TestKMS|TestSecretAPI" ./agent/...
+        run: go test -race -count=1 -timeout=3m -v -run "CredentialFileFormat|TestTokenProjectionMode|TestSecretAPI" ./agent/...
 
   security-integration:
     name: Security Integration Tests

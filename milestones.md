@@ -477,6 +477,16 @@ Found by the M225 design review (R-6, 2026-11-15), verified: `extractClientIP` (
   - rejected — `plan-per-principal-stream-cap.md` still calls the limiter spoofable: historical M225 plan text; its R-6 row already points to M226
 - [x] Unit tests, Deploy Testbed (run 43826544703 on b8fa495 green)
 
+### Phase 227 — Daemons Ignore Unknown Flags (M227, bug)
+
+Found by the M221 review (2026-11-16), verified: the flag `switch` in `parseServerCommandArgs` (`cmd/cca/command_server.go:133`) has no `default` case, so `cca server` silently ignores a flag it does not know, and a flag given without its value. A mistyped or removed security flag (`--kms-provider` after M221, a typo in `--tls-cert`, `--oidc-issuer`, `--authn-webhook-url`) leaves the server running without that setting and without any message.
+
+- [ ] Failing test first: `cca server --no-such-flag` and a flag missing its value return an error naming the flag
+- [ ] `cca server` refuses unknown flags and missing values at startup (exit non-zero, message names the flag)
+- [ ] Same check for `cca agent` (`parseAgentCommandArgs`) and the other `parse*Args` functions in `cmd/cca`; one shared helper, not a copy per command
+- [ ] Ansible templates and unit files in `deploy/` pass only known flags (a deploy run would now fail on a stale one)
+- [ ] Unit tests, Deploy Testbed
+
 ### Phase 217 — Scale API Safety (M217)
 
 Found in M214 run 1 (2026-11-12): `scale a-web 100000` created 436 real instances; `scale nosuch 2` created orphan instances.
@@ -594,9 +604,15 @@ The AWS cloud provider (`cloud/aws.go`: instances, load balancers, VPC routes) w
 
 - [x] `security/kms.go` → `key_provider.go`; `kms_registry.go` → `cloud_key_provider_registry.go` (`CloudKeyProviderFactory`, `RegisterCloudKeyProviderFactory`, `LookupCloudKeyProviderFactory`); `kms_cloud.go` → `cloud_key_providers.go` (AWS KMS and GCP Cloud KMS types keep their names)
 - [x] `cca server --kms-provider/--kms-key-id` → `--root-key-provider/--root-key-id` (values `aws-kms`, `gcp-kms` unchanged); completion, Ansible `rotate-root-key.yml`, error messages. No alias for the old flags (beta; only the untested cloud build used them)
-- [x] Docs: design docs, website, AUTH_GRAPH (also dropped the stale `RewrapEnvelope` entries and fixed line numbers); released changelog entries unchanged. security-model.md no longer claims Vault/HSM support
+- [x] Docs: design docs, website, AUTH_GRAPH (since split in M219; the key provider entries are now in `SECRETS_GRAPH.md`; also dropped the stale `RewrapEnvelope` entries and fixed line numbers); released changelog entries unchanged. security-model.md no longer claims Vault/HSM support
 - [x] gofmt, golangci-lint (default and `cloudprovider` tags), tests for security, cmd/cca, cloud green (2026-11-14)
-- [ ] Independent review (`code-reviewer`)
+- [x] Independent review 2026-11-16 (`code-reviewer`; approve: rename is behaviour-neutral, builds with and without `cloudprovider`, no old names outside released text, docs and completions match the flags, `SECRETS_GRAPH.md` entries correct). Outcome:
+  - fixed — `security-test.yml` path filter `agent/kms_secrets*.go` matched no file (agent KMS code removed in M174) → removed
+  - fixed — same workflow ran `-run "TestCredential|TestKMS|TestSecretAPI"`: no `TestKMS` exists and `TestCredential` matches no test (they are `TestAWSCredentialFileFormat` …), so the step ran 2 of the 6 intended tests → pattern corrected, 6 run
+  - fixed — no test that `cca server` parses the renamed flags → `TestParseServerCommandArgsRootKeyFlags`
+  - moved to M227 — `cca server` ignores unknown flags, so a unit file with the removed `--kms-provider` starts without a cloud root key and fails later with a misleading root-key-file error
+  - rejected — `rotate-root-key.yml` guard no longer matches the old flag: such a server cannot be using a cloud key after the upgrade
+  - rejected — tracked `docs/*.html` still says "KMS integration": generated site, rebuilt by `pages.yml`
 
 ### Phase 211 — Workload Identity & Safe Instance Creation (M211)
 
@@ -928,6 +944,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M219 — CLI/API Authorization Alignment | 219 | CLI and API share one authorization model: `cca apply`/`diff`/`status`/`token` go only through the API (`--simulate` for local), legacy `/status` removed, `/api/node/join-token` (cluster.admin, audited), credentials never over plain HTTP to another host, `cca run` memory-only, apply checks the capability of every fact it deletes, diff hides unreadable state. Also in this release: M216 (user delete revokes access; `/api/gc` needs cluster.admin), M222 (container bridge drops a stale subnet address after redeploy), HA fixes (cca-server survives an etcd restart, agent unit keeps `Restart=`), M214 adversarial replay in CI, M220 AWS emulator tests, M221 key provider naming, otel 1.47 / x/crypto 0.59. Still open: M216 SSE streams after user delete, M220 CI job, M221 review. |
 | M225 — Per-Principal Stream Cap | 225 | Found by the M216 stream review: watch, events and audit-follow share one cap of 1000 streams, so one `workload.read` user can lock everyone else out of streaming. 32 open streams per principal per API server (429), `cca streams` shows who holds them. |
 | M226 — Rate Limiter Trusts Any `X-Forwarded-For` | 226 | Bug fix (M225 design review): the per-IP rate limiter takes `X-Forwarded-For` from any client, so a new made-up address per request bypasses it. The limiter now uses only the connection address, as Consul does. |
+| M227 — Daemons Ignore Unknown Flags | 227 | Bug fix (M221 review): `cca server` silently ignores unknown flags and flags without a value, so a mistyped or removed security flag leaves the server running without that setting. Unknown flags are refused at startup, for the server, the agent and the other commands. |
 | M191 — Multi-Port Service VIPs | 191 | Found during M170: `NetworkController` gives each service one VIP port (`servicePorts[svc][0]`), so `expose 8081` on a second port never reaches the data plane, although M124 claimed per-port VIPs. One VIP per service with every exposed port: `network/vip/service/{name}/port/{port}` (legacy single `port` key migrated), `ServiceVIPConfig.Ports`, nftables/iptables/eBPF dispatch per port, `/api/status` networking entry per port, cloud LB per-port config. E2E: whoami-multiport answers on 8081 through the VIP from every node (hard failure, not a warning). Design in `design/networking.md` first. Depends: M183 (eBPF data plane). |
 | M211 — Workload Identity & Safe Instance Creation | 211 | Bug fix: jobs and stateful services share instance IDs `{name}-{n}`, controller puts overwrite existing instances, and an instance's workload is a bare name string. Typed owner reference, create-only instance creation, cross-kind name uniqueness at apply. |
 | M212 — Jobs Run on Real Agents | 212 | Bug fix: agents read the image only from `desired/service/{name}/image`, so job instances run only with a same-named service's image. Agents resolve job instances from `desired/job/…`. |
