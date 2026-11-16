@@ -130,3 +130,10 @@ Details in [design/TESTING.md](design/TESTING.md).
 ## Implementation Phases & Milestones
 
 [milestones.md](milestones.md) holds open phase checklists and upcoming milestones. Completed history is in `milestones-archive.md` (190 KB) — grep it, never read it whole.
+
+### OpenSpec (from 2026-11-16)
+
+- **Every milestone is an OpenSpec change**, bug fixes included: start with `openspec-propose`, implement with `openspec-apply-change`, and archive (syncing its specs) when the milestone is released. `openspec list` shows the open changes.
+- **milestones.md stays the roadmap**: the table row orders the work and holds the changelog text for `release.sh`; the phase section links to its change, and the change's `tasks.md` is the checklist.
+- **Behaviour lives in `openspec/specs/`, architecture in `design/`.** A spec states what must be true, with scenarios that name their tests; `design/` explains how it is built (flows, graphs, schema). Link, never copy. Existing `design/` behaviour moves into specs capability by capability (M229).
+- Rules for each artifact are in `openspec/config.yaml`. The CLI is the standalone binary (`~/.local/bin/openspec`); never run `openspec init` unless asked.
