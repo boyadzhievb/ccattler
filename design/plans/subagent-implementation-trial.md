@@ -21,7 +21,7 @@ Both milestones are bug fixes of similar size in `agent/` and `runtime/`. They a
 
 | Metric | How | M233 | M234 |
 |---|---|---|---|
-| Main-session context growth | `/context` before proposal and after release | before: 378.9k total, 346.2k messages (2026-11-16, after the M233 design questions; earlier baseline 339.7k during M235) | |
+| Main-session context growth | `/context` before proposal and after release | before 378.9k (346.2k messages), after release 459.5k (425k messages): **+80.6k** — proposal, design questions, verifying the hand-backs, two testbed crash-loop checks, review handling, release, conversation (mid-point 421.2k after the first testbed check) | before: 459.5k (425k messages) |
 | Implementation tokens | subagent completion notice (M233); `/cost` delta (M234) | 156.8k subagent tokens, 66 tool calls (groups 0–2: 25 files, +643/−62, 2 commits) | |
 | Wall time, "go" → ready for review | timestamps | 11.3 min (22:44 → 22:55) | |
 | Quality of the hand-back | main session re-ran build, vet, lint, tests; read the core file | all green on re-run; 6 doubts reported, 2 were real inconsistencies in the change's own spec/design (fixed in d41a1f1), 1 a pre-existing rollout gap, 1 a testbed risk to check | |
