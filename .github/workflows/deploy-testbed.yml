@@ -1,5 +1,9 @@
 name: Deploy Testbed Cluster
 
+# Manual runs are full unless narrowed in the form; a code push to master or a
+# milestone branch starts a fast run (M231, design/TESTING.md). The run that
+# closes a milestone must be a full run: the job summary says which it was.
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,10 +14,12 @@ on:
         type: choice
         options:
           - "airflow,whoami,whoami-multiport,gate-tls"
+          - "airflow,whoami,whoami-multiport,gate-tls,wordpress"
           - "airflow,whoami,whoami-multiport"
           - "airflow,whoami"
           - "airflow"
           - "all"
+          - "whoami,wordpress"
           - "whoami,whoami-multiport"
           - "whoami,whoami-multiport,gate-tls"
           - "zabbix"
@@ -33,10 +39,47 @@ on:
           - "nftables"
           - "iptables"
           - "auto"
+      check_gate_tls:
+        description: "Gate TLS checks T1–T18 (~1 min 20 s)"
+        type: boolean
+        default: true
+      check_node_failure:
+        description: "Node-failure traffic test (~45 s)"
+        type: boolean
+        default: true
+      check_multiport:
+        description: "Multi-port VIP checks"
+        type: boolean
+        default: true
+      check_warmzero:
+        description: "Warm-zero lifecycle (needs the warmzero workload)"
+        type: boolean
+        default: true
+      run_adversarial:
+        description: "Adversarial replay (~2 min 40 s)"
+        type: boolean
+        default: true
+      adversarial_cases:
+        description: "Replay only cases matching (e.g. scale-*,reader-*; empty = all)"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - master
+      - "m[0-9]*-*"
+    paths-ignore:
+      - "openspec/**"
+      - "design/**"
+      - "website/**"
+      - "**/*.md"
 
+# Push runs replace each other (only the newest runs); manual runs never get
+# cancelled, and the two never share a group, so a push cannot replace a
+# pending manual run. The single deploy runner keeps them from overlapping.
 concurrency:
-  group: testbed-deploy
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'push' && 'testbed-deploy-push' || 'testbed-deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   deploy:
@@ -44,10 +87,33 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0  # push runs compare cases.yml with the commit before the push
 
       - name: Clear existing workloads
         if: ${{ inputs.clear_first == true }}
         run: ./test/e2e/cluster_test.sh --env deploy --clear-workloads
+
+      - name: Install yq
+        run: |
+          YQ_VERSION="v4.44.1"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o /tmp/yq
+          sudo install -m 755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
+      - name: Select workloads, checks and replay cases
+        id: selection
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKLOAD_INPUT: ${{ inputs.workload }}
+          CHECK_GATE_TLS: ${{ inputs.check_gate_tls }}
+          CHECK_NODE_FAILURE: ${{ inputs.check_node_failure }}
+          CHECK_MULTIPORT: ${{ inputs.check_multiport }}
+          CHECK_WARMZERO: ${{ inputs.check_warmzero }}
+          RUN_ADVERSARIAL: ${{ inputs.run_adversarial }}
+          ADVERSARIAL_CASES: ${{ inputs.adversarial_cases }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: ./test/e2e/select_deploy_checks.sh | tee -a "$GITHUB_OUTPUT"
 
       - name: Install vmherd
         run: |
@@ -61,20 +127,51 @@ jobs:
         run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags ebpf -o deploy/ansible/cca-linux-amd64 ./cmd/cca/
 
       - name: Deploy cluster (3-node, no teardown, source-built binary)
+        env:
+          WORKLOAD: ${{ steps.selection.outputs.workload }}
+          SKIP_CHECKS: ${{ steps.selection.outputs.skip_checks }}
+          DATAPLANE: ${{ inputs.dataplane || 'ebpf' }}
         run: |
-          WORKLOAD="${{ inputs.workload || 'airflow,whoami,whoami-multiport,gate-tls' }}"
-          DATAPLANE="${{ inputs.dataplane || 'ebpf' }}"
-          ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD" --dataplane "$DATAPLANE"
-
-      - name: Install yq
-        run: |
-          YQ_VERSION="v4.44.1"
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o /tmp/yq
-          sudo install -m 755 /tmp/yq /usr/local/bin/yq
-          yq --version
+          ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD" \
+            --dataplane "$DATAPLANE" --skip-checks "$SKIP_CHECKS"
 
       - name: Adversarial replay (M214)
-        run: ./test/e2e/adversarial/run.sh --env deploy
+        if: ${{ steps.selection.outputs.run_adversarial == 'true' }}
+        env:
+          ADVERSARIAL_CASES: ${{ steps.selection.outputs.adversarial_cases }}
+        run: |
+          if [[ -n "$ADVERSARIAL_CASES" ]]; then
+            ./test/e2e/adversarial/run.sh --env deploy --case "$ADVERSARIAL_CASES"
+          else
+            ./test/e2e/adversarial/run.sh --env deploy
+          fi
+
+      - name: Run summary
+        if: always()
+        env:
+          RUN_KIND: ${{ steps.selection.outputs.run_kind }}
+          WORKLOAD: ${{ steps.selection.outputs.workload }}
+          SKIP_CHECKS: ${{ steps.selection.outputs.skip_checks }}
+          RUN_ADVERSARIAL: ${{ steps.selection.outputs.run_adversarial }}
+          ADVERSARIAL_CASES: ${{ steps.selection.outputs.adversarial_cases }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          {
+            echo "## Deploy Testbed: ${RUN_KIND:-unknown} run"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Trigger | ${EVENT_NAME} |"
+            echo "| Workloads | ${WORKLOAD} |"
+            echo "| Skipped check groups | ${SKIP_CHECKS:-none} |"
+            echo "| Adversarial replay | $([[ "$RUN_ADVERSARIAL" == "true" ]] && echo "${ADVERSARIAL_CASES:-all cases}" || echo "not run") |"
+            echo ""
+            if [[ "$RUN_KIND" == "full" ]]; then
+              echo "This is a **full run**: it can close a milestone."
+            else
+              echo "This is a **partial run**: for iterating only, it cannot close a milestone."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Print adversarial transcript on failure
         if: failure()

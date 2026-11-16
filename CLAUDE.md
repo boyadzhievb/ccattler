@@ -35,6 +35,7 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 - **The implementer never reviews its own work.** Before a milestone is marked complete or released, a separate subagent reviews the milestone diff adversarially against its design doc and checklist: `code-reviewer` always, plus `security-audit` for auth, secrets, enrollment or network-facing changes.
 - **Verify every finding in the code before acting.** Fix real ones; reject hypothetical or out-of-scope ones. Record each as fixed/rejected with one line of reasoning in the milestone's checklist.
 - **Only executed things count.** Unit tests plus a deploy-cluster or e2e run; a review does not replace them.
+- **A milestone closes on a full Deploy Testbed run** (M231): its job summary says `full run` (default workloads or more, no check group skipped, every replay case). Push runs and narrowed manual runs are for iterating and are never cited as the closing run. Check groups and flags: [design/TESTING.md](design/TESTING.md).
 
 ### Data Structures & Algorithms
 

@@ -30,7 +30,7 @@ M231. Every group lands its own docs. Script changes are tried on the actual tes
 
 ## 5. Rule and review
 
-- [ ] 5.1 CLAUDE.md and `design/TESTING.md`: the run that closes a milestone is a full run (summary says `full run`); partial and push runs are for iterating
+- [x] 5.1 CLAUDE.md and `design/TESTING.md`: the run that closes a milestone is a full run (summary says `full run`); partial and push runs are for iterating — 2026-11-16: CLAUDE.md "Independent Review" gets the rule next to "Only executed things count"; `TESTING.md` "Deploy Testbed runs: manual, push, full" (what each trigger runs, the definition of full, which run may close a milestone)
 - [ ] 5.2 Independent review: `code-reviewer` (workflow and scripts) and `security-audit` (self-hosted runner triggered on push); record every finding as fixed or rejected with one line here
 - [ ] 5.3 A full Deploy Testbed run with the final workflow, summary `full run`, green
 

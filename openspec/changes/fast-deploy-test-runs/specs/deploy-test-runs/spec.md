@@ -73,7 +73,12 @@ The deploy test SHALL be able to deploy WordPress (MariaDB, two WordPress instan
 - Check: `deploy-run:wordpress-manual` (first, by hand), then `deploy-run:push-fast`
 
 ### Requirement: A milestone closes on a full run
-The Deploy Testbed run that closes a milestone SHALL be a full run: every check group and every replay case. A narrowed or push run SHALL NOT be recorded as that run.
+The Deploy Testbed run that closes a milestone SHALL be a full run: at least the default workloads (airflow, whoami, whoami-multiport, gate-tls), no check group skipped, and every replay case. A narrowed or push run SHALL NOT be recorded as that run.
+
+#### Scenario: Fewer workloads than the default
+- **WHEN** a manual run is started with workload `whoami` and every box ticked
+- **THEN** its summary says `partial run`, because the gate TLS and multi-port checks had no workload to run against
+- Check: `test/e2e/select_deploy_checks_selftest.sh`
 
 #### Scenario: Run summary says whether it was full
 - **WHEN** any Deploy Testbed run finishes

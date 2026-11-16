@@ -109,7 +109,15 @@ Each run logs `skipped check groups: …` before Step 5 and again in the final s
 
 The adversarial replay runs all cases in `cases.yml`, or only those whose name matches `--case <glob>[,<glob>…]` (e.g. `--case 'scale-*'`). Identity setup and cleanup always run; a pattern that matches no case fails the run. `--list-cases` prints the selection without a cluster.
 
-Self-tests that need no cluster: `test/e2e/check_groups_selftest.sh`, `test/e2e/adversarial/run_selftest.sh`.
+Self-tests that need no cluster: `test/e2e/check_groups_selftest.sh`, `test/e2e/adversarial/run_selftest.sh`, `test/e2e/select_deploy_checks_selftest.sh`.
+
+#### Deploy Testbed runs: manual, push, full (M231)
+
+`test/e2e/select_deploy_checks.sh` decides what a run executes; the workflow only passes it the trigger and the form.
+
+- **Manual (Run workflow)**: the form's workload list, one checkbox per slow group plus the replay (all ticked by default) and a replay case filter. Running the form unchanged is a full run.
+- **Push** to `master` or a milestone branch (`m<number>-…`), except pushes that only change `openspec/`, `design/`, `website/` or Markdown: workloads whoami and WordPress, the quick checks, and only the replay cases the push added or changed (none → no replay; a new branch → all). Only the newest push run runs; a push never cancels or replaces a manual run.
+- **Full run**: at least the default workloads (airflow, whoami, whoami-multiport, gate-tls), no group skipped, every replay case. The job summary says `full run` or `partial run`. **The Deploy Testbed run that closes a milestone must be a full run**; partial and push runs are for iterating.
 
 ### Resource requirements for workloads
 
