@@ -16,7 +16,7 @@
 ## Decisions
 
 ### D1. Per-instance back-off state in agent memory
-`crashLoopBackoffs map[string]*crashLoopBackoffEntry` on the agent (attempts, retryAfter, lastStartedAt, lastExitReason), like `imagePullBackoffs`. On an exit: if the previous start is older than the reset period (10 min), attempts restart at 0; then attempts++, retryAfter = now + delay(attempts). Before retryAfter the cycle only publishes state; at or after it, `reconcileDesiredInstance` runs. The entry is removed when the instance is no longer desired on the node. An agent restart loses the map: the next exit starts from the base delay again — safe, and the store count survives.
+`crashLoopBackoffs map[string]*crashLoopBackoffEntry` on the agent (attempts, retryAfter, lastStartedAt, lastExitReason), like `imagePullBackoffs`. On an exit: if the previous start is older than the reset period (10 min), attempts restart at 0; then attempts++, retryAfter = now + delay(attempts). Before retryAfter the cycle only publishes state; at or after it, `reconcileDesiredInstance` runs. The entry is removed when the instance is no longer desired on the node. An agent restart loses the map: an exited container the agent has no entry for is restarted once at once (it gets an entry on that start), then backs off from the base delay — safe, and the store count survives.
 
 ### D2. Count in the store, incremented per restart attempt
 When the agent starts an exited instance again (not its first start), it increments `observed/instance/{id}/restarts` (read, +1, write; the agent is the only writer for its instances). First start writes nothing, so `cca describe` keeps showing an empty count for never-restarted instances as today.

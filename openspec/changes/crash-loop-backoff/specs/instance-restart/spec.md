@@ -24,9 +24,9 @@ When an instance's container exits while the instance is desired on the node, th
 Every in-place restart SHALL increment `observed/instance/{id}/restarts`. While the agent waits to restart, the instance's observed state SHALL be `crash-loop-backoff` and its status reason SHALL name the exit and the time until the next attempt.
 
 #### Scenario: Count and state during a crash loop
-- **GIVEN** an instance whose container exited with code 1 twice
-- **WHEN** the user runs `cca describe instance` while the agent waits
-- **THEN** it shows restarts 2, state `crash-loop-backoff` and a reason like `exited with code 1; restarting in 20s`
+- **GIVEN** an instance whose container exited with code 1 twice and was restarted once in between
+- **WHEN** the user runs `cca describe instance` while the agent waits after the second exit
+- **THEN** it shows restarts 1, state `crash-loop-backoff` and a reason like `exited with code 1; restarting in 20s`; after the next restart it shows restarts 2
 - Test: `TestAgentCountsRestartsAndPublishesCrashLoopState`
 
 ### Requirement: A crash-looping instance is not replaced

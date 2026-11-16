@@ -6,7 +6,7 @@ Decided 2026-11-16 (user: "yes"). Question: should a subagent implement an OpenS
 
 | | M233 (crash-loop back-off and restart count) | M234 (restart deletes the previous log) |
 |---|---|---|
-| Implementation | `lead-developer` subagent, model **Sonnet**, briefed with the change (proposal, design, tasks) only | main session, **Opus**, as before |
+| Implementation | `lead-developer` subagent, model **Sonnet**, effort **medium** (default; neither the agent file nor the call set it — seen in the UI by the user), briefed with the change (proposal, design, tasks) only; started 22:44 | main session, **Opus**, as before |
 | Proposal, decisions with the user | main session | main session |
 | Reviews (`code-reviewer`, `security-audit` when needed) | subagents, **Opus** | subagents, **Opus** |
 | Testbed runs, release | main session | main session |
