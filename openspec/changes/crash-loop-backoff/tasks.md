@@ -36,5 +36,5 @@ Implementation (groups 0–2) by a `lead-developer` subagent on Sonnet, as the f
   - fixed (nits) — integration OOM test asserts `OOMKilled` again; `cca status`/logs hint for `crash-loop-backoff`; corrupt restart count logged; `isActiveInstanceState` moved to controllers/helpers.go; docs describe the bail-out case
   - noted — rollout `currentUnavailable` counts only `failed` (same gap as `image-pull-backoff`); scheduler load counts `crash-loop-backoff` but not `image-pull-backoff`/`waiting-for-secrets` (pre-existing inconsistency); task 3.2's identity check was vacuous: no production code registers endpoint identities yet (`RegisterEndpointIdentity` has no implementation)
   - noted (residual, from the rework) — when a bailed-out restart publishes no state of its own (no image fact, config unreadable), the old reason "restarting in Ns" stays visible after the wait is over; cosmetic, the retry happens every cycle
-- [ ] 4.2 Trial numbers for M233 in design/plans/subagent-implementation-trial.md
-- [ ] 4.3 Closing full Deploy Testbed run
+- [x] 4.2 Trial numbers for M233 in design/plans/subagent-implementation-trial.md — recorded except the "after" context figure, taken by the user after the release
+- [x] 4.3 Closing full Deploy Testbed run — 43960177239 on 9f859fa (manual, form unchanged): `run_kind=full`, `skipped check groups: none`, deploy `TEST PASSED`, replay `32 passed, 0 failed, 0 skipped`, 582 s; push run 43959514742 on the same commit (whoami + WordPress) passed too
