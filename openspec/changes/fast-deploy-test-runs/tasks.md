@@ -29,8 +29,8 @@ M231. Every group lands its own docs. Script changes are tried on the actual tes
 
 ## 4. Workflow
 
-- [ ] 4.1 Dispatch form (D2): five checkboxes, `adversarial_cases`; mapping to `--skip-checks` and `--case`; job summary (D7). Verify `deploy-run:full-default` (form unchanged → summary `full run`), `deploy-run:skip-gate-tls`, `deploy-run:all-unticked`, `deploy-run:replay-pattern`
-- [ ] 4.2 Push trigger (D4, D5): branches, `paths-ignore`, the two concurrency groups, the push profile, changed replay cases. Verify `deploy-run:push-fast`, `deploy-run:push-changed-case`, `deploy-run:push-docs-only`, `deploy-run:push-vs-manual`
+- [ ] 4.1 Dispatch form (D2): five checkboxes, `adversarial_cases`; mapping to `--skip-checks` and `--case`; job summary (D7). Verify `deploy-run:full-default` (form unchanged → summary `full run`), `deploy-run:skip-gate-tls`, `deploy-run:all-unticked`, `deploy-run:replay-pattern` — progress 2026-11-16: `deploy-run:full-default` verified by run 43898994069 (see 5.3). Still open: skip-gate-tls, all-unticked, replay-pattern (one narrowed dispatch covers the first and the last)
+- [ ] 4.2 Push trigger (D4, D5): branches, `paths-ignore`, the two concurrency groups, the push profile, changed replay cases. Verify `deploy-run:push-fast`, `deploy-run:push-changed-case`, `deploy-run:push-docs-only`, `deploy-run:push-vs-manual` — progress 2026-11-16: `deploy-run:push-fast` verified by run 43898269480 (push of cd449fa: `workload=whoami`, `skip_checks=gate-tls,node-failure,multiport,warmzero`, `run_adversarial=false` (no `cases.yml` change), `run_kind=partial`; deploy 133 s `TEST PASSED`, replay step skipped, total 152 s). Still open: push-changed-case, push-docs-only, push-vs-manual
 
 ## 5. Rule and review
 
@@ -47,7 +47,7 @@ M231. Every group lands its own docs. Script changes are tried on the actual tes
   - rejected — a full run on `nftables`/`iptables`/`auto` or with `clear_first` should not count: a different data plane is different coverage, not less; dataplane choice is part of the milestone's own test plan
   - rejected — `-k` on the gate request: certificate validation is the gate TLS group's job (T1–T18), not the WordPress check's
   - noted, pre-existing — yq and vmherd are installed on the runner without checksums (`releases/latest`, `sudo tar`); the `e2e`-label workflows on y510p were not audited; six other workflows have shellcheck style notes (SC2129, SC2086, SC2035)
-- [ ] 5.3 A full Deploy Testbed run with the final workflow, summary `full run`, green
+- [x] 5.3 A full Deploy Testbed run with the final workflow, summary `full run`, green — 2026-11-16: run 43898994069 on cd449fa (manual, form unchanged): selection `workload=airflow,whoami,whoami-multiport,gate-tls`, `skip_checks=` (empty), `run_adversarial=true`, `run_kind=full`; `skipped check groups: none` before the checks and in the final status; deploy 414 s `TEST PASSED`; replay 147 s `32 passed, 0 failed, 0 skipped`; total 575 s; both step outcomes `success`, so the summary prints the full-run line (rendered summary text not readable through `gh`; checked from the step logic and outcomes)
 
 ## Workflow follow-up
 
