@@ -468,10 +468,12 @@ The agent computes a SHA256 hash of all config inputs (env vars, config files, s
 
 ```
 Start path (reconcileDesiredInstance):
-  1. Resolve config env vars, config files, secrets
-  2. Compute SHA256 hash of all config inputs
+  1. Compute SHA256 hash of all config inputs (configHashBeforeBuild) — FIRST,
+     before secret material, pull, volumes and the spec are read (M235)
+  2. Resolve config env vars, config files, secrets; pull; build the spec
   3. Start container with resolved config
-  4. Store hash: observed/instance/{id}/config-hash = hex(sha256)
+  4. Store the hash from step 1: observed/instance/{id}/config-hash
+     (never recomputed here: a fact written during steps 2–3 must not be in it)
 
 Steady-state path (else branch):
   1. Read stored config-hash from observed/instance/{id}/config-hash
@@ -485,6 +487,8 @@ Steady-state path (else branch):
 ### What must match
 
 - Hash includes env vars, config files, and secrets — any change triggers restart.
+- The stored hash is never newer than what the container was built from. A fact that lands while an instance starts (an apply still writing, a slow pull) costs at most one extra restart, never a missed change (M235: WordPress ran without its secrets because the hash was taken after the start).
+- A service with no inputs stores the hash of the empty input, so its first env var, file or secret restarts its instances (M235). Instances with no stored hash (started by an older agent) are not compared until they restart.
 - Hash computation must be deterministic: sort keys before hashing.
 - The rollout controller is not involved — config reload is agent-local.
 - Init containers re-run on config-triggered restart (same as any restart).

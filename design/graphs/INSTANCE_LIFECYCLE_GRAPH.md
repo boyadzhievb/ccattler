@@ -125,6 +125,9 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   └── store.Get(desired/service/{svc}/image)
 │       → BAIL if empty (silent return, no state change)
 │
+├── computeServiceConfigHash(ctx, service)                   :1355  [configHashBeforeBuild, M235]
+│   └── taken BEFORE any input is read; stored after the start (Flow 16)
+│
 ├── prepareInstanceSecretMaterial(ctx, instanceInfo)          [agent/secret_delivery.go, M174]
 │   ├── no grants / connection secrets / pull secret → proceed
 │   ├── material in /run/ccattler/secrets/{id}/ with all grants → reuse (container restart)
@@ -236,7 +239,8 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   └── addConnectionFileMounts → WriteConnectionFile         [connection URLs as files only]
 ├── addSecretHelperIfMounted                                 [cca-secret helper, not secret]
 │
-└── startInstanceAndPublishState(ctx, instanceInfo, ...)     :956
+└── startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, spec)  :966
+    (… after start: PUT observed/instance/{id}/config-hash = configHashBeforeBuild, always)
     ├── runtime.Start(spec)
     │   ├── [containerd] WithNewSpec(WithImageConfig, buildOCISpecOptions(spec, netns)...)
     │   │   └── containerBaseSpecOptions: WithoutRunMount (no tmpfs on /run, M232)
@@ -277,8 +281,9 @@ reconcileDesiredInstance(instanceInfo)                        :726
 ```
 executeReconciliationCycle                                   :525
 └── FOR EACH running instance:
-    ├── detectConfigChange(ctx, instanceInfo)                :1264
-    │   ├── computeServiceConfigHash(ctx, service)           :1349
+    ├── detectConfigChange(ctx, instanceInfo)                :1267
+    │   ├── no stored hash → no compare (instance started by an older agent)
+    │   ├── computeServiceConfigHash(ctx, service)           :1355  [empty input → hash of "", never ""]
     │   └── compare with observed/instance/{id}/config-hash
     │       → if changed: stopInstanceWithGracePeriod → restart
     │

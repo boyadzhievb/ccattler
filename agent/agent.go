@@ -730,6 +730,10 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	if image == "" {
 		return
 	}
+	// Hash before anything the container is built from is read (Flow 16, M235):
+	// a fact written during the build or pull is then never in the stored hash,
+	// so detectConfigChange restarts the instance with it.
+	configHashBeforeBuild := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
 
 	secretValues, secretsReady := nodeAgent.prepareInstanceSecretMaterial(ctx, instanceInfo)
 	if !secretsReady {
@@ -786,7 +790,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	if secretAPIToken != "" {
 		nodeAgent.injectSecretAPIIntoSpec(secretAPIToken, secretAPIBaseURL, &runtimeSpec)
 	}
-	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, runtimeSpec)
+	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, runtimeSpec)
 }
 
 // ensureImageAvailable checks that the container image is locally cached,
@@ -955,12 +959,11 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 	}
 }
 
-// startInstanceAndPublishState starts an instance using the given runtime spec,
-// records the applied resource allocation, publishes host port information for
-// container runtimes, observes the instance state from the runtime, and writes
-// the observed state and image to the store. On failure, cleans up secrets,
-// publishes a failed state, and records the image reference.
-func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, runtimeSpec runtime.Spec) {
+// startInstanceAndPublishState starts an instance from runtimeSpec, records its
+// resources and host ports, and writes its observed state, image and
+// configHashBeforeBuild (taken before the spec was built, Flow 16) to the store.
+// On failure, cleans up secrets and publishes a failed state.
+func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, runtimeSpec runtime.Spec) {
 	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
 		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
 		if nodeAgent.secretAPIServer != nil {
@@ -1001,11 +1004,8 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
 	}
-	configHash := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
-	if configHash != "" {
-		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id), []byte(configHash)); putError != nil {
-			logging.Default().Error("failed to write config hash", "instance", instanceInfo.id, "error", putError.Error())
-		}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id), []byte(configHashBeforeBuild)); putError != nil {
+		logging.Default().Error("failed to write config hash", "instance", instanceInfo.id, "error", putError.Error())
 	}
 }
 
@@ -1271,7 +1271,7 @@ func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo pla
 	}
 	storedHash := string(storedHashFact.Value)
 	currentHash := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
-	if currentHash == "" || currentHash == storedHash {
+	if currentHash == storedHash {
 		return false
 	}
 	logging.Default().Info("config changed, restarting instance",
@@ -1350,15 +1350,13 @@ func (nodeAgent *Agent) lookupServiceNameForInstance(ctx context.Context, instan
 }
 
 // computeServiceConfigHash computes a deterministic SHA256 hash of all config
-// inputs (env vars, config files, secrets) for a service. Returns empty string
-// if the service has no config.
+// inputs (env vars, config files, secrets) for a service. A service with no
+// inputs gets the hash of the empty input, so its first input is a change (M235).
 func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceName string) string {
 	hasher := sha256.New()
-	hasAnyInput := false
 
 	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, serviceName)
 	if len(envVars) > 0 {
-		hasAnyInput = true
 		sortedEnvKeys := make([]string, 0, len(envVars))
 		for envKey := range envVars {
 			sortedEnvKeys = append(sortedEnvKeys, envKey)
@@ -1371,7 +1369,6 @@ func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceNam
 
 	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, serviceName)
 	if len(configFiles) > 0 {
-		hasAnyInput = true
 		sortedFilePaths := make([]string, 0, len(configFiles))
 		for filePath := range configFiles {
 			sortedFilePaths = append(sortedFilePaths, filePath)
@@ -1383,16 +1380,12 @@ func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceNam
 	}
 
 	secretFacts, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceSecrets(serviceName))
-	if scanError == nil && len(secretFacts) > 0 {
-		hasAnyInput = true
+	if scanError == nil {
 		for _, secretFact := range secretFacts {
 			hasher.Write([]byte("secret:" + secretFact.Key + "=" + string(secretFact.Value) + "\n"))
 		}
 	}
 
-	if !hasAnyInput {
-		return ""
-	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
