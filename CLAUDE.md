@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M235 — Instance Starts Without Secrets Applied Moments Later (v1.88.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M233 — Crash-Looping Containers Restart Without Back-off or Count (v1.89.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

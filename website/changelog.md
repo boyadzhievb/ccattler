@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.88.0-beta <Badge type="tip" text="latest" /> {#v1-88-0-beta}
+## v1.89.0-beta <Badge type="tip" text="latest" /> {#v1-89-0-beta}
+
+**2026-11-16** — Crash-Looping Containers Restart Without Back-off or Count.
+
+- **Crash-Looping Containers Restart Without Back-off or Count** (M233) — Bug fix (found in M232): a container that keeps exiting was restarted in place every reconcile cycle with no back-off, stayed `running`, and showed 0 restarts, because the restart count was never written and the crash-loop back-off only counted failed instances.
+
+---
+
+## v1.88.0-beta {#v1-88-0-beta}
 
 **2026-11-16** — Instance Starts Without Secrets Applied Moments Later.
 
