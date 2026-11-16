@@ -2,6 +2,7 @@
 name: lead-developer
 description: Primary programming agent — implements features, writes tests, updates phases for CCattler
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

@@ -2,6 +2,7 @@
 name: refactoring-agent
 description: Identifies tech debt, dead code, duplication across controllers, proposes cleanup changes
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

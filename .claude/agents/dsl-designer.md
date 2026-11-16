@@ -2,6 +2,7 @@
 name: dsl-designer
 description: Designs new DSL constructs, ensures grammar consistency, handles edge cases for CCattler language
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

@@ -2,6 +2,7 @@
 name: performance-engineer
 description: Runs benchmarks, profiles hot paths, identifies allocations and bottlenecks in Go code
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

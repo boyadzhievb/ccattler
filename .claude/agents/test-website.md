@@ -2,6 +2,7 @@
 name: test-website
 description: Start the CCattler website dev server and test it in a browser
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

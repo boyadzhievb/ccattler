@@ -2,6 +2,7 @@
 name: architecture-guard
 description: Verify CCattler architectural invariants — controller isolation, state separation, idempotency
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

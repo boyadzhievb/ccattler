@@ -2,6 +2,7 @@
 name: deployment-tester
 description: Analyzes Deploy Testbed / E2E GitHub Actions runs — finds the failing check, traces it through server and agent journals, and reports root cause with evidence
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

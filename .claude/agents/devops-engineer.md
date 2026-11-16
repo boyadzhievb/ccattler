@@ -2,6 +2,7 @@
 name: devops-engineer
 description: Manages Ansible deployment, Vagrant/Lima testing, release workflow, infrastructure configs
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

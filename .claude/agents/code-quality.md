@@ -2,6 +2,7 @@
 name: code-quality
 description: Check Go code for errors, bugs, and code quality issues against CCattler project standards
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read

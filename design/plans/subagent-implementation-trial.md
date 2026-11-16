@@ -8,7 +8,9 @@ Decided 2026-11-16 (user: "yes"). Question: should a subagent implement an OpenS
 |---|---|---|
 | Implementation | `lead-developer` subagent, model **Sonnet**, effort **medium** (default; neither the agent file nor the call set it — seen in the UI by the user), briefed with the change (proposal, design, tasks) only; started 22:44 | main session, **Opus**, as before |
 | Proposal, decisions with the user | main session | main session |
-| Reviews (`code-reviewer`, `security-audit` when needed) | subagents, **Sonnet** (their agent files say `model: sonnet`; earlier notes said Opus, which was wrong — every review so far ran on Sonnet) | same as M233 |
+| Reviews (`code-reviewer`, `security-audit` when needed) | subagents, **Sonnet, effort high** (their agent files say `model: sonnet`; earlier notes said Opus, which was wrong — every review so far ran on Sonnet) | same as M233 |
+
+Change during the trial (user, 2026-11-16, after M233's implementation): every Sonnet agent file got `effort: high`. M233's implementation therefore ran at **medium**; its reviews and everything after run at **high**. A later subagent implementation would run at high — compare with that in mind.
 | Testbed runs, release | main session | main session |
 
 The subagent's brief: failing tests first, then the fix, docs and graphs, gofmt + golangci-lint + unit tests, commit, short report (files, test results, anything it could not do). It does not touch the testbed, push or release.

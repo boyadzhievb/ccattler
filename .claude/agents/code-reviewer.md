@@ -2,6 +2,7 @@
 name: code-reviewer
 description: Reviews diffs for correctness bugs, style violations, and architectural drift
 model: sonnet
+effort: high
 tools:
   - Bash
   - Read
