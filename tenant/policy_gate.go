@@ -198,10 +198,19 @@ func (gate *PolicyGate) evaluateSecurityPolicyGate(ctx context.Context, principa
 	return nil
 }
 
-// EvaluateAndCommit runs the pipeline and commits facts to the store if allowed.
-// providedFiles holds the contents of files the configuration references, as
-// sent by cca apply; the gate never reads the server's disk.
-func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInput string, providedFiles map[string]string) (*GateResult, error) {
+// AdmissionCheck inspects the compiled facts of an allowed change right
+// before commit; an error refuses the change and nothing is written. The
+// API uses it for checks that need the request (the M217 instance limit).
+type AdmissionCheck func(facts []lang.Fact) error
+
+// admissionCheckStage is the GateResult stage of a refusal by an AdmissionCheck.
+const admissionCheckStage = "admission"
+
+// EvaluateAndCommit runs the pipeline, then every admissionCheck, and commits
+// facts to the store if all pass. providedFiles holds the contents of files
+// the configuration references, as sent by cca apply; the gate never reads
+// the server's disk.
+func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInput string, providedFiles map[string]string, admissionChecks ...AdmissionCheck) (*GateResult, error) {
 	result, err := gate.Evaluate(ctx, principal, dslInput, providedFiles)
 	if err != nil {
 		return nil, err
@@ -209,6 +218,12 @@ func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInp
 
 	if !result.Allowed {
 		return result, nil
+	}
+	for _, admissionCheck := range admissionChecks {
+		if checkError := admissionCheck(result.Facts); checkError != nil {
+			gate.logAudit(principal, "apply", "dsl", "DENY", admissionCheckStage)
+			return &GateResult{Allowed: false, Stage: admissionCheckStage, Reason: checkError.Error(), Facts: result.Facts, Duration: result.Duration}, nil
+		}
 	}
 
 	err = lang.WriteCompiledFacts(ctx, gate.factStore, result.File, result.Facts, gate.removalAuthorizer(principal))

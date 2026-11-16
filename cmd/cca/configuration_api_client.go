@@ -27,13 +27,15 @@ const (
 
 // configurationRequestBody is the JSON body of POST /api/apply and /api/diff.
 type configurationRequestBody struct {
-	Config string            `json:"config"`          // Config is the rendered DSL text.
-	Files  map[string]string `json:"files,omitempty"` // Files maps declared path → contents of referenced files (gate tls cert, config "from").
+	Config            string            `json:"config"`                       // Config is the rendered DSL text.
+	Files             map[string]string `json:"files,omitempty"`              // Files maps declared path → contents of referenced files (gate tls cert, config "from").
+	ApprovedInstances int               `json:"approved_instances,omitempty"` // ApprovedInstances approves services whose count above the limit equals it (M217).
 }
 
 // configurationApplyResponse is the JSON answer of POST /api/apply.
 type configurationApplyResponse struct {
-	FactsSet int `json:"facts_set"` // FactsSet is the number of facts the server wrote.
+	FactsSet int      `json:"facts_set"`          // FactsSet is the number of facts the server wrote.
+	Warnings []string `json:"warnings,omitempty"` // Warnings holds the server's instance count warnings (M217).
 }
 
 // postConfigurationToAPI sends requestBody to routePath (sendAPIJSONRequest)
@@ -47,9 +49,10 @@ func postConfigurationToAPI(ctx context.Context, routePath string, requestBody c
 }
 
 // applyRenderedFilesThroughAPI sends each rendered file to POST /api/apply
-// with the files it references, then seals its inline gate keys through
-// PUT /api/gate-key (gate facts first, Flow 28). Exits on the first error.
-func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedDSLContent) {
+// with the files it references and approvedCount (0: none), prints the
+// server's warnings, then seals inline gate keys through PUT /api/gate-key
+// (gate facts first, Flow 28). Exits on the first error.
+func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedDSLContent, approvedCount int) {
 	gateKeyWriter := newAPIGateKeyWriter()
 	for _, rendered := range renderedFiles {
 		fmt.Printf("Applying %s...\n", rendered.filePath)
@@ -59,7 +62,7 @@ func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedD
 			exitWithFileError(readError, rendered.filePath)
 		}
 		responseBody, applyError := postConfigurationToAPI(ctx, configurationApplyPath,
-			configurationRequestBody{Config: rendered.content, Files: referenced.Files})
+			configurationRequestBody{Config: rendered.content, Files: referenced.Files, ApprovedInstances: approvedCount})
 		if applyError != nil {
 			exitWithFileError(applyError, rendered.filePath)
 		}
@@ -67,6 +70,7 @@ func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedD
 		if decodeError := json.Unmarshal(responseBody, &applyResult); decodeError != nil {
 			exitWithFileError(fmt.Errorf("unexpected answer from the API server: %w", decodeError), rendered.filePath)
 		}
+		printInstanceCountWarnings(applyResult.Warnings)
 		if keyError := lang.WriteInlineGateKeys(ctx, referenced.InlineGateKeys, gateKeyWriter); keyError != nil {
 			exitWithFileError(keyError, rendered.filePath)
 		}

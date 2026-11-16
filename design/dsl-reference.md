@@ -131,6 +131,18 @@ gate web-public {
 }
 ```
 
+## Instance Count Limits
+
+A service's instance count is checked whenever it is set: `instances` and the autoscaler's `scale { horizontal { min / max } }` in a configuration (the largest of the three counts), and `cca scale`. Behaviour is specified in `openspec/specs/service-scaling` (once archived; until then `openspec/changes/scale-api-safety`), the chain in Flow 31 of `runtime-invariant-flows.md`.
+
+| Count | Result |
+|---|---|
+| below 500 | accepted |
+| 500 to 600 | accepted with a warning that `cca` prints |
+| above 600 | refused, unless approved by a `cluster.admin` repeating the exact count: `cca apply --approve-above-limit 700`, `cca scale web 700` (asks to type the count again on a terminal) or `--approve-above-limit 700` |
+
+There is no absolute ceiling. The limit catches mistakes such as `100000` for `100`; it is **not a capacity promise**. Instances beyond what the nodes can hold stay pending, every instance is about 15 facts in etcd, and counts in the tens of thousands are untested and can overload etcd and the controllers. A tenant `quota { instances }` still caps a team's total.
+
 ## Gates
 
 A `gate` exposes a service to external HTTP traffic. It matches requests by

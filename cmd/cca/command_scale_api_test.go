@@ -85,3 +85,43 @@ func TestScaleCommandSendsApproval(t *testing.T) {
 		t.Errorf("server warning not printed: stdout %q stderr %q", stdoutText, stderrText)
 	}
 }
+
+// largeServiceConfiguration declares one service at 700 instances, above the limit.
+const largeServiceConfiguration = "service web {\n  image nginx:1.28\n  instances 700\n}\n"
+
+// TestApplyCommandSendsApprovalAndPrintsWarnings: spec service-scaling, "Apply
+// with approval". cca apply sends --approve-above-limit as approved_instances
+// and prints every warning the server returns.
+func TestApplyCommandSendsApprovalAndPrintsWarnings(t *testing.T) {
+	configurationPath := writeTempFile(t, t.TempDir(), "web.cca", largeServiceConfiguration)
+	acceptingAPI := startFakeAPIServer(t, http.StatusOK,
+		`{"ok":true,"facts_set":5,"warnings":["700 instances for web is at or above the warning threshold of 500"]}`)
+	stdoutText, stderrText, exitCode := runCCAWithEnv(t, applyTestEnvironment(t, acceptingAPI.address()),
+		"apply", "--approve-above-limit", "700", configurationPath)
+	if exitCode != 0 {
+		t.Fatalf("approved apply: exit %d, stderr %q", exitCode, stderrText)
+	}
+	applyCalls := acceptingAPI.applyRequests()
+	if len(applyCalls) != 1 || !strings.Contains(applyCalls[0].body, `"approved_instances":700`) {
+		t.Errorf("apply sent %+v, want one request with approved_instances 700", applyCalls)
+	}
+	if !strings.Contains(stdoutText+stderrText, "warning threshold of 500") {
+		t.Errorf("warning not printed: stdout %q stderr %q", stdoutText, stderrText)
+	}
+}
+
+// TestApplySimulateAppliesInstanceLimit: cca apply --simulate refuses a count
+// above the limit without --approve-above-limit and accepts it with the flag.
+func TestApplySimulateAppliesInstanceLimit(t *testing.T) {
+	configurationPath := writeTempFile(t, t.TempDir(), "web.cca", largeServiceConfiguration)
+	environment := []string{"HOME=" + t.TempDir()}
+	_, refusedStderr, refusedExit := runCCAWithEnv(t, environment, "apply", "--simulate", configurationPath)
+	if refusedExit == 0 || !strings.Contains(refusedStderr, "--approve-above-limit 700") {
+		t.Errorf("simulate without approval: exit %d stderr %q, want non-zero and the approval hint", refusedExit, refusedStderr)
+	}
+	approvedStdout, approvedStderr, approvedExit := runCCAWithEnv(t, environment,
+		"apply", "--simulate", "--approve-above-limit", "700", configurationPath)
+	if approvedExit != 0 || !strings.Contains(approvedStderr, "warning threshold of 500") {
+		t.Errorf("simulate with approval: exit %d stdout %q stderr %q, want 0 and the warning", approvedExit, approvedStdout, approvedStderr)
+	}
+}

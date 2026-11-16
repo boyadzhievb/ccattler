@@ -628,15 +628,17 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 
 // applyRequest is the JSON body for POST /api/apply and POST /api/diff.
 type applyRequest struct {
-	Config string            `json:"config"`          // DSL configuration text
-	Files  map[string]string `json:"files,omitempty"` // declared path → contents of files the config references (gate tls cert, config "from")
+	Config            string            `json:"config"`                       // DSL configuration text
+	Files             map[string]string `json:"files,omitempty"`              // declared path → contents of files the config references (gate tls cert, config "from")
+	ApprovedInstances int               `json:"approved_instances,omitempty"` // approves services whose count above the limit equals it (M217)
 }
 
 // applyResponse is the JSON response for POST /api/apply.
 type applyResponse struct {
-	OK       bool   `json:"ok"`
-	FactsSet int    `json:"facts_set,omitempty"`
-	Error    string `json:"error,omitempty"`
+	OK       bool     `json:"ok"`
+	FactsSet int      `json:"facts_set,omitempty"`
+	Error    string   `json:"error,omitempty"`
+	Warnings []string `json:"warnings,omitempty"` // instance count warnings, one per service (M217)
 }
 
 // handleApply serves POST /api/apply to submit DSL configuration. The request
@@ -660,12 +662,13 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 		return
 	}
 
+	limitCheck := &applyInstanceLimitCheck{apiServer: apiServer, requestContext: request.Context(), approvedCount: configRequest.ApprovedInstances}
 	if apiServer.policyGate != nil {
-		apiServer.applyViaPolicyGate(responseWriter, request.Context(), configRequest)
+		apiServer.applyViaPolicyGate(responseWriter, request.Context(), configRequest, limitCheck)
 		return
 	}
 
-	apiServer.applyDirect(responseWriter, request.Context(), configRequest)
+	apiServer.applyDirect(responseWriter, request.Context(), configRequest, limitCheck)
 }
 
 // readDSLRequestBody extracts the configuration from the request body: JSON
@@ -706,26 +709,26 @@ func describeBodyReadError(prefix string, readError error) (string, int) {
 }
 
 // applyViaPolicyGate routes DSL through the full admission pipeline
-// (syntax, schema, authorization, quota, commit).
-func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, requestContext context.Context, configRequest applyRequest) {
+// (syntax, schema, authorization, quota, instance limit, commit).
+func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, requestContext context.Context, configRequest applyRequest, limitCheck *applyInstanceLimitCheck) {
 	principal := security.PrincipalFromContext(requestContext)
-	result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, configRequest.Config, configRequest.Files)
+	result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, configRequest.Config, configRequest.Files, limitCheck.inspect)
 	if evaluateError != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "policy: " + evaluateError.Error()})
 		return
 	}
 	if !result.Allowed {
-		responseWriter.WriteHeader(http.StatusForbidden)
+		responseWriter.WriteHeader(limitCheck.refusalStatusOr(http.StatusForbidden))
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: result.Stage + ": " + result.Reason})
 		return
 	}
-	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(result.Facts)})
+	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(result.Facts), Warnings: limitCheck.warnings})
 }
 
 // applyDirect parses, compiles, and writes facts without policy evaluation.
 // Used in local/demo modes without a policy gate.
-func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, requestContext context.Context, configRequest applyRequest) {
+func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, requestContext context.Context, configRequest applyRequest, limitCheck *applyInstanceLimitCheck) {
 	file, err := lang.Parse(configRequest.Config)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
@@ -752,6 +755,11 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "authorization: " + authError.Error()})
 		return
 	}
+	if limitError := limitCheck.inspect(facts); limitError != nil {
+		responseWriter.WriteHeader(limitCheck.refusalStatus)
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "admission: " + limitError.Error()})
+		return
+	}
 	authorizeRemoval := func(factKey string) error { return apiServer.authorizeFactKeyWrite(principal, factKey) }
 	if writeError := lang.WriteCompiledFacts(requestContext, apiServer.factStore, file, facts, authorizeRemoval); writeError != nil {
 		statusCode, errorPrefix := http.StatusInternalServerError, "store: "
@@ -762,7 +770,7 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: errorPrefix + writeError.Error()})
 		return
 	}
-	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
+	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts), Warnings: limitCheck.warnings})
 }
 
 // authorizeCompiledFacts checks the capability each compiled fact needs

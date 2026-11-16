@@ -42,6 +42,8 @@ type configurationCommandConfig struct {
 	dryRunEnabled bool
 	// simulateEnabled runs against a local in-memory store instead of the API server (--simulate).
 	simulateEnabled bool
+	// approvedInstanceCount approves services whose count above the limit equals it (apply --approve-above-limit, M217); 0 for none.
+	approvedInstanceCount int
 }
 
 // parseConfigurationCommandArgs extracts the config path and flags following
@@ -74,6 +76,12 @@ func parseConfigurationCommandArgs(commandName string, args []string) configurat
 			parsedConfig.dryRunEnabled = true
 		case "--simulate":
 			parsedConfig.simulateEnabled = true
+		case approveAboveLimitFlag:
+			if commandName != "apply" || argIndex+1 >= len(args) {
+				exitWithUnknownFlag(commandName, currentArg)
+			}
+			argIndex++
+			parsedConfig.approvedInstanceCount = parseApprovedInstanceCount(args[argIndex])
 		default:
 			if strings.HasPrefix(currentArg, "-") {
 				exitWithUnknownFlag(commandName, currentArg)
@@ -117,8 +125,13 @@ func executeApplyCommand(parsedConfig configurationCommandConfig) {
 	defer cancel()
 
 	if !parsedConfig.simulateEnabled {
-		applyRenderedFilesThroughAPI(ctx, renderedFiles)
+		applyRenderedFilesThroughAPI(ctx, renderedFiles, parsedConfig.approvedInstanceCount)
 		return
+	}
+	for _, rendered := range renderedFiles {
+		if limitError := checkSimulatedInstanceCounts(rendered, parsedConfig.approvedInstanceCount); limitError != nil {
+			exitWithFileError(limitError, rendered.filePath)
+		}
 	}
 
 	factStore := store.NewMemoryStore()
