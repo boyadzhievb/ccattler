@@ -328,6 +328,8 @@ func TestApplyAboveLimitNeedsApproval(t *testing.T) {
 		"instances": serviceConfiguration("web", aboveLimit),
 		"scale min": fmt.Sprintf("service web {\n  image nginx:1.28\n  scale {\n    horizontal {\n      min %d\n      max %d\n      target cpu = 60%%\n    }\n  }\n}\n", aboveLimit, aboveLimit),
 		"scale max": fmt.Sprintf("service web {\n  image nginx:1.28\n  scale {\n    horizontal {\n      min 1\n      max %d\n      target cpu = 60%%\n    }\n  }\n}\n", aboveLimit),
+		// Security audit finding: web/instances compiles its marker to web's count key.
+		"count shadowed by web/instances": serviceConfiguration("web", aboveLimit) + serviceConfiguration("web/instances", 1),
 	}
 	for applyPath, testServer := range newApplyLimitTestServers(t) {
 		for countSource, configuration := range configurations {
@@ -361,6 +363,58 @@ func TestApplyApprovalCoversOnlyThatCount(t *testing.T) {
 			t.Errorf("%s: approval by a principal without cluster.admin: HTTP %d %s, want 403", applyPath, statusCode, body)
 		}
 	}
+}
+
+// TestScaleApprovalEdgeCases covers the review's untested approvals: exactly
+// 601 by a non-admin, a negative and a mismatched approval (both audited as
+// DENY), and a conflicting scale that must leave no ALLOW entry.
+func TestScaleApprovalEdgeCases(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	declareScaleTestService(t, factStore, "web")
+	apiServer, auditLog := newScaleTestServer(t, factStore)
+
+	justAbove := scaleTestApprovalLimit + 1
+	response, body := scaleAsUser(apiServer, "scaler", scaleRequestBody("web", justAbove, justAbove))
+	assertScaleAnswer(t, response, body, http.StatusForbidden, string(security.CapabilityClusterAdmin))
+	response, body = scaleAsUser(apiServer, "admin", scaleRequestBody("web", justAbove, -justAbove))
+	assertScaleAnswer(t, response, body, http.StatusBadRequest, "approval does not match")
+	assertScaleApprovalAudited(t, auditLog, "user:admin", justAbove, security.AuditDecisionDeny)
+	if desiredCount, _ := storedInstanceCounts(t, factStore, "web"); desiredCount != "1" {
+		t.Errorf("refused approvals changed the count to %q", desiredCount)
+	}
+
+	conflictStore := store.NewMemoryStore()
+	defer conflictStore.Close()
+	declareScaleTestService(t, conflictStore, "web")
+	conflictServer, conflictAudit := newScaleTestServer(t, &removingTransactionStore{StateStore: conflictStore, serviceName: "web"})
+	response, body = scaleAsUser(conflictServer, "admin", scaleRequestBody("web", scaleTestHugeCount, scaleTestHugeCount))
+	assertScaleAnswer(t, response, body, http.StatusConflict)
+	for _, entry := range conflictAudit.Entries() {
+		if entry.Action == "scale.approve" && entry.Decision == security.AuditDecisionAllow {
+			t.Errorf("conflicting scale left an ALLOW approval entry: %+v", entry)
+		}
+	}
+}
+
+// TestApplyApprovalAudited: an approved apply writes one apply.approve ALLOW
+// entry per approved service, after the commit.
+func TestApplyApprovalAudited(t *testing.T) {
+	approvedCount := scaleTestApprovalLimit + 100
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	apiServer, auditLog := newScaleTestServer(t, factStore)
+	statusCode, body := applyAsUser(apiServer, "admin", serviceConfiguration("web", approvedCount), approvedCount)
+	if statusCode != http.StatusOK {
+		t.Fatalf("approved apply: HTTP %d %s", statusCode, body)
+	}
+	for _, entry := range auditLog.Entries() {
+		if entry.Action == "apply.approve" && entry.Principal == "user:admin" && entry.Target == "service/web" &&
+			entry.Policy == fmt.Sprintf("instances=%d", approvedCount) && entry.Decision == security.AuditDecisionAllow {
+			return
+		}
+	}
+	t.Errorf("no apply.approve ALLOW entry for service/web; entries: %+v", auditLog.Entries())
 }
 
 // assertScaleApprovalAudited checks that one scale.approve entry names the

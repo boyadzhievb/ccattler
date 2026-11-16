@@ -57,6 +57,13 @@ func standardInputIsTerminal() bool {
 	return ioctlError == nil
 }
 
+// exitWithMissingApprovedCount ends the command when --approve-above-limit
+// is the last argument, so the user learns the count is missing.
+func exitWithMissingApprovedCount() {
+	fmt.Fprintf(os.Stderr, "error: %s needs the instance count you approve, e.g. %s 700\n", approveAboveLimitFlag, approveAboveLimitFlag)
+	os.Exit(1)
+}
+
 // printInstanceCountWarnings prints the server's instance count warnings to stderr.
 func printInstanceCountWarnings(warnings []string) {
 	for _, warning := range warnings {

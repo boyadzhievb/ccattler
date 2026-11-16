@@ -20,11 +20,12 @@ type ServiceInstanceCount struct {
 
 // ServiceInstanceCountsFromFacts returns the largest count of every service
 // declared in facts, sorted by name, for the M217 limit. A service is a
-// declaration marker with an image, so no other key is mistaken for one.
+// declaration marker with an image. Every value of a key counts, not the
+// last: a hierarchical name can compile to another service's count key.
 func ServiceInstanceCountsFromFacts(facts []Fact) []ServiceInstanceCount {
-	valueByKey := make(map[string]string, len(facts))
+	valuesByKey := make(map[string][]string, len(facts))
 	for _, fact := range facts {
-		valueByKey[fact.Key] = fact.Value
+		valuesByKey[fact.Key] = append(valuesByKey[fact.Key], fact.Value)
 	}
 	servicePrefix := types.KeyDesiredService("")
 	var counts []ServiceInstanceCount
@@ -33,7 +34,7 @@ func ServiceInstanceCountsFromFacts(facts []Fact) []ServiceInstanceCount {
 		if !isServiceKey || serviceName == "" || fact.Value != "" {
 			continue
 		}
-		if _, hasImage := valueByKey[types.KeyDesiredServiceImage(serviceName)]; !hasImage {
+		if _, hasImage := valuesByKey[types.KeyDesiredServiceImage(serviceName)]; !hasImage {
 			continue
 		}
 		largestCount := 0
@@ -42,8 +43,10 @@ func ServiceInstanceCountsFromFacts(facts []Fact) []ServiceInstanceCount {
 			types.KeyDesiredServiceScaleHorizontalMin(serviceName),
 			types.KeyDesiredServiceScaleHorizontalMax(serviceName),
 		} {
-			if parsedCount, parseError := strconv.Atoi(valueByKey[countKey]); parseError == nil && parsedCount > largestCount {
-				largestCount = parsedCount
+			for _, countValue := range valuesByKey[countKey] {
+				if parsedCount, parseError := strconv.Atoi(countValue); parseError == nil && parsedCount > largestCount {
+					largestCount = parsedCount
+				}
 			}
 		}
 		counts = append(counts, ServiceInstanceCount{ServiceName: serviceName, InstanceCount: largestCount})

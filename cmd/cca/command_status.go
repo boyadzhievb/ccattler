@@ -1901,7 +1901,7 @@ func executeScaleCommand(scaleArgs []string) {
 			failureText = string(responseBody)
 		}
 		fmt.Fprintf(os.Stderr, "scale failed: %s\n", failureText)
-		if requestedCount > types.ServiceInstanceApprovalLimit && approvedCount == 0 {
+		if httpResponse.StatusCode == http.StatusBadRequest && requestedCount > types.ServiceInstanceApprovalLimit && approvedCount == 0 {
 			fmt.Fprintf(os.Stderr, "to approve as cluster.admin: cca scale %s %d %s %d\n", serviceName, requestedCount, approveAboveLimitFlag, requestedCount)
 		}
 		os.Exit(1)
@@ -1920,7 +1920,10 @@ func parseScaleCommandArgs(scaleArgs []string) (string, int, int) {
 	approvedCount := 0
 	for argIndex := 0; argIndex < len(scaleArgs); argIndex++ {
 		switch {
-		case scaleArgs[argIndex] == approveAboveLimitFlag && argIndex+1 < len(scaleArgs):
+		case scaleArgs[argIndex] == approveAboveLimitFlag:
+			if argIndex+1 >= len(scaleArgs) {
+				exitWithMissingApprovedCount()
+			}
 			argIndex++
 			approvedCount = parseApprovedInstanceCount(scaleArgs[argIndex])
 		case strings.HasPrefix(scaleArgs[argIndex], "-"):

@@ -16,7 +16,7 @@ Implements M217 (Phase 217, Scale API Safety) from `milestones.md`, a bug found 
 - **Scale API correctness**: an undeclared service is 404 and nothing is written; the two count facts are written in one transaction; a store error is 500; the service changing or disappearing during the request is 409.
 - **BREAKING (API)**: `POST /api/scale` answers 404 for a name with no service declaration, where it answered 200. Callers that scaled a name before applying its configuration must apply first.
 - **CLI**: `cca scale` asks the user to type the count again when it is above the limit (terminal only), otherwise takes `--approve-above-limit <count>`. `cca apply` takes the same flag and prints warnings.
-- **Orphan clean-up**: the intent controller resolves counts only for declared services. For a name with a count but no declaration, it sets the count to 0 so the instance controller stops the orphan instances, and removes the stale intents. This also clears orphans left by earlier scale calls.
+- **Orphan clean-up**: the intent controller resolves counts only for declared services. For a name with a count but no declaration, it sets the effective count to 0 so the instance controller stops the orphan instances; the stale intents stay, harmless with a 0 count (design D6). This also clears orphans left by earlier scale calls.
 - **Docs**: CLI reference, DSL reference and the website explain the warning, the limit, the approval and the capacity caveat.
 
 Out of scope:
@@ -25,7 +25,8 @@ Out of scope:
 - A job's `parallelism` (no limit today; jobs are not services).
 - Tenant instance quotas: they stay as they are and still clamp the effective count.
 - Making very large counts work (etcd and controller scalability).
-- Instances left running after `tenant` lifecycle deletes a service's effective count (`tenant/lifecycle.go`): same family of bug, different trigger; recorded as a follow-up in the design.
+- Instances left running after `tenant` lifecycle deletes a service's effective count (`tenant/lifecycle.go`): same family of bug, different trigger; recorded as a follow-up in the design (no production caller today).
+- Local paths that never reach an API server: `cca run`, the demos and the chaos simulator write into their own in-memory store without the limit. `cca apply --simulate` does apply it.
 
 ## Comparison
 

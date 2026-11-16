@@ -42,3 +42,31 @@ service api {
 		t.Errorf("counts %+v, want %+v", gotCounts, wantCounts)
 	}
 }
+
+// TestServiceInstanceCountsSeeShadowedCounts: M217 security audit. A service
+// named big/instances compiles its marker to the same key as big's instance
+// count; the check must still see 5000 for big, whichever fact comes last.
+func TestServiceInstanceCountsSeeShadowedCounts(t *testing.T) {
+	for _, configuration := range []string{
+		"service big {\n  image x:1\n  instances 5000\n}\nservice big/instances {\n  image y:1\n  instances 1\n}\n",
+		"service big/instances {\n  image y:1\n  instances 1\n}\nservice big {\n  image x:1\n  instances 5000\n}\n",
+	} {
+		file, parseError := Parse(configuration)
+		if parseError != nil {
+			t.Fatal(parseError)
+		}
+		facts, compileError := Compile(file)
+		if compileError != nil {
+			t.Fatal(compileError)
+		}
+		largestCount := 0
+		for _, serviceCount := range ServiceInstanceCountsFromFacts(facts) {
+			if serviceCount.ServiceName == "big" {
+				largestCount = serviceCount.InstanceCount
+			}
+		}
+		if largestCount != 5000 {
+			t.Errorf("big counted as %d, want 5000 (counts %+v)", largestCount, ServiceInstanceCountsFromFacts(facts))
+		}
+	}
+}

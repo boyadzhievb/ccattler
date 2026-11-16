@@ -35,14 +35,17 @@ func (intentResolverController *IntentResolverController) Name() string { return
 
 // Watch returns the fact prefixes that drive intent resolution: user intents,
 // autoscaler intents, and desired service definitions (which carry scale
-// policy bounds).
+// policy bounds and the declaration markers). The runner scans them in this
+// order, and desired/service/ must come last: apply writes a service's marker
+// before its intent and effective count, so every count already seen has its
+// marker visible, and a new service is never taken for an orphan (M217).
 func (intentResolverController *IntentResolverController) Watch() []string {
 	return []string{
 		types.ScanIntentUserServices,
 		types.ScanIntentAutoscalerServices,
-		types.ScanDesiredServices,
 		types.ScanEffectiveServices,
 		types.ScanObservedNodes,
+		types.ScanDesiredServices,
 	}
 }
 

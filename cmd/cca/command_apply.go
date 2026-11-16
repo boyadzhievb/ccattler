@@ -77,8 +77,11 @@ func parseConfigurationCommandArgs(commandName string, args []string) configurat
 		case "--simulate":
 			parsedConfig.simulateEnabled = true
 		case approveAboveLimitFlag:
-			if commandName != "apply" || argIndex+1 >= len(args) {
+			if commandName != "apply" {
 				exitWithUnknownFlag(commandName, currentArg)
+			}
+			if argIndex+1 >= len(args) {
+				exitWithMissingApprovedCount()
 			}
 			argIndex++
 			parsedConfig.approvedInstanceCount = parseApprovedInstanceCount(args[argIndex])

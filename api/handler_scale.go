@@ -74,15 +74,19 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 		writeJSONError(responseWriter, "store: "+getError.Error(), http.StatusInternalServerError)
 		return
 	}
-	warning, refusalStatus, refusalMessage := apiServer.checkInstanceCountApproval(request.Context(), "scale", body.Service, body.Instances, body.ApprovedInstances, scaleApprovalHint)
-	if refusalStatus != 0 {
-		writeJSONError(responseWriter, refusalMessage, refusalStatus)
+	countCheck := apiServer.checkInstanceCountApproval(request.Context(), "scale", body.Service, body.Instances, body.ApprovedInstances, scaleApprovalHint)
+	if countCheck.refusalStatus != 0 {
+		writeJSONError(responseWriter, countCheck.refusalMessage, countCheck.refusalStatus)
 		return
 	}
 	if writeStatus, writeMessage := apiServer.storeScaledInstanceCount(request.Context(), body.Service, body.Instances, declaration.Revision); writeStatus != 0 {
 		writeJSONError(responseWriter, writeMessage, writeStatus)
 		return
 	}
+	if countCheck.approvalGranted {
+		apiServer.recordInstanceApprovalAudit(request.Context(), "scale", body.Service, body.Instances, security.AuditDecisionAllow)
+	}
+	warning := countCheck.warning
 	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(scaleResponse{OK: true, Service: body.Service, Instances: body.Instances, Warning: warning})
 }
@@ -108,29 +112,37 @@ func (apiServer *Server) storeScaledInstanceCount(requestContext context.Context
 	return 0, ""
 }
 
-// checkInstanceCountApproval applies the M217 limit to one service's count.
-// It returns the warning to show, or a refusal (HTTP status and message):
+// instanceCountCheck is the outcome of checking one service's count.
+type instanceCountCheck struct {
+	warning         string // warning is shown from the warning threshold on.
+	approvalGranted bool   // approvalGranted is true when a cluster.admin approval let a count above the limit through; audit it after commit.
+	refusalStatus   int    // refusalStatus is the HTTP status of a refusal, 0 when accepted.
+	refusalMessage  string // refusalMessage says why and how to approve.
+}
+
+// checkInstanceCountApproval applies the M217 limit to one service's count:
 // 400 without or with a mismatched approval, 403 when the approver is not
-// cluster.admin. Every approval attempt above the limit is audited.
-func (apiServer *Server) checkInstanceCountApproval(requestContext context.Context, action string, serviceName string, requestedCount int, approvedCount int, approvalHint string) (string, int, string) {
+// cluster.admin (both audited as DENY now). A granted approval is audited
+// as ALLOW by the caller only after its commit succeeded.
+func (apiServer *Server) checkInstanceCountApproval(requestContext context.Context, action string, serviceName string, requestedCount int, approvedCount int, approvalHint string) instanceCountCheck {
 	decision := types.EvaluateServiceInstanceCount(requestedCount, approvedCount)
 	decisionText := types.DescribeInstanceCountDecision(decision, serviceName, requestedCount, approvalHint)
 	if decision.RefusesWithoutWrite() {
 		if approvedCount != 0 {
 			apiServer.recordInstanceApprovalAudit(requestContext, action, serviceName, requestedCount, security.AuditDecisionDeny)
 		}
-		return "", http.StatusBadRequest, decisionText
+		return instanceCountCheck{refusalStatus: http.StatusBadRequest, refusalMessage: decisionText}
 	}
 	if decision == types.InstanceCountApproved {
 		principal := security.PrincipalStructFromContext(requestContext)
 		if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, security.CapabilityClusterAdmin, security.ScopeCluster, nil); authError != nil {
 			apiServer.recordInstanceApprovalAudit(requestContext, action, serviceName, requestedCount, security.AuditDecisionDeny)
-			return "", http.StatusForbidden, fmt.Sprintf("forbidden: approving %d instances for %s needs %s: %v",
-				requestedCount, serviceName, security.CapabilityClusterAdmin, authError)
+			return instanceCountCheck{refusalStatus: http.StatusForbidden, refusalMessage: fmt.Sprintf(
+				"forbidden: approving %d instances for %s needs %s: %v", requestedCount, serviceName, security.CapabilityClusterAdmin, authError)}
 		}
-		apiServer.recordInstanceApprovalAudit(requestContext, action, serviceName, requestedCount, security.AuditDecisionAllow)
+		return instanceCountCheck{warning: decisionText, approvalGranted: true}
 	}
-	return decisionText, 0, ""
+	return instanceCountCheck{warning: decisionText}
 }
 
 // recordInstanceApprovalAudit writes one "<action>.approve" audit entry
@@ -153,28 +165,41 @@ const applyApprovalHint = "rerun cca apply with --approve-above-limit"
 // applyInstanceLimitCheck applies the M217 limit to every service of one
 // apply request and keeps the warnings and the refusal for the answer.
 type applyInstanceLimitCheck struct {
-	apiServer      *Server         // apiServer runs the shared check and audit.
-	requestContext context.Context // requestContext carries the principal.
-	approvedCount  int             // approvedCount is the request's approved_instances, 0 for none.
-	warnings       []string        // warnings collects one text per service at or above the threshold.
-	refusalStatus  int             // refusalStatus is the HTTP status of a refusal, 0 when none.
+	apiServer        *Server                     // apiServer runs the shared check and audit.
+	requestContext   context.Context             // requestContext carries the principal.
+	approvedCount    int                         // approvedCount is the request's approved_instances, 0 for none.
+	warnings         []string                    // warnings collects one text per service at or above the threshold.
+	refusalStatus    int                         // refusalStatus is the HTTP status of a refusal, 0 when none.
+	approvedServices []lang.ServiceInstanceCount // approvedServices went through on a cluster.admin approval; audited after commit.
 }
 
 // inspect checks every compiled service's largest count; the first refusal
 // stops the apply (lang.ServiceInstanceCountsFromFacts sorts by name).
 func (limitCheck *applyInstanceLimitCheck) inspect(facts []lang.Fact) error {
 	for _, serviceCount := range lang.ServiceInstanceCountsFromFacts(facts) {
-		warning, refusalStatus, refusalMessage := limitCheck.apiServer.checkInstanceCountApproval(limitCheck.requestContext,
+		countCheck := limitCheck.apiServer.checkInstanceCountApproval(limitCheck.requestContext,
 			"apply", serviceCount.ServiceName, serviceCount.InstanceCount, limitCheck.approvedCount, applyApprovalHint)
-		if refusalStatus != 0 {
-			limitCheck.refusalStatus = refusalStatus
-			return errors.New(refusalMessage)
+		if countCheck.refusalStatus != 0 {
+			limitCheck.refusalStatus = countCheck.refusalStatus
+			return errors.New(countCheck.refusalMessage)
 		}
-		if warning != "" {
-			limitCheck.warnings = append(limitCheck.warnings, warning)
+		if countCheck.warning != "" {
+			limitCheck.warnings = append(limitCheck.warnings, countCheck.warning)
+		}
+		if countCheck.approvalGranted {
+			limitCheck.approvedServices = append(limitCheck.approvedServices, serviceCount)
 		}
 	}
 	return nil
+}
+
+// recordCommittedApprovals audits as ALLOW every approval this apply used;
+// call it only after the facts were committed.
+func (limitCheck *applyInstanceLimitCheck) recordCommittedApprovals() {
+	for _, approvedService := range limitCheck.approvedServices {
+		limitCheck.apiServer.recordInstanceApprovalAudit(limitCheck.requestContext, "apply",
+			approvedService.ServiceName, approvedService.InstanceCount, security.AuditDecisionAllow)
+	}
 }
 
 // refusalStatusOr returns the limit check's refusal status, or fallbackStatus

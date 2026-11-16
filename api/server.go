@@ -723,6 +723,7 @@ func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, 
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: result.Stage + ": " + result.Reason})
 		return
 	}
+	limitCheck.recordCommittedApprovals()
 	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(result.Facts), Warnings: limitCheck.warnings})
 }
 
@@ -770,6 +771,7 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: errorPrefix + writeError.Error()})
 		return
 	}
+	limitCheck.recordCommittedApprovals()
 	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts), Warnings: limitCheck.warnings})
 }
 

@@ -10,6 +10,17 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// TestIntentResolverScansDeclarationsLast pins the Watch order the orphan rule
+// relies on (code review L1): with desired/service/ scanned before the effective
+// counts, a service applied between the two scans looked undeclared and its
+// fresh count was set to 0 for one cycle.
+func TestIntentResolverScansDeclarationsLast(t *testing.T) {
+	watchedPrefixes := NewIntentResolverController().Watch()
+	if lastPrefix := watchedPrefixes[len(watchedPrefixes)-1]; lastPrefix != types.ScanDesiredServices {
+		t.Errorf("last watched prefix %q, want %q: declarations must be scanned after every count", lastPrefix, types.ScanDesiredServices)
+	}
+}
+
 // TestIntentResolverStopsUndeclaredServices: spec service-scaling, "Only
 // declared services keep instances". A name with a user intent but no
 // desired/service/{name} declaration gets effective count 0, whatever its
