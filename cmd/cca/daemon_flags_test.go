@@ -172,6 +172,66 @@ func TestShippedUnitFilesPassOnlyKnownFlags(testContext *testing.T) {
 	}
 }
 
+// TestJoinFlagsAnywhereAndRefusals pins `cca join`: flags before, between or
+// after the two arguments; a mistyped flag (which dropped the CA file), a flag
+// without its value and a third argument are errors that never echo the token.
+func TestJoinFlagsAnywhereAndRefusals(testContext *testing.T) {
+	const joinTokenForTest = "0123456789abcdef.fedcba9876543210"
+	acceptedCommandLines := [][]string{
+		{"https://ctrl:9770", joinTokenForTest, "--node-id", "worker-1", "--ca-cert", "/pki/ca.pem", "--data-dir", "/pki"},
+		{"--node-id", "worker-1", "https://ctrl:9770", "--ca-cert", "/pki/ca.pem", joinTokenForTest, "--data-dir", "/pki"},
+		{"--data-dir=/pki", "--ca-cert", "/pki/ca.pem", "--node-id", "worker-1", "https://ctrl:9770", joinTokenForTest},
+	}
+	expectedConfig := joinCommandConfig{
+		serverAddress: "https://ctrl:9770", joinToken: joinTokenForTest, nodeID: "worker-1",
+		caCertPath: "/pki/ca.pem", dataDirectory: "/pki",
+	}
+	for _, acceptedArgs := range acceptedCommandLines {
+		parsedConfig, parseError := parseJoinCommandArgs(acceptedArgs)
+		if parseError != nil || parsedConfig != expectedConfig {
+			testContext.Errorf("cca join %v: got %+v, %v", acceptedArgs, parsedConfig, parseError)
+		}
+	}
+
+	refusedCommandLines := [][]string{
+		// After "--" a flag is an argument, so this is four arguments, not a flag silently honoured.
+		{"https://ctrl:9770", joinTokenForTest, "--node-id", "worker-1", "--", "--ca-cert", "/pki/ca.pem"},
+		{"https://ctrl:9770", "--", joinTokenForTest, "--node-id=worker-1"},
+		{"https://ctrl:9770", joinTokenForTest, "--node-id", "worker-1", "--ca-crt", "/pki/ca.pem"},
+		{"https://ctrl:9770", joinTokenForTest, "--node-id"},
+		{"https://ctrl:9770", joinTokenForTest, "--node-id", "worker-1", "third-argument"},
+	}
+	for _, refusedArgs := range refusedCommandLines {
+		_, parseError := parseJoinCommandArgs(refusedArgs)
+		if parseError == nil {
+			testContext.Errorf("cca join %v: accepted, want an error", refusedArgs)
+			continue
+		}
+		if strings.Contains(parseError.Error(), joinTokenForTest) {
+			testContext.Errorf("cca join error echoes the join token: %v", parseError)
+		}
+	}
+}
+
+// TestServerFlagsOIDCIssuerNeedsClientID is the M228 bug: an OIDC issuer
+// without a client ID means no audience check, so tokens the provider issued
+// for other applications would be accepted. Both flags or neither.
+func TestServerFlagsOIDCIssuerNeedsClientID(testContext *testing.T) {
+	_, issuerOnlyError := parseServerCommandArgs([]string{"--store", "memory", "--oidc-issuer", "https://issuer.example"})
+	if issuerOnlyError == nil || !strings.Contains(issuerOnlyError.Error(), "--oidc-client-id") {
+		testContext.Errorf("--oidc-issuer without --oidc-client-id: got %v, want an error naming --oidc-client-id", issuerOnlyError)
+	}
+	_, clientOnlyError := parseServerCommandArgs([]string{"--store", "memory", "--oidc-client-id", "cca-client"})
+	if clientOnlyError == nil || !strings.Contains(clientOnlyError.Error(), "--oidc-issuer") {
+		testContext.Errorf("--oidc-client-id without --oidc-issuer: got %v, want an error naming --oidc-issuer", clientOnlyError)
+	}
+	bothConfig := mustParseServerFlags(testContext, "--store", "memory",
+		"--oidc-issuer", "https://issuer.example", "--oidc-client-id", "cca-client")
+	if bothConfig.oidcIssuerURL == "" || bothConfig.oidcClientID == "" {
+		testContext.Errorf("both OIDC flags: %+v", bothConfig)
+	}
+}
+
 // TestDaemonFlagsRefuseBadValues checks values the old parsers ignored or
 // exited on: they are now returned as errors.
 func TestDaemonFlagsRefuseBadValues(testContext *testing.T) {

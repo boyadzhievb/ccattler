@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -137,6 +138,23 @@ func (authenticator *OIDCAuthenticator) parseAndVerifyJWTSignature(tokenString s
 	return claimsJSON, nil
 }
 
+// audienceClaimContains reports whether a token's "aud" claim names
+// expectedAudience. RFC 7519 allows one string or a list of strings; any
+// other shape names nobody.
+func audienceClaimContains(audienceClaim interface{}, expectedAudience string) bool {
+	switch typedAudience := audienceClaim.(type) {
+	case string:
+		return typedAudience == expectedAudience
+	case []interface{}:
+		for _, listedAudience := range typedAudience {
+			if audienceName, isString := listedAudience.(string); isString && audienceName == expectedAudience {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // extractAndValidateJWTClaims unmarshals the raw JSON claims, validates the
 // issuer and audience against the authenticator configuration, and checks the
 // token expiry. Returns the claims map and the resolved expiration time.
@@ -150,11 +168,11 @@ func (authenticator *OIDCAuthenticator) extractAndValidateJWTClaims(claimsJSON [
 		return nil, time.Time{}, fmt.Errorf("oidc: issuer mismatch: got %q, want %q", issuer, authenticator.config.Issuer)
 	}
 
-	if authenticator.config.Audience != "" {
-		audience, _ := claims["aud"].(string)
-		if audience != authenticator.config.Audience {
-			return nil, time.Time{}, fmt.Errorf("oidc: audience mismatch: got %q, want %q", audience, authenticator.config.Audience)
-		}
+	if authenticator.config.Audience == "" {
+		return nil, time.Time{}, errors.New("oidc: no expected audience configured, refusing every token")
+	}
+	if !audienceClaimContains(claims["aud"], authenticator.config.Audience) {
+		return nil, time.Time{}, fmt.Errorf("oidc: audience mismatch: got %v, want %q", claims["aud"], authenticator.config.Audience)
 	}
 
 	expiresAt := time.Now().Add(defaultOIDCTokenExpiration)

@@ -235,6 +235,15 @@ func finalizeServerCommandConfig(parsedConfig serverCommandConfig, explicitListe
 		return parsedConfig, errors.New("--api-only and --controllers-only are mutually exclusive")
 	}
 
+	// Without a client ID there is no expected audience, and tokens the
+	// provider issued for other applications would be accepted (M228).
+	if parsedConfig.oidcIssuerURL != "" && parsedConfig.oidcClientID == "" {
+		return parsedConfig, errors.New("--oidc-issuer requires --oidc-client-id (the audience tokens must carry)")
+	}
+	if parsedConfig.oidcClientID != "" && parsedConfig.oidcIssuerURL == "" {
+		return parsedConfig, errors.New("--oidc-client-id requires --oidc-issuer")
+	}
+
 	if parsedConfig.nodeID == "" {
 		hostname, _ := os.Hostname()
 		if hostname != "" {

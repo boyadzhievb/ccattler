@@ -174,13 +174,16 @@ WorkloadTokenIssuer.JWKSDocument()                             [:145]
 OIDCAuthenticator.Authenticate(tokenString)                    [:74]
 ├── parseAndVerifyJWTSignature(tokenString)                    [:92]
 │   ├── split 3 parts, decode header, verify alg=="ES256"
-│   ├── verifyECDSASignature(ecdsaKey, hash, sig)             [:204]
+│   ├── verifyECDSASignature(ecdsaKey, hash, sig)             [:228]
 │   │   └── r,s from IEEE P1363 → ecdsa.Verify
 │   └── decode + return claimsJSON
-├── extractAndValidateJWTClaims(claimsJSON)                    [:142]
-│   ├── verify iss, aud, exp
+├── extractAndValidateJWTClaims(claimsJSON)                    [:161]
+│   ├── verify iss
+│   ├── empty configured Audience → refuse every token (M228)
+│   ├── audienceClaimContains(claims["aud"], Audience)         [:144]  aud: string or list of strings
+│   ├── verify exp
 │   └── return claims, expiresAt
-└── constructAuthenticationResultFromClaims(claims, expiresAt) [:173]
+└── constructAuthenticationResultFromClaims(claims, expiresAt) [:192]
     ├── "user:" + claims[PrincipalClaim]
     └── team/role attributes from claim mapping
 ```
@@ -391,6 +394,7 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | `OIDCAuthenticator.Authenticate` | BearerTokenAuthenticator.Authenticate |
 | `parseAndVerifyJWTSignature` | OIDCAuthenticator.Authenticate |
 | `extractAndValidateJWTClaims` | OIDCAuthenticator.Authenticate |
+| `audienceClaimContains` | extractAndValidateJWTClaims |
 | `constructAuthenticationResultFromClaims` | OIDCAuthenticator.Authenticate |
 | `verifyECDSASignature` | parseAndVerifyJWTSignature |
 | `looksLikeJWT` | BearerTokenAuthenticator.Authenticate |

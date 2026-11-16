@@ -168,6 +168,10 @@ func executeRenderCommand(parsedConfig renderCommandConfig) {
 	}
 }
 
+// joinPositionalArgumentCount is the number of positional arguments of
+// "cca join": the server URL and the join token.
+const joinPositionalArgumentCount = 2
+
 // joinCommandConfig holds parsed flags for the "join" command, which enrolls
 // a node with the cluster by presenting a join token to the server.
 type joinCommandConfig struct {
@@ -178,41 +182,33 @@ type joinCommandConfig struct {
 	dataDirectory string // where to write cert/key/ca (default "/etc/ccattler/pki")
 }
 
-// parseJoinCommandArgs extracts the server URL, token, and flags from the
-// arguments following "join".
-func parseJoinCommandArgs(args []string) joinCommandConfig {
+// parseJoinCommandArgs parses "join <server-url> <token>" and its flags, which
+// may stand anywhere. An unknown flag (a mistyped --ca-cert would drop the CA
+// file), a flag without its value and a third argument are errors (M227).
+func parseJoinCommandArgs(args []string) (joinCommandConfig, error) {
 	parsedConfig := joinCommandConfig{
 		dataDirectory: "/etc/ccattler/pki",
 	}
 
-	positionalIndex := 0
-	for argIndex := 0; argIndex < len(args); argIndex++ {
-		currentArg := args[argIndex]
-		switch currentArg {
-		case "--node-id":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.nodeID = args[argIndex]
-			}
-		case "--ca-cert":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.caCertPath = args[argIndex]
-			}
-		case "--data-dir":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.dataDirectory = args[argIndex]
-			}
-		default:
-			switch positionalIndex {
-			case 0:
-				parsedConfig.serverAddress = currentArg
-			case 1:
-				parsedConfig.joinToken = currentArg
-			}
-			positionalIndex++
-		}
+	flagSet := newDaemonFlagSet("join")
+	flagSet.StringVar(&parsedConfig.nodeID, "node-id", "", "name of this node (required)")
+	flagSet.StringVar(&parsedConfig.caCertPath, "ca-cert", "",
+		"CA certificate that must have signed the server (default: /etc/ccattler/pki/ca.pem, else the token's fingerprint)")
+	flagSet.StringVar(&parsedConfig.dataDirectory, "data-dir", parsedConfig.dataDirectory,
+		"directory for the issued certificate, key and CA")
+	positionalArguments, parseError := parseFlagsAndPositionals(flagSet, args)
+	if parseError != nil {
+		return parsedConfig, parseError
+	}
+	// The count only: one of the arguments is the join token.
+	if len(positionalArguments) > joinPositionalArgumentCount {
+		return parsedConfig, fmt.Errorf("cca join: expects <server-url> <token>, got %d arguments", len(positionalArguments))
+	}
+	if len(positionalArguments) > 0 {
+		parsedConfig.serverAddress = positionalArguments[0]
+	}
+	if len(positionalArguments) == joinPositionalArgumentCount {
+		parsedConfig.joinToken = positionalArguments[1]
 	}
 
 	// Use standard system paths when they exist and no explicit override was given.
@@ -224,7 +220,7 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 		}
 	}
 
-	return parsedConfig
+	return parsedConfig, nil
 }
 
 // executeJoinCommand enrolls this node with the cluster by contacting the

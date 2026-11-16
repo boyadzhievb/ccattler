@@ -66,7 +66,8 @@ func main() {
 		parsedTokenConfig := parseTokenCommandArgs(os.Args[2:])
 		executeTokenCommand(parsedTokenConfig)
 	case "join":
-		parsedJoinConfig := parseJoinCommandArgs(os.Args[2:])
+		parsedJoinConfig, joinFlagError := parseJoinCommandArgs(os.Args[2:])
+		exitOnDaemonFlagError(joinFlagError)
 		if parsedJoinConfig.serverAddress == "" || parsedJoinConfig.joinToken == "" || parsedJoinConfig.nodeID == "" {
 			fmt.Fprintln(os.Stderr, "usage: cca join <server-url> <token> --node-id <id> [--ca-cert <path>] [--data-dir <path>]")
 			os.Exit(1)

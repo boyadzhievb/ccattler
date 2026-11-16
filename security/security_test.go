@@ -1637,11 +1637,13 @@ func TestOIDCRejectsExpiredToken(t *testing.T) {
 	privateKey, _ := GenerateOIDCKeyPair()
 
 	authenticator := NewOIDCAuthenticator(OIDCConfig{
-		Issuer: "https://auth.example.com",
+		Issuer:   "https://auth.example.com",
+		Audience: "ccattler",
 	}, &privateKey.PublicKey)
 
 	claims := map[string]interface{}{
 		"iss": "https://auth.example.com",
+		"aud": "ccattler",
 		"sub": "alice",
 		"exp": float64(time.Now().Add(-1 * time.Hour).Unix()),
 	}
@@ -1650,6 +1652,9 @@ func TestOIDCRejectsExpiredToken(t *testing.T) {
 	_, err := authenticator.Authenticate(token)
 	if err == nil {
 		t.Fatal("expired token should fail")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired token must fail on its expiry, got: %v", err)
 	}
 }
 
@@ -1864,7 +1869,8 @@ func TestWorkloadTokenIssuerWithExistingKey(t *testing.T) {
 	}
 
 	authenticator := NewOIDCAuthenticator(OIDCConfig{
-		Issuer: "https://ccattler.example.com",
+		Issuer:   "https://ccattler.example.com",
+		Audience: "test",
 	}, originalIssuer.PublicKey())
 
 	_, err = authenticator.Authenticate(tokenString)

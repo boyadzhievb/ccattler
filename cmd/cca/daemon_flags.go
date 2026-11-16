@@ -25,20 +25,45 @@ func newDaemonFlagSet(commandName string) *flag.FlagSet {
 // and a positional argument are errors, never ignored (M227). For --help it
 // prints the flag list and returns flag.ErrHelp.
 func parseDaemonFlagSet(flagSet *flag.FlagSet, args []string) error {
-	parseError := flagSet.Parse(args)
-	if errors.Is(parseError, flag.ErrHelp) {
-		printDaemonFlagList(flagSet)
-		return flag.ErrHelp
-	}
+	positionalArguments, parseError := parseFlagsAndPositionals(flagSet, args)
 	if parseError != nil {
-		return fmt.Errorf("%s: %s (run '%s --help' for the flag list)",
-			flagSet.Name(), spellFlagsWithTwoDashes(parseError.Error()), flagSet.Name())
+		return parseError
 	}
-	if flagSet.NArg() > 0 {
+	if len(positionalArguments) > 0 {
 		return fmt.Errorf("%s: unexpected argument %q (run '%s --help' for the flag list)",
-			flagSet.Name(), flagSet.Arg(0), flagSet.Name())
+			flagSet.Name(), positionalArguments[0], flagSet.Name())
 	}
 	return nil
+}
+
+// parseFlagsAndPositionals parses flags standing before, between or after
+// positional arguments and returns the positionals in order. An unknown flag
+// or a flag without its value is an error; --help prints the flag list.
+func parseFlagsAndPositionals(flagSet *flag.FlagSet, args []string) ([]string, error) {
+	var positionalArguments []string
+	remainingArguments := args
+	for {
+		parseError := flagSet.Parse(remainingArguments)
+		if errors.Is(parseError, flag.ErrHelp) {
+			printDaemonFlagList(flagSet)
+			return nil, flag.ErrHelp
+		}
+		if parseError != nil {
+			return nil, fmt.Errorf("%s: %s (run '%s --help' for the flag list)",
+				flagSet.Name(), spellFlagsWithTwoDashes(parseError.Error()), flagSet.Name())
+		}
+		if flagSet.NArg() == 0 {
+			return positionalArguments, nil
+		}
+		// After "--" nothing is a flag: all that follows is positional.
+		consumedArguments := remainingArguments[:len(remainingArguments)-flagSet.NArg()]
+		if len(consumedArguments) > 0 && consumedArguments[len(consumedArguments)-1] == "--" {
+			return append(positionalArguments, flagSet.Args()...), nil
+		}
+		// The flag package stops at the first positional; take it and go on.
+		positionalArguments = append(positionalArguments, flagSet.Arg(0))
+		remainingArguments = flagSet.Args()[1:]
+	}
 }
 
 // printDaemonFlagList prints every flag of the command with its help text and
