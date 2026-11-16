@@ -223,7 +223,7 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/api/state` | GET | `workload.read` (visibility) | cluster or team | `cca exec`, `cca images`, `cca get instance` lookups |
 | `/api/apply` | POST | `workload.create` + per-fact `RequiredCapabilityForFactWrite` | cluster | none yet (M219 4.2: `cca apply`) |
 | `/api/watch` | GET (stream) | `workload.read` (visibility); re-checked while open (stream re-authorization) | cluster or team | `cca watch` |
-| `/api/scale` | POST | `scaling.write` | cluster | `cca scale` |
+| `/api/scale` | POST | `scaling.write` (+ `cluster.admin` to approve a count above 600, M217) | cluster | `cca scale` |
 | `/api/restart` | POST | `workload.update` | cluster | `cca restart` |
 | `/api/rollout/restart` | POST | `workload.update` | cluster | `cca rollout restart` |
 | `/api/status` | GET | `workload.read` (visibility) | cluster or team | `cca get`, `cca top` (M219 3.2: `cca status`) |

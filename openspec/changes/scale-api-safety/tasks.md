@@ -11,13 +11,13 @@ M217. Every group lands its own tests and docs. Failing tests are recorded (comm
 
 ## 1. Limit rule
 
-- [ ] 1.1 Add `ServiceInstanceWarningThreshold = 500`, `ServiceInstanceApprovalLimit = 600` and the check function (D1) in `types`, with table tests at 499, 500, 600, 601, approved equal, approved different, and 100000 approved. Verify `go test ./types -run InstanceLimit`
+- [x] 1.1 Add `ServiceInstanceWarningThreshold = 500`, `ServiceInstanceApprovalLimit = 600` and the check function (D1) in `types`, with table tests at 499, 500, 600, 601, approved equal, approved different, and 100000 approved. Verify `go test ./types -run InstanceCount` — 2026-11-16: `types/instance_limits.go`: the constants, typed `InstanceCountDecision` (accepted, accepted_with_warning, approved, needs_approval, approval_mismatch), `EvaluateServiceInstanceCount` and `DescribeInstanceCountDecision` (shared text for API and CLI; an approval matters only above the limit). `TestEvaluateServiceInstanceCount` (9 boundary cases) and `TestInstanceCountDecisionText` pass; lint clean
 
 ## 2. Scale API
 
-- [ ] 2.1 `handleScale`: declaration check (404), limit rule, `cluster.admin` check only above the limit (403), one transaction guarded by the declaration revision (409 on conflict, 500 on store error), `warning` in the answer (D3, D4). Verify the 0.1 tests pass
-- [ ] 2.2 Record approvals and refused approvals through `APIAuthorizer.RecordAuditEntry` (D7; already wired in `cca server`). Verify in `TestScaleApprovedAboveLimit` and `TestScaleApprovalNeedsClusterAdmin` that the entry exists with principal, service and count
-- [ ] 2.3 `AUTHZ_GRAPH.md`: note on `/api/scale` that an approval above the limit adds `cluster.admin`; `api/TestDocCrossCheckAuthzRouteTable` still passes
+- [x] 2.1 `handleScale`: declaration check (404), limit rule, `cluster.admin` check only above the limit (403), one transaction guarded by the declaration revision (409 on conflict, 500 on store error), `warning` in the answer (D3, D4). Verify the 0.1 tests pass — 2026-11-16: handler moved to `api/handler_scale.go`; `checkInstanceCountApproval` is the shared limit check for apply (3.1); `storeScaledInstanceCount` is the transaction (the api-server store role may write both keys). `go test ./api -run TestScale`: all 10 pass; `go test ./integration/...` passes. `TestScaleConflictsWhenServiceChanges` now deletes the declaration before the transaction: the memory store keeps the revision on a `Put` of an unchanged value, so the first version's rewrite changed nothing (etcd would have bumped it)
+- [x] 2.2 Record approvals and refused approvals through `APIAuthorizer.RecordAuditEntry` (D7; already wired in `cca server`). Verify in `TestScaleApprovedAboveLimit` and `TestScaleApprovalNeedsClusterAdmin` that the entry exists with principal, service and count — 2026-11-16: `recordInstanceApprovalAudit` writes `scale.approve` / `apply.approve`, `target=service/{name}`, `policy=instances={count}`, ALLOW or DENY, for every approval attempt above the limit (mismatches included); both tests assert the entry and pass. `cca server` already calls `apiAuthorizer.SetAuditLogger` (`cmd/cca/command_server.go:608`)
+- [x] 2.3 `AUTHZ_GRAPH.md`: note on `/api/scale` that an approval above the limit adds `cluster.admin`; `api/TestDocCrossCheckAuthzRouteTable` still passes — 2026-11-16: row updated; `TestDocCrossCheckAuthzRouteTable` and `TestEveryRouteRefusesPrincipalWithoutGrants` pass. No call graph names `handleScale`, so no graph entry to move
 
 ## 3. Apply
 

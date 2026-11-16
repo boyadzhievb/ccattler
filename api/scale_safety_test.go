@@ -42,19 +42,19 @@ func (failingStore *failingTransactionStore) Transaction(_ context.Context, _ []
 	return false, errors.New("injected store failure")
 }
 
-// rewritingTransactionStore rewrites the service declaration right before
-// the transaction, as an apply running in between would.
-type rewritingTransactionStore struct {
+// removingTransactionStore deletes the service declaration right before the
+// transaction, as a configuration change removing the service in between would.
+type removingTransactionStore struct {
 	store.StateStore        // StateStore is the real store every other call goes to.
-	serviceName      string // serviceName is the declaration rewritten before each transaction.
+	serviceName      string // serviceName is the declaration removed before each transaction.
 }
 
-// Transaction rewrites the declaration, then runs the real transaction.
-func (rewritingStore *rewritingTransactionStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
-	if _, putError := rewritingStore.Put(ctx, types.KeyDesiredService(rewritingStore.serviceName), []byte("")); putError != nil {
-		return false, putError
+// Transaction removes the declaration, then runs the real transaction.
+func (removingStore *removingTransactionStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
+	if deleteError := removingStore.Delete(ctx, types.KeyDesiredService(removingStore.serviceName)); deleteError != nil {
+		return false, deleteError
 	}
-	return rewritingStore.StateStore.Transaction(ctx, compares, onSuccess, onFailure)
+	return removingStore.StateStore.Transaction(ctx, compares, onSuccess, onFailure)
 }
 
 // newScaleTestServer returns a server over factStore with admin (cluster.admin),
@@ -162,7 +162,7 @@ func TestScaleConflictsWhenServiceChanges(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 	declareScaleTestService(t, memoryStore, "web")
-	apiServer, _ := newScaleTestServer(t, &rewritingTransactionStore{StateStore: memoryStore, serviceName: "web"})
+	apiServer, _ := newScaleTestServer(t, &removingTransactionStore{StateStore: memoryStore, serviceName: "web"})
 
 	response, body := scaleAsUser(apiServer, "scaler", scaleRequestBody("web", 3, 0))
 	assertScaleAnswer(t, response, body, http.StatusConflict, "web")

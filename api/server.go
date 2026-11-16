@@ -894,61 +894,6 @@ func streamWatchEventsAsSSE(requestContext context.Context, eventChannel <-chan 
 	}
 }
 
-// scaleRequest is the JSON body for POST /api/scale.
-type scaleRequest struct {
-	Service   string `json:"service"`
-	Instances int    `json:"instances"`
-}
-
-// handleScale serves POST /api/scale to change the desired instance count
-// for a service. It updates the user intent, desired instances, and effective
-// instance count facts.
-func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilityScalingWrite, security.ScopeCluster) {
-		return
-	}
-	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
-
-	requestContext := request.Context()
-	responseWriter.Header().Set("Content-Type", "application/json")
-
-	var body scaleRequest
-	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
-		return
-	}
-
-	if body.Service == "" || body.Instances < 0 {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "service and non-negative instances required"})
-		return
-	}
-	if validateError := types.ValidateResourceName(body.Service); validateError != nil {
-		responseWriter.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
-		return
-	}
-
-	instancesStr := strconv.Itoa(body.Instances)
-	if _, putError := apiServer.factStore.Put(requestContext, types.KeyDesiredServiceInstances(body.Service), []byte(instancesStr)); putError != nil {
-		logging.Default().Error("failed to store fact", "key", types.KeyDesiredServiceInstances(body.Service), "error", putError.Error())
-	}
-	if _, putError := apiServer.factStore.Put(requestContext, types.KeyIntentUserServiceInstances(body.Service), []byte(instancesStr)); putError != nil {
-		logging.Default().Error("failed to store fact", "key", types.KeyIntentUserServiceInstances(body.Service), "error", putError.Error())
-	}
-
-	_ = json.NewEncoder(responseWriter).Encode(map[string]any{
-		"ok":        true,
-		"service":   body.Service,
-		"instances": body.Instances,
-	})
-}
-
 // restartInstanceRequest is the JSON body for POST /api/restart.
 type restartInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
