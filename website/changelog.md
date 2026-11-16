@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.85.0-beta <Badge type="tip" text="latest" /> {#v1-85-0-beta}
+## v1.86.0-beta <Badge type="tip" text="latest" /> {#v1-86-0-beta}
+
+**2026-11-16** — Faster Deploy Test Runs.
+
+- **Faster Deploy Test Runs** (M231) — Test tooling: the Deploy Testbed form gets checkboxes for the slow check groups (gate TLS, node failure, multi-port, warm zero, adversarial replay) and a replay case filter; a code push to `master` or a milestone branch starts a fast run (whoami, quick checks, only the replay cases it changed); docs-only pushes start nothing. WordPress becomes a deploy workload (manual runs; it joins push runs with M232). The run that closes a milestone is still a full run, and every run's summary says whether it was one.
+
+---
+
+## v1.85.0-beta {#v1-85-0-beta}
 
 **2026-11-16** — Scale API Safety.
 

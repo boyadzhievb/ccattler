@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M217 — Scale API Safety (v1.85.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M231 — Faster Deploy Test Runs (v1.86.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
