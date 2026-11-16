@@ -1677,10 +1677,10 @@ When adding a new feature that touches the runtime:
 agent reconcile cycle, instance placed here, container missing or not running:
 
   container missing (never started, stopped by a config reload)
-      → record start attempt (entry: waiting=false, lastStartedAt=now) → reconcileDesiredInstance
+      → reconcileDesiredInstance; if it started: entry waiting=false, lastStartedAt=now
 
   container exited, no back-off entry (agent restarted since the start)
-      → restart once at once (count +1, entry created), back off from the next exit
+      → restart at once (count +1 when it started, entry created), back off from the next exit
 
   container exited, entry.waiting == false              (a new exit)
       if now - lastStartedAt >= 10 min → attempts = 0   (stable run: start over)
@@ -1697,8 +1697,13 @@ agent reconcile cycle, instance placed here, container missing or not running:
       else → nothing, state and reason stay as published
 
   container exited, waiting, now >= retryAfter
-      → restart: restarts += 1 (observed/instance/{id}/restarts), record start attempt,
-        reconcileDesiredInstance (a new container, a new IP while M237 is open)
+      → reconcileDesiredInstance (a new container, a new IP while M237 is open)
+        started  → restarts += 1 (observed/instance/{id}/restarts), waiting = false, lastStartedAt = now
+        bailed out (image pull failure or back-off, secrets not ready, init step failed,
+                    volumes not ready, config unreadable) → nothing is counted: no restart,
+                    no new exit; the entry stays waiting with its past retryAfter, so every
+                    cycle retries, and the bail-out's own state (image-pull-backoff,
+                    waiting-for-secrets, …) stays visible instead of crash-loop-backoff
 
 instance no longer placed here → entry dropped with the stale-instance cleanup
 ```

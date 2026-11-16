@@ -275,7 +275,7 @@ reconcileDesiredInstance(instanceInfo)                        :729
 | nil | false | 0 (non-empty error) | `InstanceFailed` |
 | nil | false | 0 (empty error) | `InstanceStarting` |
 
-An exited container (Running false, exit code or error set) is only observed this way right after a start; in later cycles the agent publishes `InstanceCrashLoopBackoff` instead (section 12b).
+In later reconcile cycles an exited container is not observed this way: the agent publishes `InstanceCrashLoopBackoff` instead (section 12b). Known limit (pre-existing, not changed by M233): a container that has already exited non-zero when `observeInstanceState` runs right after `Start` is published `failed` and replaced by the failure controller (with its own back-off, section 5), bypassing Flow 33.
 
 ---
 
@@ -624,19 +624,24 @@ Flow 33 in design/runtime-invariant-flows.md. Called from `executeReconciliation
 ```
 reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerExited)
 ├── containerExited:
-│   ├── isExitedInstanceDueForRestart
-│   │   ├── no crashLoopBackoffs entry → true (agent restarted: restart once)
-│   │   ├── entry.waiting == false → recordInstanceExit → false
-│   │   │   ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
-│   │   │   ├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts)
-│   │   │   ├── publishExitReasonFromStatus   [exit code != 0]
-│   │   │   ├── publishInstanceStateToStore(crash-loop-backoff)
-│   │   │   └── publishStatusReason("exited with code N; restarting in 40s")
-│   │   ├── now < retryAfter → hasConfigChangedSinceStart ? (drop entry → true) : false
-│   │   └── now >= retryAfter → true
-│   └── incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1 write]
-├── recordInstanceStartAttempt         [entry.waiting = false, lastStartedAt = now]
-└── reconcileDesiredInstance           [section 3]
+│   └── isExitedInstanceDueForRestart  [false → return]
+│       ├── no crashLoopBackoffs entry → true (agent restarted: restart once)
+│       ├── entry.waiting == false → recordInstanceExit → false
+│       │   ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
+│       │   ├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts) ; waiting = true
+│       │   ├── publishExitReasonFromStatus   [exit code != 0]
+│       │   ├── publishInstanceStateToStore(crash-loop-backoff)
+│       │   └── publishStatusReason("exited with code N; restarting in 40s")
+│       ├── now < retryAfter → hasConfigChangedSinceStart ? (drop entry → true) : false
+│       └── now >= retryAfter → true
+├── container missing: entry.waiting = false (the next exit is a new one)
+├── reconcileDesiredInstance → started bool         [section 3; false on any bail-out]
+│   └── false → return: no count, entry stays waiting with its past retryAfter, so the next
+│       cycle retries without recording a new exit; the bail-out's own state and reason
+│       (image-pull-backoff, waiting-for-secrets, init, volumes) stay visible
+└── started:
+    ├── containerExited → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1 write]
+    └── recordInstanceStarted         [entry.waiting = false, lastStartedAt = now]
 
 cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of instances not placed here]
 ```
@@ -716,6 +721,7 @@ cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of 
 1. Check `observed/instance/{id}/status-reason` (exit code and wait) and `exit-reason`
 2. `observed/instance/{id}/restarts` counts the in-place restarts
 3. The wait is in agent memory only (section 12b); a config/secret change ends it
+4. A restart that bails out (pull failure, secrets, init, volumes) shows that state instead; it is not counted as a restart or a new exit
 
 ### Stuck in `starting`
 1. runtime.Status() returning error — container may be running

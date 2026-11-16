@@ -179,7 +179,7 @@ cca watch observed/instance/<id>/pull-status
 
 ### Stuck in `crash-loop-backoff`
 
-The container exited and the agent waits before restarting it on the same node. Wait: 10s, 20s, 40s, 80s, 160s, 5m max; it starts over after the instance has run for 10 minutes. The status reason names the exit and the wait (`exited with code 1; restarting in 40s`); `cca describe` shows the restart count. A config or secret change ends the wait at once.
+The container exited and the agent waits before restarting it on the same node. Wait: 10s, 20s, 40s, 80s, 160s, 5m max; it starts over after the instance has run for 10 minutes. The status reason names the exit and the wait (`exited with code 1; restarting in 40s`); `cca describe` shows the restart count. A config or secret change ends the wait at once. If the restart cannot start the container (the image cannot be pulled, secrets are missing, an init step fails), the instance shows that state instead and is retried every cycle; such an attempt is not counted as a restart.
 
 **Common causes:**
 - The process fails at start (bad env var, missing secret or file, wrong command) — fix the configuration and re-apply
