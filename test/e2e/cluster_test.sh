@@ -133,6 +133,10 @@ for ((i=1; i<=$#; i++)); do
         next=$((i+1))
         if [[ $next -le $# ]]; then
             SKIP_CHECKS_ARGUMENT="${!next}"
+        else
+            # A flag with no value would silently run every group; say so instead.
+            echo "error: --skip-checks needs a comma-separated list of check groups" >&2
+            exit 1
         fi
     fi
 done
