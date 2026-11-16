@@ -7,13 +7,33 @@ WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/mariadb:11" "${LOCAL_REGISTRY}/wordpress:6-a
 WORKLOAD_EXPECTED_CONTAINERS=5
 
 # The images read MARIADB_*_FILE / WORDPRESS_*_FILE; hex keeps the values shell-safe.
-WORKLOAD_SECRETS=(
-    "wordpress.db-password=$(openssl rand -hex 24)"
-    "wordpress.db-root-password=$(openssl rand -hex 24)"
-)
-for wordpress_key_name in auth-key secure-auth-key logged-in-key nonce-key auth-salt secure-auth-salt logged-in-salt nonce-salt; do
-    WORKLOAD_SECRETS+=("wordpress.${wordpress_key_name}=$(openssl rand -hex 32)")
-done
+# The values are created once per deploy host and reused (M235): MariaDB keeps
+# its data on the NFS volume across runs and sets its passwords only on the
+# first start, so new random passwords per run would lock WordPress out.
+WORDPRESS_TEST_SECRETS_FILE="${CCA_TEST_STATE_DIR:-$HOME/.cca-test}/wordpress-secrets.env"
+WORDPRESS_KEY_NAMES=(auth-key secure-auth-key logged-in-key nonce-key auth-salt secure-auth-salt logged-in-salt nonce-salt)
+
+# wordpress_create_test_secrets writes every secret name=value, readable by the
+# owner only, the first time a deploy host runs the WordPress workload.
+wordpress_create_test_secrets() {
+    mkdir -p -m 0700 "$(dirname "$WORDPRESS_TEST_SECRETS_FILE")"
+    (
+        umask 077
+        {
+            echo "wordpress.db-password=$(openssl rand -hex 24)"
+            echo "wordpress.db-root-password=$(openssl rand -hex 24)"
+            for wordpress_key_name in "${WORDPRESS_KEY_NAMES[@]}"; do
+                echo "wordpress.${wordpress_key_name}=$(openssl rand -hex 32)"
+            done
+        } > "$WORDPRESS_TEST_SECRETS_FILE"
+    )
+}
+
+[[ -s "$WORDPRESS_TEST_SECRETS_FILE" ]] || wordpress_create_test_secrets
+WORKLOAD_SECRETS=()
+while IFS= read -r wordpress_secret_entry; do
+    [[ -n "$wordpress_secret_entry" ]] && WORKLOAD_SECRETS+=("$wordpress_secret_entry")
+done < "$WORDPRESS_TEST_SECRETS_FILE"
 
 # Caddy reverse proxy: domain → service_name. The gate wordpress.home.arpa is
 # checked on the nodes' :443 listener by wordpress_checks.sh.

@@ -9,12 +9,13 @@ WORDPRESS_GATE_HOST="wordpress.home.arpa"
 WORDPRESS_GATE_PORT=443        # agent --proxy-tls-listen port
 WORDPRESS_RETRY_SECONDS=5      # pause between attempts
 
-# wordpress_answer prints "<status> <redirect URL> <WordPress markers in the
-# body>" for a request from the control node (extra curl arguments first).
+# wordpress_answer prints "<status> R<redirect URL> <WordPress markers in the
+# body>" for a request from the control node (extra curl arguments first). The
+# R prefix keeps the field present when there is no redirect.
 wordpress_answer() {
-    ssh_vm "$CTRL_NODE" "curl -s -o /tmp/wordpress-check-body -w '%{http_code} %{redirect_url}' --max-time 10 $*; \
+    ssh_vm "$CTRL_NODE" "curl -s -o /tmp/wordpress-check-body -w '%{http_code} R%{redirect_url}' --max-time 10 $*; \
         echo \" \$(grep -cE 'wp-content|wp-includes|wp-admin' /tmp/wordpress-check-body 2>/dev/null || true)\"" \
-        2>/dev/null || echo "000 - 0"
+        2>/dev/null || echo "000 R 0"
 }
 
 # wordpress_is_answering reports whether an answer comes from WordPress: the
@@ -36,6 +37,7 @@ wordpress_wait_for() {
     local deadline=$((SECONDS + WORDPRESS_READY_TIMEOUT)) answer_code="000" redirect_url="-" marker_count=0
     while [[ $SECONDS -lt $deadline ]]; do
         read -r answer_code redirect_url marker_count <<< "$(wordpress_answer "$@")"
+        redirect_url="${redirect_url#R}"
         if wordpress_is_answering "$answer_code" "$redirect_url" "$marker_count"; then
             log "  WordPress answers $answer_code ${redirect_url} through $description"
             return 0
