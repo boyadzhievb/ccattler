@@ -160,6 +160,24 @@ service web {
 }
 ```
 
+Only a declared service can be scaled: `cca scale` refuses a name you have not applied yet.
+
+### How far you can scale
+
+| Count | What happens |
+|---|---|
+| below 500 | accepted |
+| 500 to 600 | accepted, with a warning |
+| above 600 | needs approval from a `cluster.admin`, who repeats the exact count |
+
+```bash
+cca scale web 2000                               # on a terminal: asks you to type 2000 again
+cca scale web 2000 --approve-above-limit 2000    # in scripts
+cca apply --approve-above-limit 2000 web.cca     # instances 2000, or scale max 2000, in a configuration
+```
+
+Repeating the number is deliberate: it catches `100000` typed for `100`, which a "yes" would not. There is no upper ceiling, so you can run a very large service if you mean to. The limit is not a capacity promise, though. Instances your nodes cannot hold stay pending, every instance adds about 15 facts to etcd, and counts in the tens of thousands are untested and can overload etcd and the controllers. To cap what a team can run, give its tenant an instance quota (see [Multi-Tenancy](./multi-tenancy)). Details: [CLI reference](../reference/cli#instance-count-limits).
+
 ## Step 6: Observe
 
 ```bash

@@ -609,6 +609,7 @@ func TestIntentResolverPerNodePlacement(t *testing.T) {
 		kv("observed/node/node-1/state", "alive"),
 		kv("observed/node/node-2/state", "alive"),
 		kv("observed/node/node-3/state", "alive"),
+		kv(types.KeyDesiredService("agent"), ""),
 		kv("desired/service/agent/placement/mode", "per-node"),
 		kv(types.KeyIntentUserServiceInstances("agent"), "1"),
 	)
@@ -637,6 +638,7 @@ func TestIntentResolverPerNodeNodeLeave(t *testing.T) {
 	facts := buildFacts(
 		kv("observed/node/node-1/state", "alive"),
 		kv("observed/node/node-2/state", "alive"),
+		kv(types.KeyDesiredService("agent"), ""),
 		kv("desired/service/agent/placement/mode", "per-node"),
 		kv(types.KeyIntentUserServiceInstances("agent"), "1"),
 		kv(types.KeyEffectiveServiceInstances("agent"), "3"),
@@ -665,6 +667,7 @@ func TestIntentResolverPerNodePolicyMaxCap(t *testing.T) {
 		kv("observed/node/node-3/state", "alive"),
 		kv("observed/node/node-4/state", "alive"),
 		kv("observed/node/node-5/state", "alive"),
+		kv(types.KeyDesiredService("agent"), ""),
 		kv("desired/service/agent/placement/mode", "per-node"),
 		kv("desired/service/agent/scale/horizontal/max", "3"),
 		kv(types.KeyIntentUserServiceInstances("agent"), "1"),

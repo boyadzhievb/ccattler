@@ -300,6 +300,7 @@ func TestIntentResolverMergesUserAndAutoscaler(t *testing.T) {
 	startRunner(t, factStore, ctx, cancel, runner)
 
 	// User wants 3.
+	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))
 	factStore.Put(ctx, types.KeyIntentUserServiceInstances("web"), []byte("3"))
 	factStore.Put(ctx, types.KeyDesiredServiceScaleHorizontalMin("web"), []byte("2"))
 	factStore.Put(ctx, types.KeyDesiredServiceScaleHorizontalMax("web"), []byte("10"))

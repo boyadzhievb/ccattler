@@ -528,7 +528,11 @@ Found by the M227 security audit (2026-11-16), verified: `cca server --oidc-issu
 
 Found in M214 run 1 (2026-11-12): `scale a-web 100000` created 436 real instances; `scale nosuch 2` created orphan instances.
 
-Moving to OpenSpec (2026-11-16): the change `openspec/changes/scale-api-safety` replaces this checklist once proposed; decisions so far: warning from 500, approval above 600 by `cluster.admin` repeating the exact count, no absolute ceiling, documented as not a capacity promise.
+Checklist: OpenSpec change [`openspec/changes/scale-api-safety`](openspec/changes/scale-api-safety/tasks.md) (replaces the items below). Decisions: warning from 500, approval above 600 by `cluster.admin` repeating the exact count, no absolute ceiling, documented as not a capacity promise.
+
+Found during M217 (2026-11-16), not fixed here:
+- `TenantLifecycle` (`tenant/lifecycle.go`) has no production caller, only tests (dead code under the project rules). Its `DeleteTenant` deletes a removed service's effective count, which would leave the service's instances running (the instance controller only sees names with an effective count). Either wire it and set the count to 0 (design D6), or remove it
+- `security/TestKeyringConcurrentBootstrapAgrees` is flaky: 4/50 runs fail with this change and 3/50 on the commit before it (`keyring is incomplete (keyring/active missing, 5 other keyring keys exist); refusing to create a new one`). Points at a race between two replicas bootstrapping the keyring at once; not yet investigated whether it is the test or the bootstrap
 
 - [ ] Failing tests first: scale above the limit → 400; scale of an undeclared service → 404; store write error → 500, not `ok: true`
 - [ ] Upper bound per service (named constant, overridable by `cluster.admin` only) — also on `instances` in apply

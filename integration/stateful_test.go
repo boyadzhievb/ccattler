@@ -44,6 +44,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Deploy a stateful service with 3 instances.
+	factStore.Put(ctx, types.KeyDesiredService("postgres"), []byte(""))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("3"))
 	factStore.Put(ctx, types.KeyEffectiveServiceStateful("postgres"), []byte("true"))
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("postgres"), []byte("3"))
@@ -140,6 +141,7 @@ func TestStatefulServiceScaleDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Pre-populate 3 running stateful instances.
+	factStore.Put(ctx, types.KeyDesiredService("postgres"), []byte(""))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("3"))
 	factStore.Put(ctx, types.KeyEffectiveServiceStateful("postgres"), []byte("true"))
 	for ordinal := 0; ordinal < 3; ordinal++ {

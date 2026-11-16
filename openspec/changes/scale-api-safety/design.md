@@ -62,4 +62,4 @@ No data migration. On upgrade the intent resolver sets existing orphans to 0 in 
 
 ## Follow-ups
 
-- `tenant/lifecycle.go` deletes a removed service's effective count, which by D6's reasoning leaves its instances running. Separate bug milestone, found while designing this change.
+- `tenant/lifecycle.go` (`TenantLifecycle.DeleteTenant`) deletes a removed service's effective count, which by D6's reasoning would leave its instances running. Verified 2026-11-16 during implementation: `NewTenantLifecycle` has no production caller (only `tenant/tenant_test.go`), so this is not reachable today; it is dead code under the project rules. Recorded in `milestones.md` Phase 217 instead of a bug milestone: wire it with effective 0 (D6) or remove it.

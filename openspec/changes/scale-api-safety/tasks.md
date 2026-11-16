@@ -32,14 +32,14 @@ M217. Every group lands its own tests and docs. Failing tests are recorded (comm
 
 ## 5. Orphan clean-up
 
-- [ ] 5.1 Intent resolver: effective count 0 for a name with an intent but no `desired/service/{name}` (D6); declared services unchanged. Verify `TestIntentResolverStopsUndeclaredServices` passes and `controllers/TestWriteDomain*` still pass
-- [ ] 5.2 `integration/TestOrphanScaleInstancesStopped`: user intent for an undeclared name with running instances → instances stopped. Verify it passes (`go test ./integration -run Orphan`)
+- [x] 5.1 Intent resolver: effective count 0 for a name with an intent but no `desired/service/{name}` (D6); declared services unchanged. Verify `TestIntentResolverStopsUndeclaredServices` passes and `controllers/TestWriteDomain*` still pass — 2026-11-16: `collectDeclaredServiceKeys` (exact marker key, so hierarchical names work), `keepDeclaredServices` before the existing count resolution, `resolveUndeclaredServiceChanges` (any name with a user or autoscaler intent or an effective count but no marker → effective 0, names sorted). Both tests pass. Callers that wrote counts without the marker: the chaos simulator's `DeployService` (production code behind `cca chaos`) now writes it, as apply does; test fixtures without it got it (`controllers/instance_test.go` per-node tests, `integration/autoscale_test.go` `TestIntentResolverMergesUserAndAutoscaler`, `integration/stateful_test.go` two tests). `go test ./... -count=1` passes
+- [x] 5.2 `integration/TestOrphanScaleInstancesStopped`: user intent for an undeclared name with running instances → instances stopped. Verify it passes (`go test ./integration -run Orphan`) — 2026-11-16: `integration/orphan_scale_test.go` (intent resolver + instance controller): both orphans get `controller_stopped`, effective 0, declared `web` untouched. Passes 3/3; with only `controllers/intent.go` reverted it times out (orphans keep running)
 
 ## 6. Documentation and website
 
-- [ ] 6.1 Flow 31 in `design/runtime-invariant-flows.md` matches what was built (review the draft written before this change); `SCHEDULING_GRAPH.md` or `CONTROLLER_DATA_FLOW_GRAPH.md` updated for the intent resolver rule
+- [x] 6.1 Flow 31 in `design/runtime-invariant-flows.md` matches what was built (review the draft written before this change); `SCHEDULING_GRAPH.md` or `CONTROLLER_DATA_FLOW_GRAPH.md` updated for the intent resolver rule — 2026-11-16: Flow 31 corrected (apply checks the compiled facts right before commit, not "before any gate"; the orphan rule added; the outdated "orphan clean-up is the last M217 item" gap replaced by the `tenant/lifecycle.go` follow-up; link to the spec). `CONTROLLER_DATA_FLOW_GRAPH.md` intent-resolver tree: the three new functions, real call order (per-node first), line numbers refreshed
 - [ ] 6.2 Website scaling guide (`website/guides/`): the warning, the approval, why there is no ceiling and that it is not a capacity promise. Verify the page builds (`test-website` agent or local build)
-- [ ] 6.3 `milestones.md` Phase 217 links this change; open the follow-up bug milestone for `tenant/lifecycle.go` leaving instances running (design.md Follow-ups)
+- [x] 6.3 `milestones.md` Phase 217 links this change; open the follow-up bug milestone for `tenant/lifecycle.go` leaving instances running (design.md Follow-ups) — 2026-11-16: Phase 217 links the change. No bug milestone opened: verified that `NewTenantLifecycle` has no production caller (only `tenant/tenant_test.go`), so the deletion path is not reachable; recorded in Phase 217 as dead code with the fix to apply if it is ever wired (design Follow-ups and Flow 31 corrected). Also recorded there: the flaky `TestKeyringConcurrentBootstrapAgrees` (found in 3.1)
 
 ## 7. Verification and review
 

@@ -195,6 +195,11 @@ func (simulatedCluster *SimulatedChaosCluster) DeployService(ctx context.Context
 	simulatedCluster.services[serviceName] = desiredInstances
 	simulatedCluster.mutex.Unlock()
 
+	// The declaration marker, as apply writes it: without it the intent
+	// resolver treats the service as undeclared and stops it (M217).
+	if _, putError := simulatedCluster.factStore.Put(ctx, types.KeyDesiredService(serviceName), []byte("")); putError != nil {
+		logging.Default().Error("failed to write service declaration", "service", serviceName, "error", putError.Error())
+	}
 	if _, putError := simulatedCluster.factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte(image)); putError != nil {
 		logging.Default().Error("failed to write service image", "service", serviceName, "error", putError.Error())
 	}

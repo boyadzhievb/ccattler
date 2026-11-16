@@ -89,30 +89,38 @@ executeReconciliationCycle(ctx, controller, deltaEvents)     :419
 
 ```
 IntentResolverController.Reconcile(ctx, facts)               :53
-├── extractIntentCounts(facts, intent/user/service/)         :198
-├── extractIntentCounts(facts, intent/autoscaler/service/)   :198
-├── extractPolicyBounds(facts)                               :211
+├── extractIntentCounts(facts, intent/user/service/)         :258
+├── extractIntentCounts(facts, intent/autoscaler/service/)   :258
+├── extractPolicyBounds(facts)                               :271
 │   └── reads desired/service/{svc}/scale/horizontal/{min,max}
-├── extractQuotaCeilings(facts)                              :249
+├── extractQuotaCeilings(facts)                              :309
 │   └── reads desired/service/{svc}/quota/instances
-├── extractEffectiveCounts(facts)                            :244
+├── extractEffectiveCounts(facts)                            :304
 │   └── reads effective/service/{svc}/instances
-├── extractDesiredPlacementModes(facts)                      :300
-├── extractEffectivePlacementModes(facts)                    :314
-├── countAliveNodesFromFacts(facts)                          :328
+├── extractDesiredPlacementModes(facts)                      :360
+├── extractEffectivePlacementModes(facts)                    :374
+├── countAliveNodesFromFacts(facts)                          :388
 │
-├── resolveEffectiveInstanceCountChanges(...)                :89
-│   └── FOR EACH service:
+├── resolvePerNodePlacementChanges(...)                      :403
+│   └── FOR EACH per-node service:
+│       └── PUT effective/service/{svc}/placement_mode
+│
+├── collectDeclaredServiceKeys(facts)                        :92   (M217)
+│   └── reads desired/service/{svc} markers (exact key)
+├── keepDeclaredServices(userIntents, declared)              :102  (M217)
+├── resolveEffectiveInstanceCountChanges(...)                :149
+│   └── FOR EACH declared service with a user intent:
 │       ├── max(user, autoscaler) → raw count
 │       ├── clamp to [min, max] bounds
 │       ├── clamp to quota ceiling
 │       └── IF changed: PUT effective/service/{svc}/instances
+├── resolveUndeclaredServiceChanges(...)                     :117  (M217, Flow 31)
+│   └── FOR EACH name (sorted) with an intent or effective count but no marker:
+│       └── IF effective != 0: PUT effective/service/{svc}/instances = 0
+│           (never delete: the instance controller only sees names with an
+│            effective count, so 0 is what stops the orphan instances)
 │
-├── resolvePerNodePlacementChanges(...)                      :343
-│   └── FOR EACH per-node service:
-│       └── PUT effective/service/{svc}/placement_mode
-│
-├── resolveEffectiveResourceChanges(...)                     :142
+├── resolveEffectiveResourceChanges(...)                     :202
 │   └── FOR EACH service with autoscaler resource intents:
 │       └── PUT effective/service/{svc}/resources/{cpu,memory}
 │

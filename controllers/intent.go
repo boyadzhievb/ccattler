@@ -70,9 +70,13 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 		policyBounds, aliveNodeCount,
 	)...)
 
+	declaredServiceKeys := collectDeclaredServiceKeys(facts)
 	changes = append(changes, resolveEffectiveInstanceCountChanges(
-		userIntents, autoscalerIntents, policyBounds, currentEffective, quotaCeilings,
+		keepDeclaredServices(userIntents, declaredServiceKeys), autoscalerIntents, policyBounds, currentEffective, quotaCeilings,
 		placementModes,
+	)...)
+	changes = append(changes, resolveUndeclaredServiceChanges(
+		declaredServiceKeys, userIntents, autoscalerIntents, currentEffective,
 	)...)
 
 	changes = append(changes, resolveEffectiveResourceChanges(
@@ -80,6 +84,62 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 	)...)
 
 	return changes, nil
+}
+
+// collectDeclaredServiceKeys returns the set of desired/service/ keys, so a
+// name is declared when its exact marker key types.KeyDesiredService is in it
+// (hierarchical names such as payments/checkout included).
+func collectDeclaredServiceKeys(facts []store.Fact) map[string]bool {
+	declaredServiceKeys := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		declaredServiceKeys[fact.Key] = true
+	}
+	return declaredServiceKeys
+}
+
+// keepDeclaredServices returns the counts of declared services only (M217):
+// an intent for a name without a declaration never becomes instances.
+func keepDeclaredServices(countsByService map[string]int, declaredServiceKeys map[string]bool) map[string]int {
+	declaredCounts := make(map[string]int, len(countsByService))
+	for serviceName, instanceCount := range countsByService {
+		if declaredServiceKeys[types.KeyDesiredService(serviceName)] {
+			declaredCounts[serviceName] = instanceCount
+		}
+	}
+	return declaredCounts
+}
+
+// resolveUndeclaredServiceChanges sets the effective count of every name that
+// has an intent or an effective count but no declaration to 0, so the instance
+// controller stops its instances (spec service-scaling, design D6). Deleting
+// the count instead would hide the name from the instance controller and leave
+// the instances running. Names are sorted for a deterministic change order.
+func resolveUndeclaredServiceChanges(
+	declaredServiceKeys map[string]bool,
+	userIntents map[string]int,
+	autoscalerIntents map[string]int,
+	currentEffective map[string]int,
+) []Change {
+	undeclaredNames := make(map[string]bool)
+	for _, countsByService := range []map[string]int{userIntents, autoscalerIntents, currentEffective} {
+		for serviceName := range countsByService {
+			if !declaredServiceKeys[types.KeyDesiredService(serviceName)] {
+				undeclaredNames[serviceName] = true
+			}
+		}
+	}
+	var changes []Change
+	for _, serviceName := range sortedMapKeys(undeclaredNames) {
+		if existingEffective, exists := currentEffective[serviceName]; exists && existingEffective == 0 {
+			continue
+		}
+		changes = append(changes, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyEffectiveServiceInstances(serviceName),
+			Value: []byte("0"),
+		})
+	}
+	return changes
 }
 
 // resolveEffectiveInstanceCountChanges computes the effective instance count

@@ -1602,10 +1602,23 @@ POST /api/scale {service, instances, approved_instances}
       marker changed or deleted meanwhile   → 409, nothing written
 
 POST /api/apply {config, files, approved_instances}
-  → limit rule for every service in the configuration, before any gate
+  → parse, compile, every gate stage (unchanged)
+  → limit rule for every service in the compiled facts (a declaration marker
+    with an image; groups and templates included), right before commit:
+    policy gate → AdmissionCheck passed to EvaluateAndCommit,
+    no gate     → after authorization
   → a service above the limit whose count differs from approved_instances
-        → 400 naming the service and its count
+        → 400 naming the service and its count, nothing written
+  → answer carries one warning per service from 500 on
 cca apply --simulate: same rule, no capability check (local, in memory)
+
+intent resolver, every cycle (orphans, also those created before M217):
+  name with a user/autoscaler intent or an effective count
+  and no desired/service/{name} marker
+        → effective/service/{name}/instances = 0
+        → instance controller scale-down stops its instances
+  (never delete the effective count: the instance controller iterates only
+   names that have one, so deleting it would leave the instances running)
 ```
 
 **CLI**: `cca scale S N` above the limit asks the user to type the count again
@@ -1619,9 +1632,12 @@ about 15 facts in etcd; counts in the tens of thousands are untested and can
 overload etcd and the controllers.
 
 **Known gaps**: the autoscaler's `scale max` is checked at apply, not at each
-scaling step; a job's `parallelism` has no limit; the intent controller still
-resolves an intent written for an undeclared service by any other writer
-(orphan clean-up is the last M217 item).
+scaling step; a job's `parallelism` has no limit. `TenantLifecycle` in
+`tenant/lifecycle.go` deletes a removed service's effective count, which by
+the rule above would leave its instances running; it has no production
+caller today (dead code, M217 Phase 217 note).
+
+Spec: `service-scaling` (change `scale-api-safety` until archived).
 
 ## Checklist for New Features
 
