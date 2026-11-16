@@ -566,7 +566,7 @@ Split from M233 (user decision 2026-11-16). Today every in-place restart runs `C
 
 Found in M232 (task 3.3, verified in the code 2026-11-16). Restarting an exited container runs `ContainerdRuntime.Start` → `Stop` → `removeContainerResources`, which removes `/var/lib/ccattler/logs/<id>/` including the log of the run that just failed. `cca logs` then shows only the new run, so the error that caused the exit is never visible (MariaDB's `/run/mysqld` error in M231 was found only by running the image by hand). Expected: the previous run's log survives a restart and can be read (as `kubectl logs --previous`).
 
-To be proposed as an OpenSpec change when work starts.
+OpenSpec change: [`keep-previous-container-log`](openspec/changes/keep-previous-container-log/) (checklist in its `tasks.md`).
 
 ### Phase 232 — Containers Get a tmpfs Over /run (M232, bug)
 
