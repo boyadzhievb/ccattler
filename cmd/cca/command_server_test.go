@@ -12,9 +12,8 @@ import (
 // TestParseServerCommandArgsRootKeyFlags checks that `cca server` reads the
 // cloud root key flags renamed in M221 into the server configuration.
 func TestParseServerCommandArgsRootKeyFlags(testContext *testing.T) {
-	parsedConfig := parseServerCommandArgs([]string{
-		"--root-key-provider", "aws-kms", "--root-key-id", "alias/ccattler-secrets",
-	})
+	parsedConfig := mustParseServerFlags(testContext,
+		"--root-key-provider", "aws-kms", "--root-key-id", "alias/ccattler-secrets")
 	if parsedConfig.rootKeyProviderName != "aws-kms" {
 		testContext.Errorf("rootKeyProviderName: got %q, want aws-kms", parsedConfig.rootKeyProviderName)
 	}

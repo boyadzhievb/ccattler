@@ -7,6 +7,8 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -55,11 +57,9 @@ type agentCommandConfig struct {
 	storageDirectory       string // storageDirectory is the base path for volume storage (e.g. "/var/lib/cca/volumes" for local, "/mnt/nfs/cca-volumes" for NFS).
 }
 
-// parseAgentCommandArgs extracts store and agent flags from the arguments
-// following "agent". This function exceeds 80 lines because it is a flat
-// flag-to-field switch statement — each case is a simple one-liner assignment.
-// Extracting sub-groups would add indirection without improving clarity.
-func parseAgentCommandArgs(args []string) agentCommandConfig {
+// parseAgentCommandArgs parses the flags following "agent". An unknown flag,
+// a flag without its value and a positional argument are errors (M227).
+func parseAgentCommandArgs(args []string) (agentCommandConfig, error) {
 	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := agentCommandConfig{
 		storeBackend:     defaults.storeBackend,
@@ -69,140 +69,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		dataPlaneBackend: "auto",
 	}
 
-	for argIndex := 0; argIndex < len(args); argIndex++ {
-		currentArg := args[argIndex]
-		switch currentArg {
-		case "--store":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeBackend = args[argIndex]
-			}
-		case "--endpoints":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdEndpoints = args[argIndex]
-				parsedConfig.storeBackend = "etcd"
-			}
-		case "--store-prefix":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeKeyPrefix = args[argIndex]
-			}
-		case "--node-id":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.nodeID = args[argIndex]
-			}
-		case "--runtime":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.runtimeBackend = args[argIndex]
-			}
-		case "--cert":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsCertPath = args[argIndex]
-			}
-		case "--key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsKeyPath = args[argIndex]
-			}
-		case "--ca":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsCACertPath = args[argIndex]
-			}
-		case "--etcd-cert":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdCertPath = args[argIndex]
-			}
-		case "--etcd-key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdKeyPath = args[argIndex]
-			}
-		case "--etcd-ca":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdCACertPath = args[argIndex]
-			}
-		case "--advertise-address":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.advertiseAddress = args[argIndex]
-			}
-		case "--proxy":
-			parsedConfig.proxyEnabled = true
-		case "--proxy-listen":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.proxyListenAddress = args[argIndex]
-				parsedConfig.proxyEnabled = true
-			}
-		case "--proxy-tls-listen":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.proxyTLSListenAddress = args[argIndex]
-				parsedConfig.proxyEnabled = true
-			}
-		case "--log-level":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.logLevel = args[argIndex]
-			}
-		case "--log-format":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.logFormat = args[argIndex]
-			}
-		case "--api-server":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.apiServerAddress = args[argIndex]
-			}
-		case "--debug-listen":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.debugListenAddress = args[argIndex]
-			}
-		case "--secret-api-listen":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.secretAPIListenAddress = args[argIndex]
-			}
-		case "--dataplane":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.dataPlaneBackend = args[argIndex]
-			}
-		case "--cluster-cidr":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.clusterCIDR = args[argIndex]
-			}
-		case "--network-mode":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.networkMode = args[argIndex]
-			}
-		case "--dns-upstream":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.dnsUpstream = args[argIndex]
-			}
-		case "--storage-backend":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storageBackend = args[argIndex]
-			}
-		case "--storage-dir":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storageDirectory = args[argIndex]
-			}
-		}
+	flagSet := newDaemonFlagSet("agent")
+	registerAgentNodeFlags(flagSet, &parsedConfig)
+	registerAgentListenerFlags(flagSet, &parsedConfig)
+	if parseError := parseDaemonFlagSet(flagSet, args); parseError != nil {
+		return parsedConfig, parseError
 	}
 
 	if parsedConfig.proxyEnabled && parsedConfig.proxyListenAddress == "" {
@@ -211,57 +82,87 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 	if parsedConfig.proxyEnabled && parsedConfig.proxyTLSListenAddress == "" {
 		parsedConfig.proxyTLSListenAddress = deriveGateHTTPSListenAddress(parsedConfig.proxyListenAddress)
 	}
+	return parsedConfig, validateAgentCommandConfig(parsedConfig)
+}
 
+// registerAgentNodeFlags registers the store, TLS, logging, runtime, network
+// and storage flags of `cca agent`.
+func registerAgentNodeFlags(flagSet *flag.FlagSet, parsedConfig *agentCommandConfig) {
+	registerStoreFlags(flagSet, &parsedConfig.storeBackend, &parsedConfig.etcdEndpoints, &parsedConfig.storeKeyPrefix)
+	registerCertificateFlags(flagSet,
+		tlsFileFlagTargets{certificatePath: &parsedConfig.tlsCertPath, privateKeyPath: &parsedConfig.tlsKeyPath,
+			caCertificatePath: &parsedConfig.tlsCACertPath},
+		tlsFileFlagTargets{certificatePath: &parsedConfig.etcdCertPath, privateKeyPath: &parsedConfig.etcdKeyPath,
+			caCertificatePath: &parsedConfig.etcdCACertPath})
+	registerLogFlags(flagSet, &parsedConfig.logLevel, &parsedConfig.logFormat)
+	flagSet.StringVar(&parsedConfig.nodeID, "node-id", "", "name of this node (required)")
+	flagSet.StringVar(&parsedConfig.runtimeBackend, "runtime", parsedConfig.runtimeBackend,
+		"workload runtime: process, container or containerd")
+	flagSet.StringVar(&parsedConfig.dataPlaneBackend, "dataplane", parsedConfig.dataPlaneBackend,
+		"data plane: auto, nftables, iptables, shadow or ebpf")
+	flagSet.StringVar(&parsedConfig.clusterCIDR, "cluster-cidr", "", "overlay network CIDR for container IPs")
+	flagSet.StringVar(&parsedConfig.networkMode, "network-mode", "", "overlay networking: local or vxlan")
+	flagSet.StringVar(&parsedConfig.dnsUpstream, "dns-upstream", "", "control-plane DNS address for cca.local names")
+	flagSet.StringVar(&parsedConfig.storageBackend, "storage-backend", "", "volume storage: local or nfs")
+	flagSet.StringVar(&parsedConfig.storageDirectory, "storage-dir", "", "base directory for volumes (with --storage-backend)")
+}
+
+// registerAgentListenerFlags registers the addresses `cca agent` listens on or
+// connects to; either gate proxy listen flag also enables the proxy.
+func registerAgentListenerFlags(flagSet *flag.FlagSet, parsedConfig *agentCommandConfig) {
+	flagSet.StringVar(&parsedConfig.advertiseAddress, "advertise-address", "", "address other nodes use to reach this node")
+	flagSet.StringVar(&parsedConfig.apiServerAddress, "api-server", "", "control-plane API address (host:port) for secret delivery")
+	flagSet.StringVar(&parsedConfig.debugListenAddress, "debug-listen", "", "listen address of the agent debug API")
+	flagSet.StringVar(&parsedConfig.secretAPIListenAddress, "secret-api-listen", "", "listen address of the per-instance secret API")
+	flagSet.BoolVar(&parsedConfig.proxyEnabled, "proxy", false, "start the gate proxy (default listen 0.0.0.0:80)")
+	flagSet.Func("proxy-listen", "gate proxy HTTP listen address; enables --proxy", func(flagValue string) error {
+		parsedConfig.proxyListenAddress = flagValue
+		parsedConfig.proxyEnabled = true
+		return nil
+	})
+	flagSet.Func("proxy-tls-listen", "gate proxy HTTPS listen address; enables --proxy", func(flagValue string) error {
+		parsedConfig.proxyTLSListenAddress = flagValue
+		parsedConfig.proxyEnabled = true
+		return nil
+	})
+}
+
+// validateAgentCommandConfig rejects unknown backend names and incomplete
+// flag groups (storage directory, TLS file trio).
+func validateAgentCommandConfig(parsedConfig agentCommandConfig) error {
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
-		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
-		os.Exit(1)
+		return fmt.Errorf("unknown store backend %q (must be \"memory\" or \"etcd\")", parsedConfig.storeBackend)
 	}
-
 	knownRuntimeBackends := map[string]bool{"process": true, "container": true, "containerd": true}
 	if !knownRuntimeBackends[parsedConfig.runtimeBackend] {
-		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"process\", \"container\", or \"containerd\")\n", parsedConfig.runtimeBackend)
-		os.Exit(1)
+		return fmt.Errorf("unknown runtime %q (must be \"process\", \"container\", or \"containerd\")", parsedConfig.runtimeBackend)
 	}
-
 	knownDataPlaneBackends := map[string]bool{"auto": true, "nftables": true, "iptables": true, "shadow": true, "ebpf": true}
 	if !knownDataPlaneBackends[parsedConfig.dataPlaneBackend] {
-		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", \"shadow\", or \"ebpf\")\n", parsedConfig.dataPlaneBackend)
-		os.Exit(1)
+		return fmt.Errorf("unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", \"shadow\", or \"ebpf\")", parsedConfig.dataPlaneBackend)
 	}
-
 	knownNetworkModes := map[string]bool{"": true, "local": true, "vxlan": true}
 	if !knownNetworkModes[parsedConfig.networkMode] {
-		fmt.Fprintf(os.Stderr, "error: unknown network-mode %q (must be \"local\" or \"vxlan\")\n", parsedConfig.networkMode)
-		os.Exit(1)
+		return fmt.Errorf("unknown network-mode %q (must be \"local\" or \"vxlan\")", parsedConfig.networkMode)
 	}
-
 	knownStorageBackends := map[string]bool{"": true, "local": true, "nfs": true}
 	if !knownStorageBackends[parsedConfig.storageBackend] {
-		fmt.Fprintf(os.Stderr, "error: unknown storage-backend %q (must be \"local\" or \"nfs\")\n", parsedConfig.storageBackend)
-		os.Exit(1)
+		return fmt.Errorf("unknown storage-backend %q (must be \"local\" or \"nfs\")", parsedConfig.storageBackend)
 	}
-
 	if parsedConfig.storageBackend != "" && parsedConfig.storageDirectory == "" {
-		fmt.Fprintf(os.Stderr, "error: --storage-dir is required when --storage-backend is set\n")
-		os.Exit(1)
+		return errors.New("--storage-dir is required when --storage-backend is set")
 	}
 
 	tlsFlagCount := 0
-	if parsedConfig.tlsCertPath != "" {
-		tlsFlagCount++
-	}
-	if parsedConfig.tlsKeyPath != "" {
-		tlsFlagCount++
-	}
-	if parsedConfig.tlsCACertPath != "" {
-		tlsFlagCount++
+	for _, tlsPath := range []string{parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath} {
+		if tlsPath != "" {
+			tlsFlagCount++
+		}
 	}
 	if tlsFlagCount > 0 && tlsFlagCount < 3 {
-		fmt.Fprintln(os.Stderr, "error: --cert, --key, and --ca must all be provided together")
-		os.Exit(1)
+		return errors.New("--cert, --key, and --ca must all be provided together")
 	}
-
-	return parsedConfig
+	return nil
 }
 
 // executeAgentCommand starts the node agent, which watches the shared state store

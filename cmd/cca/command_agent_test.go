@@ -27,17 +27,17 @@ func TestDeriveGateHTTPSListenAddress(t *testing.T) {
 // TestParseAgentProxyTLSListen verifies --proxy-tls-listen is parsed, enables
 // the proxy, and that --proxy alone defaults the HTTPS listener.
 func TestParseAgentProxyTLSListen(t *testing.T) {
-	explicitConfig := parseAgentCommandArgs([]string{"--node-id", "node-1", "--proxy-tls-listen", "10.0.0.5:8443"})
+	explicitConfig := mustParseAgentFlags(t, "--node-id", "node-1", "--proxy-tls-listen", "10.0.0.5:8443")
 	if !explicitConfig.proxyEnabled || explicitConfig.proxyTLSListenAddress != "10.0.0.5:8443" {
 		t.Errorf("explicit flag: got enabled=%v address=%q", explicitConfig.proxyEnabled, explicitConfig.proxyTLSListenAddress)
 	}
 
-	defaultConfig := parseAgentCommandArgs([]string{"--node-id", "node-1", "--proxy-listen", "10.0.0.5:8080"})
+	defaultConfig := mustParseAgentFlags(t, "--node-id", "node-1", "--proxy-listen", "10.0.0.5:8080")
 	if defaultConfig.proxyTLSListenAddress != "10.0.0.5:443" {
 		t.Errorf("default HTTPS address: got %q, want 10.0.0.5:443", defaultConfig.proxyTLSListenAddress)
 	}
 
-	disabledConfig := parseAgentCommandArgs([]string{"--node-id", "node-1"})
+	disabledConfig := mustParseAgentFlags(t, "--node-id", "node-1")
 	if disabledConfig.proxyEnabled || disabledConfig.proxyTLSListenAddress != "" {
 		t.Errorf("no proxy flags: got enabled=%v address=%q", disabledConfig.proxyEnabled, disabledConfig.proxyTLSListenAddress)
 	}

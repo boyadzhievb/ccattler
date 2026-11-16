@@ -51,10 +51,12 @@ func main() {
 		}
 		executeLiveContainerCommand(parsedRunConfig)
 	case "init":
-		parsedInitConfig := parseInitCommandArgs(os.Args[2:])
+		parsedInitConfig, initFlagError := parseInitCommandArgs(os.Args[2:])
+		exitOnDaemonFlagError(initFlagError)
 		executeInitCommand(parsedInitConfig)
 	case "server":
-		parsedServerConfig := parseServerCommandArgs(os.Args[2:])
+		parsedServerConfig, serverFlagError := parseServerCommandArgs(os.Args[2:])
+		exitOnDaemonFlagError(serverFlagError)
 		executeServerCommand(parsedServerConfig)
 	case "token":
 		if len(os.Args) < 3 {
@@ -75,7 +77,8 @@ func main() {
 			executeAgentDebugCommand()
 			return
 		}
-		parsedAgentConfig := parseAgentCommandArgs(os.Args[2:])
+		parsedAgentConfig, agentFlagError := parseAgentCommandArgs(os.Args[2:])
+		exitOnDaemonFlagError(agentFlagError)
 		if parsedAgentConfig.nodeID == "" {
 			fmt.Fprintln(os.Stderr, "error: --node-id is required for agent mode")
 			fmt.Fprintln(os.Stderr, "usage: cca agent --node-id <id> --store etcd [--endpoints host:port,...] [--store-prefix /path/]")

@@ -1,0 +1,320 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
+package main
+
+import (
+	"errors"
+	"flag"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+// mustParseServerFlags parses `cca server` arguments and fails the test on an error.
+func mustParseServerFlags(testContext *testing.T, args ...string) serverCommandConfig {
+	testContext.Helper()
+	parsedConfig, parseError := parseServerCommandArgs(args)
+	if parseError != nil {
+		testContext.Fatalf("cca server %v: %v", args, parseError)
+	}
+	return parsedConfig
+}
+
+// mustParseAgentFlags parses `cca agent` arguments and fails the test on an error.
+func mustParseAgentFlags(testContext *testing.T, args ...string) agentCommandConfig {
+	testContext.Helper()
+	parsedConfig, parseError := parseAgentCommandArgs(args)
+	if parseError != nil {
+		testContext.Fatalf("cca agent %v: %v", args, parseError)
+	}
+	return parsedConfig
+}
+
+// mustParseInitFlags parses `cca init` arguments and fails the test on an error.
+func mustParseInitFlags(testContext *testing.T, args ...string) initCommandConfig {
+	testContext.Helper()
+	parsedConfig, parseError := parseInitCommandArgs(args)
+	if parseError != nil {
+		testContext.Fatalf("cca init %v: %v", args, parseError)
+	}
+	return parsedConfig
+}
+
+// TestDaemonFlagsRefuseWhatTheyDoNotUnderstand is the M227 bug: an unknown
+// flag, a flag without its value and a stray argument must be errors that name
+// the offending text, for server, agent and init.
+func TestDaemonFlagsRefuseWhatTheyDoNotUnderstand(testContext *testing.T) {
+	parsersByCommand := map[string]func(args []string) error{
+		"server": func(args []string) error { _, parseError := parseServerCommandArgs(args); return parseError },
+		"agent":  func(args []string) error { _, parseError := parseAgentCommandArgs(args); return parseError },
+		"init":   func(args []string) error { _, parseError := parseInitCommandArgs(args); return parseError },
+	}
+	refusedArguments := []struct {
+		args          []string // args is the command line after the command name.
+		expectedInMsg string   // expectedInMsg must appear in the error.
+	}{
+		{[]string{"--store", "memory", "--no-such-flag"}, "no-such-flag"},
+		{[]string{"--store", "memory", "--kms-provider", "aws-kms"}, "kms-provider"},
+		{[]string{"--store", "memory", "--node-id"}, "node-id"},
+		{[]string{"--store", "memory", "stray-argument"}, "stray-argument"},
+	}
+	for commandName, parseCommandFlags := range parsersByCommand {
+		for _, refusedCase := range refusedArguments {
+			caseArgs := refusedCase.args
+			if commandName == "init" {
+				caseArgs = caseArgs[2:] // init has no --store flag
+			}
+			parseError := parseCommandFlags(caseArgs)
+			if parseError == nil {
+				testContext.Errorf("cca %s %v: accepted, want an error", commandName, caseArgs)
+				continue
+			}
+			if !strings.Contains(parseError.Error(), refusedCase.expectedInMsg) {
+				testContext.Errorf("cca %s %v: error %q does not name %q", commandName, caseArgs, parseError, refusedCase.expectedInMsg)
+			}
+		}
+	}
+}
+
+// jinjaExpressionPattern matches an Ansible `{{ expression }}` in a unit template.
+var jinjaExpressionPattern = regexp.MustCompile(`\{\{[^}]*\}\}`)
+
+// jinjaStatementPattern matches an Ansible `{% statement %}`; removing them
+// keeps the flags of every conditional branch.
+var jinjaStatementPattern = regexp.MustCompile(`\{%[^%]*%\}`)
+
+// jinjaDefaultPattern captures the value of `default('x')` or `default(8080)`.
+var jinjaDefaultPattern = regexp.MustCompile(`default\('?([^')]*)'?\)`)
+
+// renderJinjaExpressionForFlagTest replaces `{{ expression }}` with its
+// default(), a valid storage backend, or a placeholder value.
+func renderJinjaExpressionForFlagTest(jinjaExpression string) string {
+	if defaultMatch := jinjaDefaultPattern.FindStringSubmatch(jinjaExpression); defaultMatch != nil {
+		return defaultMatch[1]
+	}
+	if strings.Contains(jinjaExpression, "storage_backend") {
+		return "local"
+	}
+	return "placeholder"
+}
+
+// extractDaemonInvocations returns the arguments of every `cca server` or
+// `cca agent` ExecStart in unitText, keyed "server"/"agent", with shell line
+// continuations joined and Ansible template syntax rendered.
+func extractDaemonInvocations(unitText string) map[string][][]string {
+	renderedText := jinjaStatementPattern.ReplaceAllString(unitText, "")
+	renderedText = jinjaExpressionPattern.ReplaceAllStringFunc(renderedText, renderJinjaExpressionForFlagTest)
+	invocationsByCommand := map[string][][]string{}
+	unitLines := strings.Split(renderedText, "\n")
+	for lineIndex := 0; lineIndex < len(unitLines); lineIndex++ {
+		_, commandLine, isExecStart := strings.Cut(unitLines[lineIndex], "ExecStart=")
+		if !isExecStart {
+			continue
+		}
+		for strings.HasSuffix(strings.TrimSpace(commandLine), `\`) && lineIndex+1 < len(unitLines) {
+			lineIndex++
+			commandLine = strings.TrimSuffix(strings.TrimSpace(commandLine), `\`) + " " + unitLines[lineIndex]
+		}
+		commandFields := strings.Fields(commandLine)
+		if len(commandFields) < 2 || !strings.HasSuffix(commandFields[0], "/cca") {
+			continue
+		}
+		invocationsByCommand[commandFields[1]] = append(invocationsByCommand[commandFields[1]], commandFields[2:])
+	}
+	return invocationsByCommand
+}
+
+// TestShippedUnitFilesPassOnlyKnownFlags feeds every `cca server` and `cca
+// agent` command line we ship (the `cca init` setup script, install.sh, the
+// Ansible and Lima unit templates) through the real parsers.
+func TestShippedUnitFilesPassOnlyKnownFlags(testContext *testing.T) {
+	unitTextBySource := map[string]string{
+		"cca init setup script": buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24"),
+	}
+	expectedInvocationCount := 2 // setup script: one server unit, one agent unit
+	for _, repositoryPath := range []string{
+		"install.sh", "deploy/lima/lima-deploy.yml",
+		"deploy/ansible/roles/ha-controlplane/templates/cca-server.service.j2",
+		"deploy/ansible/roles/worker/templates/cca-agent.service.j2",
+	} {
+		fileContent, readError := os.ReadFile(filepath.Join("..", "..", repositoryPath)) //nolint:gosec // G304: fixed repository paths
+		if readError != nil {
+			testContext.Fatalf("read %s: %v", repositoryPath, readError)
+		}
+		unitTextBySource[repositoryPath] = string(fileContent)
+	}
+	expectedInvocationCount += 2 + 2 + 1 + 1 // install.sh and Lima: server and agent; one per template
+
+	checkedInvocationCount := 0
+	for sourceName, unitText := range unitTextBySource {
+		invocationsByCommand := extractDaemonInvocations(unitText)
+		for _, serverArgs := range invocationsByCommand["server"] {
+			checkedInvocationCount++
+			if _, parseError := parseServerCommandArgs(serverArgs); parseError != nil {
+				testContext.Errorf("%s: cca server %v: %v", sourceName, serverArgs, parseError)
+			}
+		}
+		for _, agentArgs := range invocationsByCommand["agent"] {
+			checkedInvocationCount++
+			if _, parseError := parseAgentCommandArgs(agentArgs); parseError != nil {
+				testContext.Errorf("%s: cca agent %v: %v", sourceName, agentArgs, parseError)
+			}
+		}
+	}
+	if checkedInvocationCount != expectedInvocationCount {
+		testContext.Errorf("checked %d shipped command lines, want %d: a unit file moved or the extraction broke",
+			checkedInvocationCount, expectedInvocationCount)
+	}
+}
+
+// TestDaemonFlagsRefuseBadValues checks values the old parsers ignored or
+// exited on: they are now returned as errors.
+func TestDaemonFlagsRefuseBadValues(testContext *testing.T) {
+	if _, parseError := parseInitCommandArgs([]string{"--ca-validity", "ten-years"}); parseError == nil {
+		testContext.Error("cca init --ca-validity ten-years: accepted, want an error")
+	}
+	if _, parseError := parseServerCommandArgs([]string{"--store", "memory", "--keyring-retire-grace", "1m"}); parseError == nil {
+		testContext.Error("cca server --keyring-retire-grace 1m: accepted, want an error (minimum 1h)")
+	}
+	if _, parseError := parseServerCommandArgs([]string{"--store", "memory", "--api-only", "--controllers-only"}); parseError == nil {
+		testContext.Error("cca server --api-only --controllers-only: accepted, want an error")
+	}
+	if _, parseError := parseAgentCommandArgs([]string{"--store", "memory", "--runtime", "docker"}); parseError == nil {
+		testContext.Error("cca agent --runtime docker: accepted, want an error")
+	}
+	if _, parseError := parseServerCommandArgs([]string{"--help"}); !errors.Is(parseError, flag.ErrHelp) {
+		testContext.Errorf("cca server --help: got %v, want flag.ErrHelp", parseError)
+	}
+}
+
+// TestServerFlagsEveryFlagReachesItsField pins the meaning of every `cca server`
+// flag, so the parser can be replaced without changing what a unit file does.
+func TestServerFlagsEveryFlagReachesItsField(testContext *testing.T) {
+	parsedConfig := mustParseServerFlags(testContext,
+		"--store", "etcd", "--endpoints", "10.0.0.1:2379", "--store-prefix", "/cca-test/",
+		"--listen", "10.0.0.1:9770", "--cert", "/pki/server.crt", "--key", "/pki/server.key",
+		"--ca", "/pki/ca.crt", "--ca-key", "/pki/ca.key",
+		"--etcd-cert", "/pki/etcd.crt", "--etcd-key", "/pki/etcd.key", "--etcd-ca", "/pki/etcd-ca.crt",
+		"--dns-listen", "10.0.0.1:53", "--log-level", "debug", "--log-format", "json",
+		"--api-only", "--node-id", "ctrl-1", "--cloud-provider", "aws", "--cloud-region", "us-east-1",
+		"--secret-root-key", "/keys/root.key", "--root-key-provider", "aws-kms",
+		"--root-key-id", "alias/ccattler-secrets", "--keyring-retire-grace", "48h",
+		"--oidc-issuer", "https://issuer.example", "--oidc-client-id", "cca-client",
+		"--oidc-claim-team", "groups", "--authn-webhook-url", "https://authn.example/check",
+		"--cluster-cidr", "10.50.0.0/16", "--vip-cidr", "10.60.0.0/24",
+	)
+	expectedConfig := serverCommandConfig{ //nolint:gosec // G101: key file paths, not credentials
+		storeBackend: "etcd", etcdEndpoints: "10.0.0.1:2379", storeKeyPrefix: "/cca-test/",
+		listenAddress: "10.0.0.1:9770", tlsEnabled: true, tlsCertPath: "/pki/server.crt",
+		tlsKeyPath: "/pki/server.key", tlsCACertPath: "/pki/ca.crt", tlsCAKeyPath: "/pki/ca.key",
+		etcdCertPath: "/pki/etcd.crt", etcdKeyPath: "/pki/etcd.key", etcdCACertPath: "/pki/etcd-ca.crt",
+		dnsEnabled: true, dnsListenAddress: "10.0.0.1:53", logLevel: "debug", logFormat: "json",
+		apiOnly: true, nodeID: "ctrl-1", cloudProviderName: "aws", cloudRegion: "us-east-1",
+		oidcIssuerURL: "https://issuer.example", oidcClientID: "cca-client", oidcClaimTeam: "groups",
+		authnWebhookURL: "https://authn.example/check", clusterCIDR: "10.50.0.0/16", vipCIDR: "10.60.0.0/24",
+		secretRootKeyPath: "/keys/root.key", rootKeyProviderName: "aws-kms",
+		rootKeyID: "alias/ccattler-secrets", keyringRetireGrace: 48 * time.Hour,
+	}
+	if !reflect.DeepEqual(parsedConfig, expectedConfig) {
+		testContext.Errorf("parsed server flags differ:\n got  %+v\n want %+v", parsedConfig, expectedConfig)
+	}
+}
+
+// TestServerFlagsSwitchesAndDerivedValues pins the flags without a value and
+// the settings one flag derives for another.
+func TestServerFlagsSwitchesAndDerivedValues(testContext *testing.T) {
+	switchConfig := mustParseServerFlags(testContext, "--store", "memory", "--tls", "--dns", "--controllers-only")
+	if !switchConfig.tlsEnabled || !switchConfig.dnsEnabled || !switchConfig.controllersOnly {
+		testContext.Errorf("--tls, --dns or --controllers-only not set: %+v", switchConfig)
+	}
+	if switchConfig.dnsListenAddress != ":"+defaultDNSListenPort {
+		testContext.Errorf("--dns default listen address: got %q", switchConfig.dnsListenAddress)
+	}
+	if switchConfig.listenAddress != "0.0.0.0:"+defaultAPIListenPort {
+		testContext.Errorf("TLS server default listen address: got %q", switchConfig.listenAddress)
+	}
+
+	plainConfig := mustParseServerFlags(testContext, "--store", "memory")
+	if plainConfig.listenAddress != "127.0.0.1:"+defaultAPIListenPort {
+		testContext.Errorf("non-TLS server must default to loopback, got %q", plainConfig.listenAddress)
+	}
+
+	endpointsConfig := mustParseServerFlags(testContext, "--store", "memory", "--endpoints", "10.0.0.1:2379")
+	if endpointsConfig.storeBackend != "etcd" {
+		testContext.Errorf("--endpoints after --store must select etcd, got %q", endpointsConfig.storeBackend)
+	}
+	laterStoreConfig := mustParseServerFlags(testContext, "--endpoints", "10.0.0.1:2379", "--store", "memory")
+	if laterStoreConfig.storeBackend != "memory" {
+		testContext.Errorf("--store after --endpoints must win, got %q", laterStoreConfig.storeBackend)
+	}
+}
+
+// TestAgentFlagsEveryFlagReachesItsField pins the meaning of every `cca agent` flag.
+func TestAgentFlagsEveryFlagReachesItsField(testContext *testing.T) {
+	parsedConfig := mustParseAgentFlags(testContext,
+		"--store", "etcd", "--endpoints", "10.0.0.1:2379", "--store-prefix", "/cca-test/",
+		"--node-id", "worker-1", "--runtime", "process", "--cert", "/pki/node.crt", "--key", "/pki/node.key",
+		"--ca", "/pki/ca.crt", "--etcd-cert", "/pki/etcd.crt", "--etcd-key", "/pki/etcd.key",
+		"--etcd-ca", "/pki/etcd-ca.crt", "--advertise-address", "10.0.0.2",
+		"--proxy-listen", "10.0.0.2:8080", "--proxy-tls-listen", "10.0.0.2:8443",
+		"--log-level", "debug", "--log-format", "json", "--api-server", "10.0.0.1:9770",
+		"--debug-listen", "10.0.0.2:9771", "--secret-api-listen", "10.0.0.2:9772",
+		"--dataplane", "nftables", "--cluster-cidr", "10.50.0.0/16", "--network-mode", "vxlan",
+		"--dns-upstream", "10.0.0.1:15353", "--storage-backend", "nfs", "--storage-dir", "/mnt/nfs",
+	)
+	expectedConfig := agentCommandConfig{
+		storeBackend: "etcd", etcdEndpoints: "10.0.0.1:2379", storeKeyPrefix: "/cca-test/",
+		nodeID: "worker-1", runtimeBackend: "process", advertiseAddress: "10.0.0.2",
+		tlsCertPath: "/pki/node.crt", tlsKeyPath: "/pki/node.key", tlsCACertPath: "/pki/ca.crt",
+		etcdCertPath: "/pki/etcd.crt", etcdKeyPath: "/pki/etcd.key", etcdCACertPath: "/pki/etcd-ca.crt",
+		proxyEnabled: true, proxyListenAddress: "10.0.0.2:8080", proxyTLSListenAddress: "10.0.0.2:8443",
+		logLevel: "debug", logFormat: "json", apiServerAddress: "10.0.0.1:9770",
+		debugListenAddress: "10.0.0.2:9771", secretAPIListenAddress: "10.0.0.2:9772",
+		dataPlaneBackend: "nftables", clusterCIDR: "10.50.0.0/16", networkMode: "vxlan",
+		dnsUpstream: "10.0.0.1:15353", storageBackend: "nfs", storageDirectory: "/mnt/nfs",
+	}
+	if !reflect.DeepEqual(parsedConfig, expectedConfig) {
+		testContext.Errorf("parsed agent flags differ:\n got  %+v\n want %+v", parsedConfig, expectedConfig)
+	}
+
+	proxyConfig := mustParseAgentFlags(testContext, "--store", "memory", "--node-id", "worker-1", "--proxy")
+	if !proxyConfig.proxyEnabled || proxyConfig.proxyListenAddress != "0.0.0.0:80" {
+		testContext.Errorf("--proxy defaults: %+v", proxyConfig)
+	}
+	if proxyConfig.runtimeBackend != "containerd" || proxyConfig.dataPlaneBackend != "auto" {
+		testContext.Errorf("agent defaults: runtime %q dataplane %q", proxyConfig.runtimeBackend, proxyConfig.dataPlaneBackend)
+	}
+}
+
+// TestInitFlagsEveryFlagReachesItsField pins the meaning of every `cca init` flag.
+func TestInitFlagsEveryFlagReachesItsField(testContext *testing.T) {
+	parsedConfig := mustParseInitFlags(testContext,
+		"--advertise-address", "10.0.0.1", "--node-id", "ctrl-1", "--output", "/tmp/cca-init",
+		"--san", "ctrl-1.example", "--san", "10.0.0.9", "--ca-validity", "100h", "--cert-validity", "50h",
+		"--cluster-cidr", "10.50.0.0/16", "--vip-cidr", "10.60.0.0/24",
+		"--ca", "/pki/ca.crt", "--ca-key", "/pki/ca.key",
+	)
+	expectedConfig := initCommandConfig{
+		outputDirectory: "/tmp/cca-init", advertiseAddress: "10.0.0.1", nodeID: "ctrl-1",
+		extraSANs: []string{"ctrl-1.example", "10.0.0.9"}, caValidity: 100 * time.Hour,
+		certValidity: 50 * time.Hour, clusterCIDR: "10.50.0.0/16", vipCIDR: "10.60.0.0/24",
+		existingCAPath: "/pki/ca.crt", existingCAKeyPath: "/pki/ca.key",
+	}
+	if !reflect.DeepEqual(parsedConfig, expectedConfig) {
+		testContext.Errorf("parsed init flags differ:\n got  %+v\n want %+v", parsedConfig, expectedConfig)
+	}
+
+	shortOutputConfig := mustParseInitFlags(testContext, "--node-id", "ctrl-1", "--advertise-address", "10.0.0.1", "-o", "/tmp/short")
+	if shortOutputConfig.outputDirectory != "/tmp/short" {
+		testContext.Errorf("-o: got %q", shortOutputConfig.outputDirectory)
+	}
+	if shortOutputConfig.caValidity != defaultCACertificateValidityInit ||
+		shortOutputConfig.certValidity != defaultNodeCertificateValidityInit {
+		testContext.Errorf("init validity defaults: %+v", shortOutputConfig)
+	}
+}

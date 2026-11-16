@@ -481,10 +481,23 @@ Found by the M225 design review (R-6, 2026-11-15), verified: `extractClientIP` (
 
 Found by the M221 review (2026-11-16), verified: the flag `switch` in `parseServerCommandArgs` (`cmd/cca/command_server.go:133`) has no `default` case, so `cca server` silently ignores a flag it does not know, and a flag given without its value. A mistyped or removed security flag (`--kms-provider` after M221, a typo in `--tls-cert`, `--oidc-issuer`, `--authn-webhook-url`) leaves the server running without that setting and without any message.
 
-- [ ] Failing test first: `cca server --no-such-flag` and a flag missing its value return an error naming the flag
-- [ ] `cca server` refuses unknown flags and missing values at startup (exit non-zero, message names the flag)
-- [ ] Same check for `cca agent` (`parseAgentCommandArgs`) and the other `parse*Args` functions in `cmd/cca`; one shared helper, not a copy per command
-- [ ] Ansible templates and unit files in `deploy/` pass only known flags (a deploy run would now fail on a stale one)
+Decision (2026-11-16): kube-apiserver, etcd, Consul and Vault all stop at startup on an unknown flag, through a flag library. Server, agent and init move from hand-written switches to Go's standard `flag.FlagSet` (chosen over adding a `default` case to ~80 `case` blocks): unknown flags, missing values and `--flag=value` come from the library, and `--help` lists every flag. Scope: `server` (31 flags), `agent` (26), `init` (10), the commands that configure a node.
+
+- [x] Tests first: `cmd/cca/daemon_flags_test.go` pins what every existing flag does (all flags → expected configuration, switches, derived values, `--endpoints`/`--store` order); it passed on the old parsers before the change and passes on the new ones. The refusal tests (`TestDaemonFlagsRefuseWhatTheyDoNotUnderstand`) need the new error return, so they could not run against the old code
+- [x] `cca server`, `cca agent`, `cca init` refuse an unknown flag, a flag without its value and a stray argument: exit 1, message names it (`error: cca server: flag provided but not defined: --kms-provider (run 'cca server --help' for the flag list)`). Shared helper `cmd/cca/daemon_flags.go`; store, certificate and logging flags registered once for server and agent
+- [x] Values that were ignored or ended the process inside the parser are returned errors: `cca init --ca-validity`/`--cert-validity` with a malformed duration (was silently ignored, default used), `--keyring-retire-grace`, unknown store/runtime/dataplane/network/storage names, incomplete `--cert/--key/--ca`
+- [x] `--help` for the three commands prints every flag with its meaning and default (printed nothing before)
+- [x] Every shipped `cca server` and `cca agent` command line passes only known flags: `TestShippedUnitFilesPassOnlyKnownFlags` feeds the `cca init` setup script, `install.sh`, the Lima file and both Ansible unit templates through the real parsers (7 command lines). It found one: the `cca init` setup script wrote `--etcd-endpoints`, a flag `cca server` never had (`--endpoints`), ignored until now; the server read the same address from `/etc/ccattler/endpoints`. Fixed to `--endpoints`. A first check by shell scan had missed it
+- [ ] Not in this milestone: `events` and the two `benchmark` parsers also ignore unknown flags (2–4 flags each, read-only or local commands)
+- [x] Independent review 2026-11-16 (`code-reviewer`: request changes for one defect, otherwise a faithful port — same 31/26/10 flags, fields, defaults and side effects; `security-audit`: no finding in the diff, no input leaves a security setting weaker than before). Outcome:
+  - fixed — `cca init` setup script passed the unknown `--etcd-endpoints`; with this change every server set up by that script (also the non-HA Ansible role) would have failed to start → `--endpoints`, plus the shipped-unit-files test above
+  - fixed — `registerCertificateFlags` took two `[3]*string` (order by convention) → `tlsFileFlagTargets` with named fields
+  - fixed — boolean value errors still printed `-tls` → `--tls`
+  - rejected — `unexpected argument %q` echoes a stray argument that could be a secret typed by mistake: it is the caller's own command line
+  - rejected — no tests for the agent's incomplete TLS trio and `--storage-dir` rule: validation moved unchanged, not new behaviour
+  - open, decision pending — `cca server --oidc-issuer` without `--oidc-client-id` builds the authenticator with an empty audience and `security/oidc.go` then skips the audience check (verified; pre-existing)
+  - open, decision pending — `cca join` treats unknown flags as extra positional arguments and ignores them, so a mistyped `--ca-cert` drops the CA file (verified; pre-existing)
+  - noted, pre-existing — `--listen ""` and non-TLS `--listen 0.0.0.0:…` only warn
 - [ ] Unit tests, Deploy Testbed
 
 ### Phase 217 — Scale API Safety (M217)

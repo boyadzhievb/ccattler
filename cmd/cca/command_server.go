@@ -9,6 +9,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -126,11 +128,9 @@ type serverCommandConfig struct {
 	keyringRetireGrace time.Duration
 }
 
-// parseServerCommandArgs extracts store-related flags from the arguments
-// following "server". This function exceeds 80 lines because it is a flat
-// flag-to-field switch statement — each case is a simple one-liner assignment.
-// Extracting sub-groups would add indirection without improving clarity.
-func parseServerCommandArgs(args []string) serverCommandConfig {
+// parseServerCommandArgs parses the flags following "server". An unknown flag,
+// a flag without its value and a positional argument are errors (M227).
+func parseServerCommandArgs(args []string) (serverCommandConfig, error) {
 	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := serverCommandConfig{
 		storeBackend:       defaults.storeBackend,
@@ -142,178 +142,97 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 	}
 	explicitListenProvided := false
 
-	for argIndex := 0; argIndex < len(args); argIndex++ {
-		currentArg := args[argIndex]
-		switch currentArg {
-		case "--store":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeBackend = args[argIndex]
-			}
-		case "--endpoints":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdEndpoints = args[argIndex]
-				parsedConfig.storeBackend = "etcd"
-			}
-		case "--store-prefix":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeKeyPrefix = args[argIndex]
-			}
-		case "--listen":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.listenAddress = args[argIndex]
-				explicitListenProvided = true
-			}
-		case "--tls":
-			parsedConfig.tlsEnabled = true
-		case "--cert":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsCertPath = args[argIndex]
-			}
-		case "--key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsKeyPath = args[argIndex]
-			}
-		case "--ca":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsCACertPath = args[argIndex]
-			}
-		case "--ca-key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.tlsCAKeyPath = args[argIndex]
-			}
-		case "--etcd-cert":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdCertPath = args[argIndex]
-			}
-		case "--etcd-key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdKeyPath = args[argIndex]
-			}
-		case "--etcd-ca":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdCACertPath = args[argIndex]
-			}
-		case "--dns":
-			parsedConfig.dnsEnabled = true
-		case "--dns-listen":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.dnsListenAddress = args[argIndex]
-				parsedConfig.dnsEnabled = true
-			}
-		case "--log-level":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.logLevel = args[argIndex]
-			}
-		case "--log-format":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.logFormat = args[argIndex]
-			}
-		case "--api-only":
-			parsedConfig.apiOnly = true
-		case "--controllers-only":
-			parsedConfig.controllersOnly = true
-		case "--node-id":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.nodeID = args[argIndex]
-			}
-		case "--cloud-provider":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.cloudProviderName = args[argIndex]
-			}
-		case "--cloud-region":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.cloudRegion = args[argIndex]
-			}
-		case "--secret-root-key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.secretRootKeyPath = args[argIndex]
-			}
-		case "--root-key-provider":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.rootKeyProviderName = args[argIndex]
-			}
-		case "--root-key-id":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.rootKeyID = args[argIndex]
-			}
-		case "--keyring-retire-grace":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.keyringRetireGrace = parseKeyringRetireGrace(args[argIndex])
-			}
-		case "--oidc-issuer":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.oidcIssuerURL = args[argIndex]
-			}
-		case "--oidc-client-id":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.oidcClientID = args[argIndex]
-			}
-		case "--oidc-claim-team":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.oidcClaimTeam = args[argIndex]
-			}
-		case "--authn-webhook-url":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.authnWebhookURL = args[argIndex]
-			}
-		case "--cluster-cidr":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.clusterCIDR = args[argIndex]
-			}
-		case "--vip-cidr":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.vipCIDR = args[argIndex]
-			}
-		}
+	flagSet := newDaemonFlagSet("server")
+	registerServerListenerFlags(flagSet, &parsedConfig, &explicitListenProvided)
+	registerServerIdentityFlags(flagSet, &parsedConfig)
+	registerServerSecretKeyFlags(flagSet, &parsedConfig)
+	if parseError := parseDaemonFlagSet(flagSet, args); parseError != nil {
+		return parsedConfig, parseError
 	}
+	return finalizeServerCommandConfig(parsedConfig, explicitListenProvided)
+}
 
+// registerServerListenerFlags registers the store, TLS, API listener, DNS and
+// logging flags of `cca server`.
+func registerServerListenerFlags(flagSet *flag.FlagSet, parsedConfig *serverCommandConfig, explicitListenProvided *bool) {
+	registerStoreFlags(flagSet, &parsedConfig.storeBackend, &parsedConfig.etcdEndpoints, &parsedConfig.storeKeyPrefix)
+	registerCertificateFlags(flagSet,
+		tlsFileFlagTargets{certificatePath: &parsedConfig.tlsCertPath, privateKeyPath: &parsedConfig.tlsKeyPath,
+			caCertificatePath: &parsedConfig.tlsCACertPath},
+		tlsFileFlagTargets{certificatePath: &parsedConfig.etcdCertPath, privateKeyPath: &parsedConfig.etcdKeyPath,
+			caCertificatePath: &parsedConfig.etcdCACertPath})
+	registerLogFlags(flagSet, &parsedConfig.logLevel, &parsedConfig.logFormat)
+	flagSet.Func("listen", "API listen address (default 0.0.0.0:"+defaultAPIListenPort+" with TLS, 127.0.0.1 without)",
+		func(flagValue string) error {
+			parsedConfig.listenAddress = flagValue
+			*explicitListenProvided = true
+			return nil
+		})
+	flagSet.BoolVar(&parsedConfig.tlsEnabled, "tls", false, "mTLS with an auto-generated cluster CA")
+	flagSet.StringVar(&parsedConfig.tlsCAKeyPath, "ca-key", "", "PEM CA private key; enables node enrollment (cca join)")
+	flagSet.BoolVar(&parsedConfig.dnsEnabled, "dns", false, "start the built-in DNS server")
+	flagSet.Func("dns-listen", "DNS listen address (default :"+defaultDNSListenPort+"); enables --dns",
+		func(flagValue string) error {
+			parsedConfig.dnsListenAddress = flagValue
+			parsedConfig.dnsEnabled = true
+			return nil
+		})
+	flagSet.StringVar(&parsedConfig.clusterCIDR, "cluster-cidr", "", "overlay network CIDR for container IPs")
+	flagSet.StringVar(&parsedConfig.vipCIDR, "vip-cidr", "", "service virtual IP CIDR")
+}
+
+// registerServerIdentityFlags registers the replica role, cloud provider and
+// external authentication flags of `cca server`.
+func registerServerIdentityFlags(flagSet *flag.FlagSet, parsedConfig *serverCommandConfig) {
+	flagSet.BoolVar(&parsedConfig.apiOnly, "api-only", false, "run the API server without controllers")
+	flagSet.BoolVar(&parsedConfig.controllersOnly, "controllers-only", false, "run the controllers without the API server")
+	flagSet.StringVar(&parsedConfig.nodeID, "node-id", "", "name of this control-plane replica (default: hostname)")
+	flagSet.StringVar(&parsedConfig.cloudProviderName, "cloud-provider", "", "cloud provider: aws, gcp, azure or simulator")
+	flagSet.StringVar(&parsedConfig.cloudRegion, "cloud-region", "", "cloud region, e.g. us-east-1")
+	flagSet.StringVar(&parsedConfig.oidcIssuerURL, "oidc-issuer", "", "issuer URL of an external OIDC provider")
+	flagSet.StringVar(&parsedConfig.oidcClientID, "oidc-client-id", "", "OAuth2 client ID at the OIDC provider")
+	flagSet.StringVar(&parsedConfig.oidcClaimTeam, "oidc-claim-team", "", "token claim holding the team (default: team)")
+	flagSet.StringVar(&parsedConfig.authnWebhookURL, "authn-webhook-url", "", "HTTPS endpoint that checks bearer tokens")
+}
+
+// registerServerSecretKeyFlags registers the secret root key flags of `cca server`.
+func registerServerSecretKeyFlags(flagSet *flag.FlagSet, parsedConfig *serverCommandConfig) {
+	flagSet.StringVar(&parsedConfig.secretRootKeyPath, "secret-root-key", parsedConfig.secretRootKeyPath,
+		"root key file that protects the secret keyring")
+	flagSet.StringVar(&parsedConfig.rootKeyProviderName, "root-key-provider", "",
+		"cloud key as the secret root key: aws-kms or gcp-kms")
+	flagSet.StringVar(&parsedConfig.rootKeyID, "root-key-id", "", "ID of the cloud key (with --root-key-provider)")
+	flagSet.Func("keyring-retire-grace", "how long a retiring key version is kept, e.g. 168h",
+		func(flagValue string) error {
+			retireGrace, graceError := parseKeyringRetireGrace(flagValue)
+			if graceError != nil {
+				return graceError
+			}
+			parsedConfig.keyringRetireGrace = retireGrace
+			return nil
+		})
+}
+
+// finalizeServerCommandConfig checks flag combinations and fills the values
+// that depend on other flags (DNS and API listen addresses, replica name).
+func finalizeServerCommandConfig(parsedConfig serverCommandConfig, explicitListenProvided bool) (serverCommandConfig, error) {
 	if parsedConfig.dnsEnabled && parsedConfig.dnsListenAddress == "" {
 		parsedConfig.dnsListenAddress = ":" + defaultDNSListenPort
 	}
 
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
-		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
-		os.Exit(1)
+		return parsedConfig, fmt.Errorf("unknown store backend %q (must be \"memory\" or \"etcd\")", parsedConfig.storeBackend)
 	}
 
 	if parsedConfig.tlsCertPath != "" || parsedConfig.tlsKeyPath != "" || parsedConfig.tlsCACertPath != "" {
 		if parsedConfig.tlsCertPath == "" || parsedConfig.tlsKeyPath == "" || parsedConfig.tlsCACertPath == "" {
-			fmt.Fprintln(os.Stderr, "error: --cert, --key, and --ca must all be specified together")
-			os.Exit(1)
+			return parsedConfig, errors.New("--cert, --key, and --ca must all be specified together")
 		}
 		parsedConfig.tlsEnabled = true
 	}
 
 	if parsedConfig.apiOnly && parsedConfig.controllersOnly {
-		fmt.Fprintln(os.Stderr, "error: --api-only and --controllers-only are mutually exclusive")
-		os.Exit(1)
+		return parsedConfig, errors.New("--api-only and --controllers-only are mutually exclusive")
 	}
 
 	if parsedConfig.nodeID == "" {
@@ -334,7 +253,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 		fmt.Fprintln(os.Stderr, "WARNING: non-TLS server bound to 0.0.0.0 — use --tls for network-accessible deployments")
 	}
 
-	return parsedConfig
+	return parsedConfig, nil
 }
 
 // executeServerCommand starts the control plane: all reconciliation controllers

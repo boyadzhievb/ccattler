@@ -46,70 +46,32 @@ type initCommandConfig struct {
 	existingCAKeyPath string
 }
 
-// parseInitCommandArgs extracts flags from the arguments following "init".
-func parseInitCommandArgs(args []string) initCommandConfig {
+// parseInitCommandArgs parses the flags following "init". An unknown flag, a
+// flag without its value, a malformed duration and a positional argument are
+// errors (M227).
+func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 	parsedConfig := initCommandConfig{
 		caValidity:   defaultCACertificateValidityInit,
 		certValidity: defaultNodeCertificateValidityInit,
 	}
 
-	for argIndex := 0; argIndex < len(args); argIndex++ {
-		switch args[argIndex] {
-		case "--advertise-address":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.advertiseAddress = args[argIndex]
-			}
-		case "--node-id":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.nodeID = args[argIndex]
-			}
-		case "--output", "-o":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.outputDirectory = args[argIndex]
-			}
-		case "--san":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.extraSANs = append(parsedConfig.extraSANs, args[argIndex])
-			}
-		case "--ca-validity":
-			if argIndex+1 < len(args) {
-				argIndex++
-				if parsed, parseErr := time.ParseDuration(args[argIndex]); parseErr == nil {
-					parsedConfig.caValidity = parsed
-				}
-			}
-		case "--cert-validity":
-			if argIndex+1 < len(args) {
-				argIndex++
-				if parsed, parseErr := time.ParseDuration(args[argIndex]); parseErr == nil {
-					parsedConfig.certValidity = parsed
-				}
-			}
-		case "--cluster-cidr":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.clusterCIDR = args[argIndex]
-			}
-		case "--vip-cidr":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.vipCIDR = args[argIndex]
-			}
-		case "--ca":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.existingCAPath = args[argIndex]
-			}
-		case "--ca-key":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.existingCAKeyPath = args[argIndex]
-			}
-		}
+	flagSet := newDaemonFlagSet("init")
+	flagSet.StringVar(&parsedConfig.advertiseAddress, "advertise-address", "", "IP address for the node certificate (default: detected)")
+	flagSet.StringVar(&parsedConfig.nodeID, "node-id", "", "node name for the certificate (default: hostname)")
+	flagSet.StringVar(&parsedConfig.outputDirectory, "output", "", "directory for the generated PKI and setup script")
+	flagSet.StringVar(&parsedConfig.outputDirectory, "o", "", "short for --output")
+	flagSet.Func("san", "extra DNS name or IP address for the certificate (repeatable)", func(flagValue string) error {
+		parsedConfig.extraSANs = append(parsedConfig.extraSANs, flagValue)
+		return nil
+	})
+	flagSet.DurationVar(&parsedConfig.caValidity, "ca-validity", parsedConfig.caValidity, "CA certificate lifetime")
+	flagSet.DurationVar(&parsedConfig.certValidity, "cert-validity", parsedConfig.certValidity, "node certificate lifetime")
+	flagSet.StringVar(&parsedConfig.clusterCIDR, "cluster-cidr", "", "overlay network CIDR for container IPs")
+	flagSet.StringVar(&parsedConfig.vipCIDR, "vip-cidr", "", "service virtual IP CIDR")
+	flagSet.StringVar(&parsedConfig.existingCAPath, "ca", "", "existing CA certificate to reuse (HA setup)")
+	flagSet.StringVar(&parsedConfig.existingCAKeyPath, "ca-key", "", "private key of the existing CA")
+	if parseError := parseDaemonFlagSet(flagSet, args); parseError != nil {
+		return parsedConfig, parseError
 	}
 
 	if parsedConfig.nodeID == "" {
@@ -130,7 +92,7 @@ func parseInitCommandArgs(args []string) initCommandConfig {
 		}
 	}
 
-	return parsedConfig
+	return parsedConfig, nil
 }
 
 // executeInitCommand generates PKI material and writes a setup script that
@@ -398,7 +360,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("  --key /etc/ccattler/pki/node-key.pem \\\n")
 	scriptBuilder.WriteString("  --ca /etc/ccattler/pki/ca.pem \\\n")
 	scriptBuilder.WriteString("  --ca-key /etc/ccattler/pki/ca-key.pem \\\n")
-	scriptBuilder.WriteString("  --etcd-endpoints https://127.0.0.1:2379 \\\n")
+	scriptBuilder.WriteString("  --endpoints https://127.0.0.1:2379 \\\n")
 	scriptBuilder.WriteString("  --etcd-cert /etc/ccattler/pki/node.pem \\\n")
 	scriptBuilder.WriteString("  --etcd-key /etc/ccattler/pki/node-key.pem \\\n")
 	if vipCIDR != "" {

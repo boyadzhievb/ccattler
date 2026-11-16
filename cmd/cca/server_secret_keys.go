@@ -88,13 +88,12 @@ const minimumKeyringRetireGrace = time.Hour
 
 // parseKeyringRetireGrace parses --keyring-retire-grace (a Go duration such as
 // 168h); a malformed value or one below minimumKeyringRetireGrace is a startup error.
-func parseKeyringRetireGrace(flagValue string) time.Duration {
+func parseKeyringRetireGrace(flagValue string) (time.Duration, error) {
 	retireGrace, parseError := time.ParseDuration(flagValue)
 	if parseError != nil || retireGrace < minimumKeyringRetireGrace {
-		fmt.Fprintf(os.Stderr, "error: --keyring-retire-grace %q must be a duration of at least %s (e.g. 168h)\n", flagValue, minimumKeyringRetireGrace)
-		os.Exit(1)
+		return 0, fmt.Errorf("must be a duration of at least %s (e.g. 168h)", minimumKeyringRetireGrace)
 	}
-	return retireGrace
+	return retireGrace, nil
 }
 
 // loadSecretRootKeyProvider returns the root key provider: a cloud key (AWS
