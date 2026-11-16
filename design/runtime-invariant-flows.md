@@ -1041,7 +1041,10 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
 8. Materialization (agent)
    /run/ccattler/secrets/{id}/ (tmpfs, dir 0700 root), files 0444, Spec.SecretMounts
    secret files, connection URLs (agent assembles from password + definition);
-   bind-mount read-only at declared paths
+   bind-mount read-only (ro,nosuid,nodev,noexec) at declared paths. Since M232 the
+   container has no tmpfs on /run: runc creates the empty mount points
+   (/run/cca-secrets/...) in the container's writable layer; values stay on the
+   node's tmpfs
 
 9. Image pull (Flow 14, credentials from step 8), container starts; state running.
    only if the service sets legacy_secret_api true (deprecated, removed after M174):

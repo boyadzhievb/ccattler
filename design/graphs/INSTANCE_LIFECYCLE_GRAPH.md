@@ -200,6 +200,7 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   │           │   └── runInitCommand(ctx, image, svc, step) [init.go:209]
 │   │           │       ├── materializeInitConfigFiles(ctx, svc, spec) [init.go:419]
 │   │           │       └── runtime.ExecInit(image, ExecSpec)
+│   │           │           └── [containerd] buildInitContainerSpecOptions → containerBaseSpecOptions (no /run tmpfs, M232)
 │   │           │
 │   │           ├── SUCCESS:
 │   │           │   ├── PUT init/step/{n}/state = "succeeded"
@@ -237,6 +238,8 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │
 └── startInstanceAndPublishState(ctx, instanceInfo, ...)     :956
     ├── runtime.Start(spec)
+    │   ├── [containerd] WithNewSpec(WithImageConfig, buildOCISpecOptions(spec, netns)...)
+    │   │   └── containerBaseSpecOptions: WithoutRunMount (no tmpfs on /run, M232)
     │   ├── START FAILED:
     │   │   ├── PUT observed/instance/{id}/state = "failed"
     │   │   ├── publishStatusReason("start failed: {err}")

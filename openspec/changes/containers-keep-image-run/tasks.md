@@ -2,13 +2,13 @@
 
 ## 0. Failing tests first
 
-- [ ] 0.1 Make the spec builders testable (D2): `Start` and `ExecInit` prepend `oci.WithImageConfig(image)`; `buildOCISpecOptions(spec, netnsPath)` and new `buildInitContainerSpecOptions(execSpec, initContainerName)` return the rest; no behaviour change
-- [ ] 0.2 Write `TestContainerSpecKeepsImageRun` (spec with a granted secret: no mount on `/run`, `/run/cca-secrets/<name>` bind `ro,nosuid,nodev,noexec` from the secret directory) and `TestInitContainerSpecKeepsImageRun` in `runtime/`; record them failing on the `/run` assertion
+- [x] 0.1 Make the spec builders testable (D2): `Start` and `ExecInit` prepend `oci.WithImageConfig(image)`; `buildOCISpecOptions(spec, netnsPath)` and new `buildInitContainerSpecOptions(execSpec, initContainerName)` return the rest; no behaviour change — the init options moved out of `ExecInit` unchanged (same order: args, host network, env, hostname, resolv.conf, secrets, config files)
+- [x] 0.2 Write `TestContainerSpecKeepsImageRun` (spec with a granted secret: no mount on `/run`, `/run/cca-secrets/<name>` bind `ro,nosuid,nodev,noexec` from the secret directory) and `TestInitContainerSpecKeepsImageRun` in `runtime/`; record them failing on the `/run` assertion — `runtime/container_spec_test.go`, applies the options with `oci.GenerateSpec` (containerd's default spec, no daemon, no image). Before the fix both failed only on `spec mounts tmpfs on /run ([nosuid strictatime mode=755 size=65536k])`; the secret assertions passed
 
 ## 1. Fix
 
-- [ ] 1.1 Shared base options with `oci.WithoutRunMount` (D1), used by both builders; the two tests pass
-- [ ] 1.2 Docs: `design/node-agent.md` (what a container sees under `/run`), Flow 27 (secret mount points are created in the container's writable layer, values stay on the node's memory filesystem), the spec-building calls in `design/graphs/INSTANCE_LIFECYCLE_GRAPH.md`
+- [x] 1.1 Shared base options with `oci.WithoutRunMount` (D1), used by both builders; the two tests pass — `containerBaseSpecOptions()` in `runtime/containerd.go`; both tests pass
+- [x] 1.2 Docs: `design/node-agent.md` (what a container sees under `/run`), Flow 27 (secret mount points are created in the container's writable layer, values stay on the node's memory filesystem), the spec-building calls in `design/graphs/INSTANCE_LIFECYCLE_GRAPH.md`
 
 ## 2. WordPress on the testbed
 

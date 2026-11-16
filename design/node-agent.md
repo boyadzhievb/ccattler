@@ -45,3 +45,5 @@ Container runtime interface (pluggable — SimulatorRuntime, ProcessRuntime, Con
 ```
 ensure_container(id, image, resources, environment, mounts, network, desired_state)
 ```
+
+What a container sees (ContainerdRuntime, spec [container-filesystem](../openspec/specs/container-filesystem/spec.md)): the image's filesystem, plus containerd's default `/proc`, `/dev`, `/dev/shm`, `/sys` mounts and only the paths CCattler adds: `/etc/hosts`, `/etc/resolv.conf`, config files (read-only), secret files (read-only, Flow 27) and volumes. There is no tmpfs on `/run` (removed in M232, `containerBaseSpecOptions`), so the image's `/run` and `/var/run` content is visible as under Docker; writes there go to the container's writable layer, not to memory.

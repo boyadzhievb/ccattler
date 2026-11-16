@@ -392,7 +392,8 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 		netnsPath = createdNetnsPath
 	}
 
-	ociSpecOptions := containerdRuntime.buildOCISpecOptions(spec, image, netnsPath)
+	// Image config first: the options after it override its args and add to its env.
+	ociSpecOptions := append([]oci.SpecOpts{oci.WithImageConfig(image)}, containerdRuntime.buildOCISpecOptions(spec, netnsPath)...)
 
 	newContainer, createError := containerdRuntime.client.NewContainer(
 		namespacedCtx,
@@ -467,13 +468,19 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 	return nil
 }
 
-// buildOCISpecOptions constructs the OCI spec options from a workload Spec,
-// configuring image defaults, env vars, hostname, resource limits, mounts,
-// network namespace, and DNS. Pass empty netnsPath to skip networking.
-func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image containerd.Image, netnsPath string) []oci.SpecOpts {
-	ociOptions := []oci.SpecOpts{
-		oci.WithImageConfig(image),
-	}
+// containerBaseSpecOptions returns the options every main and init container
+// gets. containerd's default spec mounts a tmpfs on /run, which hides what the
+// image ships there (MariaDB needs /run/mysqld); Docker, nerdctl and the CRI
+// plugin do not mount it, so it is removed (M232, spec container-filesystem).
+func containerBaseSpecOptions() []oci.SpecOpts {
+	return []oci.SpecOpts{oci.WithoutRunMount}
+}
+
+// buildOCISpecOptions constructs the OCI spec options from a workload Spec:
+// env vars, hostname, resource limits, mounts, network namespace and DNS. The
+// caller prepends oci.WithImageConfig. Empty netnsPath skips networking.
+func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, netnsPath string) []oci.SpecOpts {
+	ociOptions := containerBaseSpecOptions()
 
 	if len(spec.Command) > 0 {
 		ociOptions = append(ociOptions, oci.WithProcessArgs(spec.Command...))
@@ -542,6 +549,56 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
 	}
 
+	return ociOptions
+}
+
+// buildInitContainerSpecOptions constructs the OCI spec options for an init
+// step: bash -c command on the host network, env, hostname, resolv.conf, secret
+// and config file mounts. Writes the resolv.conf and config files under the
+// init container's host directory. The caller prepends oci.WithImageConfig.
+func (containerdRuntime *ContainerdRuntime) buildInitContainerSpecOptions(execSpec ExecSpec, initContainerName string) []oci.SpecOpts {
+	ociOptions := append(containerBaseSpecOptions(),
+		oci.WithProcessArgs("bash", "-c", execSpec.Command),
+		oci.WithHostNamespace(specs.NetworkNamespace),
+	)
+	if len(execSpec.Env) > 0 {
+		envVars := make([]string, 0, len(execSpec.Env))
+		for envKey, envValue := range execSpec.Env {
+			envVars = append(envVars, envKey+"="+envValue)
+		}
+		ociOptions = append(ociOptions, oci.WithEnv(envVars))
+	}
+	if containerdRuntime.dnsSearchDomain != "" {
+		ociOptions = append(ociOptions, oci.WithHostname(initContainerName))
+	}
+	var bindMounts []specs.Mount
+	if containerdRuntime.dnsAddress != "" {
+		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
+		resolvHostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", "resolv.conf")
+		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
+		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
+		bindMounts = append(bindMounts, specs.Mount{
+			Destination: "/etc/resolv.conf",
+			Type:        "bind",
+			Source:      resolvHostPath,
+			Options:     []string{"rbind", "ro"},
+		})
+	}
+	bindMounts = append(bindMounts, buildSecretOCIMounts(execSpec.SecretMounts)...)
+	for containerPath, fileContent := range execSpec.ConfigFiles {
+		hostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
+		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) // #nosec G306 — 0755 so scripts like cca-secret are executable; bind-mounted :ro
+		bindMounts = append(bindMounts, specs.Mount{
+			Destination: containerPath,
+			Type:        "bind",
+			Source:      hostPath,
+			Options:     []string{"rbind", "ro"},
+		})
+	}
+	if len(bindMounts) > 0 {
+		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
+	}
 	return ociOptions
 }
 
@@ -959,51 +1016,9 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 		return mountError
 	}
 	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
-
-	envVars := make([]string, 0, len(execSpec.Env))
-	for envKey, envValue := range execSpec.Env {
-		envVars = append(envVars, envKey+"="+envValue)
-	}
-
-	ociOptions := []oci.SpecOpts{
-		oci.WithImageConfig(image),
-		oci.WithProcessArgs("bash", "-c", execSpec.Command),
-		oci.WithHostNamespace(specs.NetworkNamespace),
-	}
-	if len(envVars) > 0 {
-		ociOptions = append(ociOptions, oci.WithEnv(envVars))
-	}
-	if containerdRuntime.dnsSearchDomain != "" {
-		ociOptions = append(ociOptions, oci.WithHostname(initContainerName))
-	}
-	var bindMounts []specs.Mount
-	if containerdRuntime.dnsAddress != "" {
-		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
-		resolvHostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", "resolv.conf")
-		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
-		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
-		bindMounts = append(bindMounts, specs.Mount{
-			Destination: "/etc/resolv.conf",
-			Type:        "bind",
-			Source:      resolvHostPath,
-			Options:     []string{"rbind", "ro"},
-		})
-	}
-	bindMounts = append(bindMounts, buildSecretOCIMounts(execSpec.SecretMounts)...)
-	for containerPath, fileContent := range execSpec.ConfigFiles {
-		hostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
-		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) // #nosec G306 — 0755 so scripts like cca-secret are executable; bind-mounted :ro
-		bindMounts = append(bindMounts, specs.Mount{
-			Destination: containerPath,
-			Type:        "bind",
-			Source:      hostPath,
-			Options:     []string{"rbind", "ro"},
-		})
-	}
-	if len(bindMounts) > 0 {
-		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
-	}
+	// Image config first: the options after it override its args and add to its env.
+	ociOptions := append([]oci.SpecOpts{oci.WithImageConfig(image)},
+		containerdRuntime.buildInitContainerSpecOptions(execSpec, initContainerName)...)
 
 	initHostDir := filepath.Join(ContainerdLogBaseDir, initContainerName)
 	defer func() { _ = os.RemoveAll(initHostDir) }()
