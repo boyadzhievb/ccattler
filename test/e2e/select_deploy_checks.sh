@@ -20,9 +20,9 @@ CASES_FILE="${CASES_FILE:-$REPO_ROOT/test/e2e/adversarial/cases.yml}"
 
 # DEFAULT_WORKLOADS is the manual run's workload set when the form gives none.
 DEFAULT_WORKLOADS="airflow,whoami,whoami-multiport,gate-tls"
-# PUSH_WORKLOADS is the push profile's workload set. WordPress joins it with
-# M232 (a tmpfs over /run keeps its database from starting; M231 design D6a).
-PUSH_WORKLOADS="whoami"
+# PUSH_WORKLOADS is the push profile's workload set: whoami, plus WordPress for
+# a database, volumes, secrets and a gate (joined with M232, the /run fix).
+PUSH_WORKLOADS="whoami,wordpress"
 # PUSH_SKIPPED_GROUPS are the slow groups a push run never runs.
 PUSH_SKIPPED_GROUPS="gate-tls,node-failure,multiport,warmzero"
 # ZERO_SHA is what GitHub sends as "before" for a newly created branch.

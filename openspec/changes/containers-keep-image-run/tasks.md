@@ -12,8 +12,8 @@
 
 ## 2. WordPress on the testbed
 
-- [ ] 2.1 Deploy whoami + WordPress by hand on the deploy testbed with the fixed binary (`--workload whoami,wordpress`, slow groups skipped); MariaDB stays running, the WordPress checks (Step 5.18) pass; record the time; `deploy-run:wordpress`
-- [ ] 2.2 `PUSH_WORKLOADS="whoami,wordpress"` and the self-test case (D3); `design/TESTING.md` push profile
+- [x] 2.1 Deploy whoami + WordPress by hand on the deploy testbed with the fixed binary (`--workload whoami,wordpress`, slow groups skipped); MariaDB stays running, the WordPress checks (Step 5.18) pass; record the time; `deploy-run:wordpress` — 2026-11-16, f676b0c binary on the a267019 scripts, as bojan: `TEST PASSED`, 210 s (whoami alone was 149 s). MariaDB started once (`instance.running` 16:06:47, readiness recovered 16:07:20 after the first database setup), **0 `instance.exit` events**; all five WordPress instances running and healthy; `WordPress answers 302 …/wp-admin/install.php` through the nginx VIP `10.156.0.4:80` and through the gate `wordpress.home.arpa` on cca-deploy-ctrl; `WordPress checks PASSED`
+- [x] 2.2 `PUSH_WORKLOADS="whoami,wordpress"` and the self-test case (D3); `design/TESTING.md` push profile — self-test passes
 
 ## 3. Crash-loop observations (D4)
 
