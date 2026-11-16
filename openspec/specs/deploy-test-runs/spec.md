@@ -40,12 +40,12 @@ The replay SHALL run only the cases whose name matches the given pattern when on
 - Check: `test/e2e/adversarial/run_selftest.sh`
 
 ### Requirement: A code push starts a fast run
-A push to `master` or to a milestone branch that changes anything outside `openspec/`, `design/`, `website/` and Markdown files SHALL start a Deploy Testbed run with the workload whoami, the quick checks only, and the replay cases the push adds or changes. Docs-only pushes and tags SHALL start nothing. Of several pending push runs only the newest SHALL run, and a push run SHALL never cancel or replace a run started by hand.
+A push to `master` or to a milestone branch that changes anything outside `openspec/`, `design/`, `website/` and Markdown files SHALL start a Deploy Testbed run with the workloads whoami and WordPress, the quick checks only, and the replay cases the push adds or changes. Docs-only pushes and tags SHALL start nothing. Of several pending push runs only the newest SHALL run, and a push run SHALL never cancel or replace a run started by hand.
 
 #### Scenario: Code push
 - **WHEN** a commit changing Go code is pushed to `master`
-- **THEN** a Deploy Testbed run starts with workload whoami (WordPress joins with M232), logs `skipped check groups: gate-tls,node-failure,multiport,warmzero`, and runs no replay case unless the push changed `cases.yml`
-- Check: `deploy-run:push-fast`
+- **THEN** a Deploy Testbed run starts with workloads whoami and WordPress, logs `skipped check groups: gate-tls,node-failure,multiport,warmzero`, runs the WordPress checks, and runs no replay case unless the push changed `cases.yml`
+- Check: `deploy-run:push-fast`, selection self-test `push uses whoami and wordpress`
 
 #### Scenario: Push with a changed replay case
 - **WHEN** a pushed commit adds the case `scale-upper-bound` to `test/e2e/adversarial/cases.yml`
