@@ -543,10 +543,10 @@ To be proposed as an OpenSpec change when work starts.
 
 Found by the first WordPress deploy (M231 task 3.2, 2026-11-16), verified: `runtime/containerd.go` builds the container spec from containerd's defaults, which mount a tmpfs on `/run`, and never removes it (no `oci.WithoutRunMount`; Docker and nerdctl do not mount it). Whatever an image ships under `/run` (or `/var/run`, usually a symlink to it) disappears. MariaDB's entrypoint needs `/run/mysqld`: run by hand with `ctr` it prints `find: '/run/mysqld': No such file or directory` and exits 1; under CCattler it crash-looped about every second, and WordPress never got a database. Secret files are bind-mounted under `/run/secrets` and `/run/cca-secrets` (Flow 27) and must keep working without the tmpfs.
 
-OpenSpec change: [`containers-keep-image-run`](openspec/changes/containers-keep-image-run/) (checklist in its `tasks.md`). Also to verify during M232 (seen in the same crash loop; each becomes its own bug milestone if confirmed):
-- the crash-looping instance stayed `running` with `Restarts: 0` and was restarted about every second without back-off
-- its readiness probe targeted `10.92.128.130` while the instance IP was `10.92.128.140`
-- each restart replaced the container log, so `cca logs` never showed the error that caused the exit
+OpenSpec change: [`containers-keep-image-run`](openspec/changes/containers-keep-image-run/) (checklist in its `tasks.md`). The three observations from the same crash loop were verified in M232 (tasks 3.1–3.3):
+- the crash-looping instance stayed `running` with `Restarts: 0` and was restarted about every second without back-off → confirmed, M233
+- its readiness probe targeted `10.92.128.130` while the instance IP was `10.92.128.140` → not a separate bug (each in-place restart gets a new CNI IP), folded into M233
+- each restart replaced the container log, so `cca logs` never showed the error that caused the exit → confirmed, M234
 
 Done when: a test with an image that ships files under `/run` passes; WordPress deploys on the testbed and passes its checks; WordPress is added to the push-run profile (`PUSH_WORKLOADS` in `test/e2e/select_deploy_checks.sh`, M231 spec "A code push starts a fast run").
 

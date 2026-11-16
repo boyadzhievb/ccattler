@@ -25,5 +25,11 @@
 ## 4. Close
 
 - [x] 4.1 gofmt, golangci-lint, `go test ./runtime/ ./agent/` — gofmt clean, golangci-lint `./runtime/` 0 issues, both packages pass
-- [ ] 4.2 Independent review: `code-reviewer` and `security-audit` (secret mounts); record every finding as fixed or rejected with one line here
+- [x] 4.2 Independent review: `code-reviewer` and `security-audit` (secret mounts); record every finding as fixed or rejected with one line here — 2026-11-16 on 1c0191e..01248c1. `code-reviewer`: approve, no defects (ExecInit extraction behaviour-identical, `WithoutRunMount` drops only the `/run` mount, no other runtime builds OCI specs, M233/M234 claims verified in the code). `security-audit`: no defects (secret values stay on the node tmpfs, only empty mount points in the writable layer; snapshots removed on stop; destinations resolved inside the rootfs). Outcome:
+  - fixed (low, security-audit) — docs did not say that a secret an application copies to `/run` (or any writable path) is now on the node's disk: one sentence in `design/node-agent.md`
+  - fixed (nit, code-reviewer) — milestones.md Phase 232 still listed the three observations as "to verify": now states each outcome
+  - rejected (low, security-audit) — `buildSecretOCIMounts` returns nil on invalid paths: unreachable, `Start` and `ExecInit` validate the same mounts with `sortedSecretMountBindings` first and fail the start
+  - rejected (low, both) — runc's handling of the new mount points is not executed by the unit test, and the wiring of `Start`/`ExecInit` to the builders is not unit-tested: the WordPress testbed run (2.1) executed both with secrets mounted (MariaDB and WordPress authenticated)
+  - noted (nit, code-reviewer) — the `container-filesystem` spec link in `design/node-agent.md` resolves once the change is archived at release
+  - noted, pre-existing — no disk quota on the container writable layer (`/tmp`, `/var` were already unbounded; `/run` joins them); `os.WriteFile`/`MkdirAll` errors for config files are ignored in both builders (as before the extraction)
 - [ ] 4.3 Full Deploy Testbed run (summary says full run), then a push run that includes WordPress
