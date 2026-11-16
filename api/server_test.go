@@ -221,6 +221,7 @@ func TestApplyInvalidDSL(t *testing.T) {
 func TestScaleService(t *testing.T) {
 	baseURL, factStore, cleanup := newTestServer(t)
 	defer cleanup()
+	declareScaleTestService(t, factStore, "web")
 
 	body := `{"service": "web", "instances": 5}`
 	resp, err := http.Post(baseURL+"/api/scale", "application/json", strings.NewReader(body))

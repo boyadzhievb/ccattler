@@ -84,7 +84,7 @@ A requested count above 600 SHALL be refused with 400, unless the request carrie
 #### Scenario: Retyped count differs
 - **WHEN** `cca scale web 100000` runs on a terminal and the user types `10000`
 - **THEN** nothing is sent and the command exits non-zero
-- Test: `cmd/cca/TestScaleCommandSendsApproval`
+- Test: `cmd/cca/TestScaleCountPromptRequiresSameCount`
 
 ### Requirement: Only declared services keep instances
 The system SHALL run instances only for services that have a `desired/service/{name}` declaration. When a count exists for a name without a declaration, the system SHALL set that name's effective instance count to 0, whatever its user or autoscaler intent says.

@@ -45,8 +45,8 @@ The configuration is parsed and compiled first (existing stages), then every ser
 For a name with an intent but no declaration, the intent resolver writes `effective/service/{name}/instances = 0`. The instance controller then stops every instance of that name through its normal scale-down. Deleting the effective count instead would hide the name from the instance controller and leave the instances running forever (`controllers/instance.go:89`). The stale intents stay: the resolver may not write `intent/` (write domain), they are harmless with a 0 effective count, and declaring the service again overwrites the user intent through apply.
 Alternative: the instance controller stops instances of any service without an effective count — rejected: job instances have no effective count and would be stopped.
 
-### D7. Approval is audited through the API server's audit logger
-The API server gets the same `AuditLogger` the policy gate uses (set in `cmd/cca/command_server.go`) and records `action=scale-approve` / `apply-approve`, the principal, `target=service/{name}`, the count and ALLOW or DENY.
+### D7. Approval is audited through the API authorizer's audit logger
+Handlers already record operations whose capability check alone is not enough of a record through `APIAuthorizer.RecordAuditEntry` (join tokens, M219), and `cca server` wires that logger. Approvals use it too: `action=scale.approve` / `apply.approve`, the principal, `target=service/{name}`, `policy=instances={count}`, ALLOW or DENY. No new logger or setter.
 
 ## Risks / Trade-offs
 
