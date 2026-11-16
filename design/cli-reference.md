@@ -35,7 +35,10 @@ cca status                     # show cluster status (GET /api/status; needs wor
 cca health                     # control-plane health: store + controller leader, exit 1 if unhealthy
 cca describe <type> <name>     # detailed view (service, node, instance, gate)
 cca get <resource>             # services, instances, nodes, volumes, networking, secrets, config, endpoints, gates
-cca scale <service> <count>
+cca scale <service> <count> [--approve-above-limit <count>]
+                               # declared services only (404 otherwise); warns from 500; above 600 a cluster.admin
+                               # approves by typing the count again or with --approve-above-limit; no ceiling,
+                               # not a capacity promise (M217, Flow 31). cca apply takes the same flag
 cca logs <service> [--follow]
 cca events [--follow] [--service]  # event stream
 cca watch [prefix]             # stream fact store changes

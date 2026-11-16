@@ -159,11 +159,7 @@ func main() {
 		}
 		executeRolloutRestartCommand(os.Args[3])
 	case "scale":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "usage: cca scale <service> <count>")
-			os.Exit(1)
-		}
-		executeScaleCommand(os.Args[2], os.Args[3])
+		executeScaleCommand(os.Args[2:])
 	case "watch":
 		prefix := ""
 		if len(os.Args) >= 3 {

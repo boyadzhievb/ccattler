@@ -47,6 +47,7 @@ cca apply --set-from-env airflow.image=CI_TAG airflow.cca   # defaults + env var
 | `--set` | Override a single value: `key=value`, dot paths supported |
 | `--set-from-env` | Read value from environment variable: `key=ENV_VAR` |
 | `--dry-run` | Print rendered DSL to stdout without applying |
+| `--approve-above-limit <count>` | Approve services whose instance count above 600 equals `<count>` (needs `cluster.admin`); see [Instance count limits](#instance-count-limits) |
 
 **Precedence** (lowest to highest): auto-loaded `values.ccv` < `--values` files (in order) < `--set` < `--set-from-env`.
 
@@ -238,11 +239,25 @@ List config entries (environment variables and config files).
 
 ### `cca scale <service> <count>`
 
-Change the desired instance count for a service.
+Change the desired instance count of a declared service. A name with no service declaration is refused (apply its configuration first).
 
 ```bash
 cca scale web 10
+cca scale web 700                              # asks you to type 700 again (terminal only)
+cca scale web 700 --approve-above-limit 700    # scripts and CI
 ```
+
+#### Instance count limits
+
+| Count | What happens |
+|---|---|
+| below 500 | accepted |
+| 500 to 600 | accepted, `cca` prints a warning |
+| above 600 | refused unless a `cluster.admin` approves it by repeating the exact count; the approval is audited |
+
+The same rule applies to `instances` and `scale { horizontal { min max } }` in `cca apply` (with `--approve-above-limit`). Repeating the count catches typos such as `100000` for `100`; a plain "yes" is not accepted.
+
+There is no absolute ceiling, and the limit is **not a capacity promise**. Instances beyond what your nodes can hold stay pending, and every instance adds about 15 facts to etcd: counts in the tens of thousands are untested and can overload etcd and the controllers. Use a tenant `quota { instances }` to cap what a team can run.
 
 ### `cca top [nodes|workloads]`
 

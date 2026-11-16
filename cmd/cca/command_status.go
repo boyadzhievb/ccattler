@@ -1871,10 +1871,18 @@ func printGatesTableWithOptions(gates []api.GateStatus, options getOutputOptions
 
 // executeScaleCommand sends a scale request to the API to change a service's
 // desired instance count.
-func executeScaleCommand(serviceName, countStr string) {
-	requestBody := fmt.Sprintf(`{"service":%q,"instances":%s}`, serviceName, countStr)
+func executeScaleCommand(scaleArgs []string) {
+	serviceName, requestedCount, approvedCount := parseScaleCommandArgs(scaleArgs)
+	if requestedCount > types.ServiceInstanceApprovalLimit && approvedCount == 0 && standardInputIsTerminal() {
+		if !confirmInstanceCountByRetyping(os.Stdin, os.Stdout, serviceName, requestedCount) {
+			fmt.Fprintln(os.Stderr, "not approved: the count typed again differs; nothing was sent")
+			os.Exit(1)
+		}
+		approvedCount = requestedCount
+	}
+	requestBody, _ := json.Marshal(map[string]any{"service": serviceName, "instances": requestedCount, "approved_instances": approvedCount})
 	apiURL := statusAPIBaseURL() + "/api/scale"
-	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
+	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", bytes.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
@@ -1882,11 +1890,55 @@ func executeScaleCommand(serviceName, countStr string) {
 	defer func() { _ = httpResponse.Body.Close() }()
 
 	responseBody, _ := io.ReadAll(httpResponse.Body)
-	if httpResponse.StatusCode != 200 {
-		fmt.Fprintf(os.Stderr, "scale failed: %s\n", string(responseBody))
+	var scaleAnswer struct {
+		Error   string `json:"error"`   // Error is the server's refusal.
+		Warning string `json:"warning"` // Warning is set from the warning threshold on.
+	}
+	_ = json.Unmarshal(responseBody, &scaleAnswer)
+	if httpResponse.StatusCode != http.StatusOK {
+		failureText := scaleAnswer.Error
+		if failureText == "" {
+			failureText = string(responseBody)
+		}
+		fmt.Fprintf(os.Stderr, "scale failed: %s\n", failureText)
+		if requestedCount > types.ServiceInstanceApprovalLimit && approvedCount == 0 {
+			fmt.Fprintf(os.Stderr, "to approve as cluster.admin: cca scale %s %d %s %d\n", serviceName, requestedCount, approveAboveLimitFlag, requestedCount)
+		}
 		os.Exit(1)
 	}
-	fmt.Printf("scaled %s to %s instances\n", serviceName, countStr)
+	if scaleAnswer.Warning != "" {
+		printInstanceCountWarnings([]string{scaleAnswer.Warning})
+	}
+	fmt.Printf("scaled %s to %d instances\n", serviceName, requestedCount)
+}
+
+// parseScaleCommandArgs reads "<service> <count> [--approve-above-limit N]";
+// a missing or non-numeric count, or another flag, ends the command.
+func parseScaleCommandArgs(scaleArgs []string) (string, int, int) {
+	scaleUsage := "usage: cca scale <service> <count> [" + approveAboveLimitFlag + " <count>]"
+	var positionalArgs []string
+	approvedCount := 0
+	for argIndex := 0; argIndex < len(scaleArgs); argIndex++ {
+		switch {
+		case scaleArgs[argIndex] == approveAboveLimitFlag && argIndex+1 < len(scaleArgs):
+			argIndex++
+			approvedCount = parseApprovedInstanceCount(scaleArgs[argIndex])
+		case strings.HasPrefix(scaleArgs[argIndex], "-"):
+			fmt.Fprintf(os.Stderr, "error: unknown flag %q\n%s\n", scaleArgs[argIndex], scaleUsage)
+			os.Exit(1)
+		default:
+			positionalArgs = append(positionalArgs, scaleArgs[argIndex])
+		}
+	}
+	requestedCount, parseError := 0, error(nil)
+	if len(positionalArgs) == 2 {
+		requestedCount, parseError = strconv.Atoi(positionalArgs[1])
+	}
+	if len(positionalArgs) != 2 || parseError != nil || requestedCount < 0 {
+		fmt.Fprintln(os.Stderr, scaleUsage)
+		os.Exit(1)
+	}
+	return positionalArgs[0], requestedCount, approvedCount
 }
 
 // executeRestartCommand restarts a single container instance by setting its

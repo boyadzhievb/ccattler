@@ -6,14 +6,18 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/types"
+	"golang.org/x/sys/unix"
 )
 
 // approveAboveLimitFlag approves a count above the limit by repeating it.
@@ -31,6 +35,26 @@ func parseApprovedInstanceCount(flagValue string) int {
 		os.Exit(1)
 	}
 	return approvedCount
+}
+
+// confirmInstanceCountByRetyping asks the user to type requestedCount again
+// and reports whether they typed exactly that number. A "y" or an empty
+// answer does not approve: the retyped number is the typo guard.
+func confirmInstanceCountByRetyping(input io.Reader, output io.Writer, serviceName string, requestedCount int) bool {
+	_, _ = fmt.Fprintf(output, "%d instances for %s is above the approval limit of %d.\n"+
+		"Approving needs cluster.admin. Type the instance count again to approve: ",
+		requestedCount, serviceName, types.ServiceInstanceApprovalLimit)
+	answerLine, _ := bufio.NewReader(input).ReadString('\n')
+	retypedCount, parseError := strconv.Atoi(strings.TrimSpace(answerLine))
+	return parseError == nil && retypedCount == requestedCount
+}
+
+// standardInputIsTerminal reports whether stdin is an interactive terminal,
+// so cca scale may ask for the count again instead of failing. A character
+// device is not enough: /dev/null is one, and scripts run with it.
+func standardInputIsTerminal() bool {
+	_, ioctlError := unix.IoctlGetTermios(int(os.Stdin.Fd()), terminalAttributesRequest)
+	return ioctlError == nil
 }
 
 // printInstanceCountWarnings prints the server's instance count warnings to stderr.
