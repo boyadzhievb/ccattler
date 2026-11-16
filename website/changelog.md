@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.81.0-beta <Badge type="tip" text="latest" /> {#v1-81-0-beta}
+## v1.82.0-beta <Badge type="tip" text="latest" /> {#v1-82-0-beta}
+
+**2026-11-16** — Rate Limiter Trusts Any `X-Forwarded-For`.
+
+- **Rate Limiter Trusts Any `X-Forwarded-For`** (M226) — Bug fix (M225 design review): the per-IP rate limiter takes `X-Forwarded-For` from any client, so a new made-up address per request bypasses it. The limiter now uses only the connection address, as Consul does.
+
+---
+
+## v1.81.0-beta {#v1-81-0-beta}
 
 **2026-11-15** — Per-Principal Stream Cap.
 

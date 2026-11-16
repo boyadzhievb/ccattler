@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M225 — Per-Principal Stream Cap (v1.81.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M226 — Rate Limiter Trusts Any `X-Forwarded-For` (v1.82.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
