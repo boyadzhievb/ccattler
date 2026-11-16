@@ -1563,6 +1563,66 @@ Root key rotation
 - Nothing ever deletes or regenerates a `.next` that may hold the committed key: `generate-root-key` refuses to overwrite, `--commit` never generates, and the swap is the only rename of `.next`.
 - The old root key never wraps anything after the transaction; a test proves it opens neither `root_check` nor any `keyring/kek/*`.
 
+## Flow 31: Instance Count Limits (M217)
+
+**Problem**: `POST /api/scale` accepted any count for any name. `scale a-web
+100000` created 436 real instances before the nodes were full (M214 run 1),
+`scale nosuch 2` created instances of a service nobody declared, and a failed
+store write still answered `ok: true`. `instances` in a configuration had no
+upper check either.
+
+**Invariant**: An instance count above the approval limit takes effect only
+when a `cluster.admin` principal repeats that exact count as approval. A count
+is accepted only for a declared service. A count that was not stored is never
+reported as stored.
+
+```
+types.ServiceInstanceWarningThreshold = 500   warn from here
+types.ServiceInstanceApprovalLimit    = 600   above this: approval needed
+no absolute ceiling
+
+requested count N for service S (scale API: instances; apply: the largest of
+instances, scale min, scale max):
+
+  N <  500           → accepted
+  500 ≤ N ≤ 600      → accepted, response carries a warning
+  N >  600           → refused (400), unless
+                         approved_instances == N          (typo guard)
+                         and caller holds cluster.admin   (else 403)
+                       then accepted with the warning, and logged with the
+                       principal, the service and the count
+
+POST /api/scale {service, instances, approved_instances}
+  → desired/service/{S} marker absent            → 404, nothing written
+  → limit rule above
+  → one transaction, guarded by the marker's revision:
+        desired/service/{S}/instances      = N
+        intent/user/service/{S}/instances  = N
+      store error                           → 500
+      marker changed or deleted meanwhile   → 409, nothing written
+
+POST /api/apply {config, files, approved_instances}
+  → limit rule for every service in the configuration, before any gate
+  → a service above the limit whose count differs from approved_instances
+        → 400 naming the service and its count
+cca apply --simulate: same rule, no capability check (local, in memory)
+```
+
+**CLI**: `cca scale S N` above the limit asks the user to type the count again
+on a terminal; without a terminal it needs `--approve-above-limit N`. `cca
+apply` takes the same flag. The approval is checked by the server; the prompt
+is only the way to supply it.
+
+**Not a capacity promise**: the limit stops mistakes, not large clusters. A
+count far above what the nodes can hold stays pending, and every instance is
+about 15 facts in etcd; counts in the tens of thousands are untested and can
+overload etcd and the controllers.
+
+**Known gaps**: the autoscaler's `scale max` is checked at apply, not at each
+scaling step; a job's `parallelism` has no limit; the intent controller still
+resolves an intent written for an undeclared service by any other writer
+(orphan clean-up is the last M217 item).
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
