@@ -74,6 +74,10 @@ on:
       - "website/**"
       - "**/*.md"
 
+# Read-only token whatever the repository default is; the job only reads the code.
+permissions:
+  contents: read
+
 # Push runs replace each other (only the newest runs); manual runs never get
 # cancelled, and the two never share a group, so a push cannot replace a
 # pending manual run. The single deploy runner keeps them from overlapping.
@@ -89,6 +93,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0  # push runs compare cases.yml with the commit before the push
+          persist-credentials: false  # nothing pushes; keep the token out of .git/config on the runner
 
       - name: Clear existing workloads
         if: ${{ inputs.clear_first == true }}
@@ -103,6 +108,7 @@ jobs:
 
       - name: Select workloads, checks and replay cases
         id: selection
+        shell: bash  # pipefail: a failing selection must fail the step, not reach tee's exit code
         env:
           EVENT_NAME: ${{ github.event_name }}
           WORKLOAD_INPUT: ${{ inputs.workload }}
@@ -127,6 +133,7 @@ jobs:
         run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags ebpf -o deploy/ansible/cca-linux-amd64 ./cmd/cca/
 
       - name: Deploy cluster (3-node, no teardown, source-built binary)
+        id: deploy
         env:
           WORKLOAD: ${{ steps.selection.outputs.workload }}
           SKIP_CHECKS: ${{ steps.selection.outputs.skip_checks }}
@@ -136,6 +143,7 @@ jobs:
             --dataplane "$DATAPLANE" --skip-checks "$SKIP_CHECKS"
 
       - name: Adversarial replay (M214)
+        id: replay
         if: ${{ steps.selection.outputs.run_adversarial == 'true' }}
         env:
           ADVERSARIAL_CASES: ${{ steps.selection.outputs.adversarial_cases }}
@@ -155,7 +163,13 @@ jobs:
           RUN_ADVERSARIAL: ${{ steps.selection.outputs.run_adversarial }}
           ADVERSARIAL_CASES: ${{ steps.selection.outputs.adversarial_cases }}
           EVENT_NAME: ${{ github.event_name }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          REPLAY_OUTCOME: ${{ steps.replay.outcome }}
         run: |
+          # A planned full run counts only when the deploy and the replay both ran and passed.
+          if [[ "$RUN_KIND" == "full" && ( "$DEPLOY_OUTCOME" != "success" || "$REPLAY_OUTCOME" != "success" ) ]]; then
+            RUN_KIND="incomplete (planned as full: deploy ${DEPLOY_OUTCOME:-not run}, replay ${REPLAY_OUTCOME:-not run})"
+          fi
           {
             echo "## Deploy Testbed: ${RUN_KIND:-unknown} run"
             echo ""
@@ -167,9 +181,9 @@ jobs:
             echo "| Adversarial replay | $([[ "$RUN_ADVERSARIAL" == "true" ]] && echo "${ADVERSARIAL_CASES:-all cases}" || echo "not run") |"
             echo ""
             if [[ "$RUN_KIND" == "full" ]]; then
-              echo "This is a **full run**: it can close a milestone."
+              echo "This is a **full run** and it passed: it can close a milestone."
             else
-              echo "This is a **partial run**: for iterating only, it cannot close a milestone."
+              echo "This is not a full passing run (${RUN_KIND:-unknown}): for iterating only, it cannot close a milestone."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

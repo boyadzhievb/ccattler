@@ -25,7 +25,7 @@ M231. Every group lands its own docs. Script changes are tried on the actual tes
   - not CCattler: the NFS volume, the export (`no_root_squash`) and the secret files (0444, bind-mounted) are fine
   - to confirm before calling them bugs: the crash-looping instance showed `State: running`, `Restarts: 0` and no back-off; its readiness probe targeted `10.92.128.130` while the instance IP was `10.92.128.140`; `cca logs` and the container log file held only the first line of the newest start (each restart replaces the log, so the error was never visible)
   - not run: the WordPress checks (Step 5.18), because Step 5.7 failed first
-- [ ] 3.3 Measure a run with workloads whoami + wordpress and the slow groups skipped; record the time; if WordPress is not stable, record why and keep it out of the push profile
+- [x] 3.3 Measure a run with workloads whoami + wordpress and the slow groups skipped; record the time; if WordPress is not stable, record why and keep it out of the push profile — 2026-11-16: WordPress is not stable (3.2: the `/run` bug), so it stays out (design D6a, user decision; it joins with M232). The push profile as built (whoami, all four slow groups skipped) by hand on the testbed: deploy step 149 s, `TEST PASSED`, skip report logged before the checks and in the final status (was 422 s for the full deploy step in run 43876417058); with the 5 s build and no replay, a push run is about 2.5–3 min instead of ~10
 
 ## 4. Workflow
 
@@ -35,7 +35,18 @@ M231. Every group lands its own docs. Script changes are tried on the actual tes
 ## 5. Rule and review
 
 - [x] 5.1 CLAUDE.md and `design/TESTING.md`: the run that closes a milestone is a full run (summary says `full run`); partial and push runs are for iterating — 2026-11-16: CLAUDE.md "Independent Review" gets the rule next to "Only executed things count"; `TESTING.md` "Deploy Testbed runs: manual, push, full" (what each trigger runs, the definition of full, which run may close a milestone)
-- [ ] 5.2 Independent review: `code-reviewer` (workflow and scripts) and `security-audit` (self-hosted runner triggered on push); record every finding as fixed or rejected with one line here
+- [x] 5.2 Independent review: `code-reviewer` (workflow and scripts) and `security-audit` (self-hosted runner triggered on push); record every finding as fixed or rejected with one line here — 2026-11-16 on 8cb5899..346bb95. `security-audit`: no defect giving anyone outside the repository's writers code on m4800 (push limited to `master` and `m[0-9]*-*`, no PR trigger, every `${{ }}` in `env:`/`if:`, fork PR approval `all_external_contributors`, only the owner has write access); `code-reviewer`: request changes, two medium. Outcome:
+  - fixed (medium, code-reviewer) — the summary said `full run` from the plan even when the deploy failed or the replay never ran: deploy and replay steps get ids; `full run` only when both outcomes are `success`, else "incomplete (planned as full: deploy …, replay …)"
+  - fixed (medium, both) — selection step had no pipefail, so a failing script was masked by `tee` and the deploy ran with empty settings: `shell: bash`
+  - fixed (low, both) — newlines in the free-text `adversarial_cases` (API dispatch) could inject `GITHUB_OUTPUT` lines and override `workload`/`skip_checks`: the script refuses a workload outside `^[a-z0-9,-]+$` and a filter outside `^[A-Za-z0-9_*?,.-]*$` (two self-test cases)
+  - fixed (low, both) — case names were spliced into a yq expression: passed through `strenv(CASE_NAME)`
+  - fixed (low, security-audit) — no `permissions:` block (read-only only through the repo default): `permissions: contents: read`; checkout with `persist-credentials: false`
+  - fixed (low, code-reviewer) — the WordPress check accepted any 200/302, so nginx's own welcome page would pass: now only the fresh install's 302 to `wp-admin/install.php`/`wp-login.php`, or a 200 page referencing `wp-content`/`wp-includes`/`wp-admin` (checked against four sample answers)
+  - fixed (low, code-reviewer) — `--case ''` selected all cases, and a filter matching only `known_failure` cases passed with nothing run: both now fail (two self-test cases)
+  - documented (low-medium, code-reviewer) — a cancelled or replaced push run's changed replay cases are not replayed by the next push run: limitation in `TESTING.md`; tracking the last successful push run's commit across runs is not worth the state for a partial run, and the closing full run replays everything
+  - rejected — a full run on `nftables`/`iptables`/`auto` or with `clear_first` should not count: a different data plane is different coverage, not less; dataplane choice is part of the milestone's own test plan
+  - rejected — `-k` on the gate request: certificate validation is the gate TLS group's job (T1–T18), not the WordPress check's
+  - noted, pre-existing — yq and vmherd are installed on the runner without checksums (`releases/latest`, `sudo tar`); the `e2e`-label workflows on y510p were not audited; six other workflows have shellcheck style notes (SC2129, SC2086, SC2035)
 - [ ] 5.3 A full Deploy Testbed run with the final workflow, summary `full run`, green
 
 ## Workflow follow-up

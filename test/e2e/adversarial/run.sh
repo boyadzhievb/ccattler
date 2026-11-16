@@ -18,7 +18,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CASES_FILE="${SCRIPT_DIR}/cases.yml"
+# CASES_FILE_OVERRIDE lets the self-test point the selection at a modified copy.
+CASES_FILE="${CASES_FILE_OVERRIDE:-${SCRIPT_DIR}/cases.yml}"
 TRANSCRIPT="${SCRIPT_DIR}/transcript.md"
 ENV="deploy"
 CTRL_VM=""
@@ -46,7 +47,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV="$2"; shift 2 ;;
-    --case) [[ $# -ge 2 ]] || usage; CASE_PATTERNS="$2"; shift 2 ;;
+    --case) [[ $# -ge 2 && -n "$2" ]] || usage; CASE_PATTERNS="$2"; shift 2 ;;
     --list-cases) LIST_CASES=true; shift ;;
     *) usage ;;
   esac
@@ -73,9 +74,14 @@ for ((case_index=0; case_index<ALL_CASE_COUNT; case_index++)); do
     SELECTED_CASE_INDEXES+=("$case_index")
   fi
 done
-# A filter that selects nothing must not pass with nothing tested.
-if [[ ${#SELECTED_CASE_INDEXES[@]} -eq 0 ]]; then
-  echo "error: --case '$CASE_PATTERNS' matches no case in $CASES_FILE" >&2
+# A filter that selects nothing runnable must not pass with nothing tested
+# (known_failure cases are skipped, so they do not count).
+RUNNABLE_SELECTED_COUNT=0
+for case_index in "${SELECTED_CASE_INDEXES[@]}"; do
+  [[ "$(yq ".[$case_index].known_failure // \"\"" "$CASES_FILE")" == "" ]] && RUNNABLE_SELECTED_COUNT=$((RUNNABLE_SELECTED_COUNT + 1))
+done
+if [[ $RUNNABLE_SELECTED_COUNT -eq 0 ]]; then
+  echo "error: --case '$CASE_PATTERNS' matches no runnable case in $CASES_FILE" >&2
   exit 1
 fi
 if [[ "$LIST_CASES" == "true" ]]; then

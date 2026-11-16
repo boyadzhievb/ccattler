@@ -9,32 +9,40 @@ WORDPRESS_GATE_HOST="wordpress.home.arpa"
 WORDPRESS_GATE_PORT=443        # agent --proxy-tls-listen port
 WORDPRESS_RETRY_SECONDS=5      # pause between attempts
 
-# wordpress_answer_code prints the HTTP status of a request from the control
-# node to url (extra curl arguments first); "000" when nothing answered.
-wordpress_answer_code() {
-    ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 10 $*" 2>/dev/null || echo "000"
+# wordpress_answer prints "<status> <redirect URL> <WordPress markers in the
+# body>" for a request from the control node (extra curl arguments first).
+wordpress_answer() {
+    ssh_vm "$CTRL_NODE" "curl -s -o /tmp/wordpress-check-body -w '%{http_code} %{redirect_url}' --max-time 10 $*; \
+        echo \" \$(grep -cE 'wp-content|wp-includes|wp-admin' /tmp/wordpress-check-body 2>/dev/null || true)\"" \
+        2>/dev/null || echo "000 - 0"
 }
 
-# wordpress_is_answering reports whether a status is a WordPress page: 200, or
-# the 302 to wp-admin/install.php a fresh installation answers with.
+# wordpress_is_answering reports whether an answer comes from WordPress: the
+# fresh installation's 302 to wp-admin/install.php (or wp-login.php), or a 200
+# page that references WordPress assets. nginx's own pages do neither.
 wordpress_is_answering() {
-    [[ "$1" == "200" || "$1" == "302" ]]
+    local answer_code="$1" redirect_url="$2" marker_count="$3"
+    if [[ "$answer_code" == "302" ]]; then
+        [[ "$redirect_url" == *"/wp-admin/install.php"* || "$redirect_url" == *"/wp-login.php"* ]]
+        return
+    fi
+    [[ "$answer_code" == "200" && "${marker_count:-0}" -gt 0 ]]
 }
 
 # wordpress_wait_for retries one request until WordPress answers or the
 # timeout passes; description names what is being checked.
 wordpress_wait_for() {
     local description="$1"; shift
-    local deadline=$((SECONDS + WORDPRESS_READY_TIMEOUT)) answer_code="000"
+    local deadline=$((SECONDS + WORDPRESS_READY_TIMEOUT)) answer_code="000" redirect_url="-" marker_count=0
     while [[ $SECONDS -lt $deadline ]]; do
-        answer_code=$(wordpress_answer_code "$@")
-        if wordpress_is_answering "$answer_code"; then
-            log "  WordPress answers $answer_code through $description"
+        read -r answer_code redirect_url marker_count <<< "$(wordpress_answer "$@")"
+        if wordpress_is_answering "$answer_code" "$redirect_url" "$marker_count"; then
+            log "  WordPress answers $answer_code ${redirect_url} through $description"
             return 0
         fi
         sleep "$WORDPRESS_RETRY_SECONDS"
     done
-    fail "wordpress: no WordPress page through $description after ${WORDPRESS_READY_TIMEOUT}s (last HTTP status $answer_code)"
+    fail "wordpress: no WordPress page through $description after ${WORDPRESS_READY_TIMEOUT}s (last: HTTP $answer_code, redirect '$redirect_url', WordPress markers $marker_count)"
 }
 
 # run_wordpress_checks checks the site through the nginx service VIP and

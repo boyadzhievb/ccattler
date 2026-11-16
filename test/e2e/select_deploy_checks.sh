@@ -28,6 +28,20 @@ PUSH_SKIPPED_GROUPS="gate-tls,node-failure,multiport,warmzero"
 # ZERO_SHA is what GitHub sends as "before" for a newly created branch.
 ZERO_SHA="0000000000000000000000000000000000000000"
 
+# WORKLOAD_LIST_PATTERN and CASE_FILTER_PATTERN are what the form's text values
+# may contain; anything else (a newline above all) could inject extra output lines.
+WORKLOAD_LIST_PATTERN='^[a-z0-9,-]+$'
+CASE_FILTER_PATTERN='^[A-Za-z0-9_*?,.-]*$'
+
+# require_pattern stops the selection when value does not match pattern.
+require_pattern() {
+  local input_name="$1" value="$2" pattern="$3"
+  if [[ ! "$value" =~ $pattern ]]; then
+    echo "error: $input_name '$value' contains characters outside $pattern" >&2
+    exit 1
+  fi
+}
+
 # checkbox_unticked reports whether a checkbox value means "do not run";
 # empty (no form, e.g. an old dispatch) counts as ticked.
 checkbox_unticked() {
@@ -54,10 +68,13 @@ changed_replay_cases() {
     echo "*"
     return
   fi
+  local current_entry previous_entry
   while IFS= read -r case_name; do
     [[ -z "$case_name" ]] && continue
-    if [[ "$(yq -o=json ".[] | select(.name == \"$case_name\")" "$CASES_FILE")" != \
-          "$(echo "$previous_cases" | yq -o=json ".[] | select(.name == \"$case_name\")")" ]]; then
+    # The name reaches yq through the environment, never inside the expression.
+    current_entry=$(CASE_NAME="$case_name" yq -o=json '.[] | select(.name == strenv(CASE_NAME))' "$CASES_FILE")
+    previous_entry=$(echo "$previous_cases" | CASE_NAME="$case_name" yq -o=json '.[] | select(.name == strenv(CASE_NAME))')
+    if [[ "$current_entry" != "$previous_entry" ]]; then
       changed_names+=("$case_name")
     fi
   done < <(yq '.[].name' "$CASES_FILE")
@@ -78,6 +95,8 @@ if [[ "${EVENT_NAME:-workflow_dispatch}" == "push" ]]; then
   run_kind=partial
 else
   workload="${WORKLOAD_INPUT:-$DEFAULT_WORKLOADS}"
+  require_pattern workload "$workload" "$WORKLOAD_LIST_PATTERN"
+  require_pattern adversarial_cases "${ADVERSARIAL_CASES:-}" "$CASE_FILTER_PATTERN"
   checkbox_unticked "${CHECK_GATE_TLS:-}" && skip_groups+=(gate-tls)
   checkbox_unticked "${CHECK_NODE_FAILURE:-}" && skip_groups+=(node-failure)
   checkbox_unticked "${CHECK_MULTIPORT:-}" && skip_groups+=(multiport)

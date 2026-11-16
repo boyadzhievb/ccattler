@@ -48,6 +48,13 @@ expect_equal "default workloads plus more stay full" \
   "$(selection run_kind EVENT_NAME=workflow_dispatch WORKLOAD_INPUT=airflow,whoami,whoami-multiport,gate-tls,wordpress)" "full"
 expect_equal "all workloads stay full" "$(selection run_kind EVENT_NAME=workflow_dispatch WORKLOAD_INPUT=all)" "full"
 
+# Form values that could inject output lines are refused (security audit).
+env -i PATH="$PATH" HOME="$HOME" EVENT_NAME=workflow_dispatch ADVERSARIAL_CASES=$'x\nworkload=evil' \
+  "$SELECT_SCRIPT" >/dev/null 2>&1
+expect_equal "newline in the case filter is refused" "$?" "1"
+env -i PATH="$PATH" HOME="$HOME" EVENT_NAME=workflow_dispatch WORKLOAD_INPUT='whoami;id' "$SELECT_SCRIPT" >/dev/null 2>&1
+expect_equal "shell characters in the workload are refused" "$?" "1"
+
 # Push run: fast profile, only changed replay cases.
 head_sha=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
 expect_equal "push uses whoami (WordPress joins with M232)" "$(selection workload EVENT_NAME=push BEFORE_SHA="$head_sha")" "whoami"
