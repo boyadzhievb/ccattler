@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M227 — Daemons Ignore Unknown Flags (v1.83.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M228 — OIDC Issuer Without Client ID Skips the Audience Check (v1.84.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

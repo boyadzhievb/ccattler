@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.83.0-beta <Badge type="tip" text="latest" /> {#v1-83-0-beta}
+## v1.84.0-beta <Badge type="tip" text="latest" /> {#v1-84-0-beta}
+
+**2026-11-16** — OIDC Issuer Without Client ID Skips the Audience Check.
+
+- **OIDC Issuer Without Client ID Skips the Audience Check** (M228) — Bug fix (M227 security audit): `cca server --oidc-issuer` without `--oidc-client-id` accepted tokens the provider issued for other applications. The server now refuses to start unless both flags are given.
+
+---
+
+## v1.83.0-beta {#v1-83-0-beta}
 
 **2026-11-16** — Daemons Ignore Unknown Flags.
 
