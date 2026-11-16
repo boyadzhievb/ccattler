@@ -133,7 +133,7 @@ gate web-public {
 
 ## Instance Count Limits
 
-A service's instance count is checked whenever it is set: `instances` and the autoscaler's `scale { horizontal { min / max } }` in a configuration (the largest of the three counts), and `cca scale`. Behaviour is specified in `openspec/specs/service-scaling` (once archived; until then `openspec/changes/scale-api-safety`), the chain in Flow 31 of `runtime-invariant-flows.md`.
+A service's instance count is checked whenever it is set: `instances` and the autoscaler's `scale { horizontal { min / max } }` in a configuration (the largest of the three counts), and `cca scale`. Behaviour is specified in `openspec/specs/service-scaling`, the chain in Flow 31 of `runtime-invariant-flows.md`.
 
 | Count | Result |
 |---|---|

@@ -538,17 +538,17 @@ To be proposed as an OpenSpec change when work starts. Open questions for the pr
 
 Found in M214 run 1 (2026-11-12): `scale a-web 100000` created 436 real instances; `scale nosuch 2` created orphan instances.
 
-Checklist: OpenSpec change [`openspec/changes/scale-api-safety`](openspec/changes/scale-api-safety/tasks.md) (replaces the items below). Decisions: warning from 500, approval above 600 by `cluster.admin` repeating the exact count, no absolute ceiling, documented as not a capacity promise.
+Checklist: OpenSpec change [`scale-api-safety`](openspec/changes/archive/2026-11-16-scale-api-safety/tasks.md), 22/22 tasks, archived 2026-11-16; spec `openspec/specs/service-scaling` (replaces the items below). Decisions: warning from 500, approval above 600 by `cluster.admin` repeating the exact count, no absolute ceiling, documented as not a capacity promise.
 
 Found during M217 (2026-11-16), not fixed here:
 - `TenantLifecycle` (`tenant/lifecycle.go`) has no production caller, only tests (dead code under the project rules). Its `DeleteTenant` deletes a removed service's effective count, which would leave the service's instances running (the instance controller only sees names with an effective count). Either wire it and set the count to 0 (design D6), or remove it
 - `security/TestKeyringConcurrentBootstrapAgrees` is flaky: 4/50 runs fail with this change and 3/50 on the commit before it (`keyring is incomplete (keyring/active missing, 5 other keyring keys exist); refusing to create a new one`). Points at a race between two replicas bootstrapping the keyring at once; not yet investigated whether it is the test or the bootstrap
 
-- [ ] Failing tests first: scale above the limit → 400; scale of an undeclared service → 404; store write error → 500, not `ok: true`
-- [ ] Upper bound per service (named constant, overridable by `cluster.admin` only) — also on `instances` in apply
-- [ ] `/api/scale` requires the `desired/service/{svc}` marker
-- [ ] Store write errors returned to the client (`api/server.go` `handleScale`)
-- [ ] Clean-up path for orphan instances already created by earlier scale calls (gc or controller)
+- [x] Failing tests first: scale above the limit → 400; scale of an undeclared service → 404; store write error → 500, not `ok: true` — change tasks 0.1–0.4
+- [x] Upper bound per service (named constant, overridable by `cluster.admin` only) — also on `instances` in apply — tasks 1.1, 2.1, 3.1: warning 500, approval above 600 by `cluster.admin` repeating the count, no ceiling (user decision)
+- [x] `/api/scale` requires the `desired/service/{svc}` marker — task 2.1 (404)
+- [x] Store write errors returned to the client (`api/server.go` `handleScale`) — task 2.1 (500, one transaction, 409 on a concurrent change)
+- [x] Clean-up path for orphan instances already created by earlier scale calls (gc or controller) — tasks 5.1–5.2 (intent resolver sets effective count 0)
 
 ### Phase 218 — CLI Remote Correctness (M218)
 

@@ -1637,7 +1637,7 @@ scaling step; a job's `parallelism` has no limit. `TenantLifecycle` in
 the rule above would leave its instances running; it has no production
 caller today (dead code, M217 Phase 217 note).
 
-Spec: `service-scaling` (change `scale-api-safety` until archived).
+Spec: `openspec/specs/service-scaling` (change archived as `openspec/changes/archive/2026-11-16-scale-api-safety`).
 
 ## Checklist for New Features
 
