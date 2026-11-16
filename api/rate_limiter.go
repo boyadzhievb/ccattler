@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -142,19 +141,10 @@ func (rateLimiter *RateLimiter) CleanupStale() {
 	}
 }
 
-// extractClientIP gets the client IP, preferring X-Forwarded-For when a
-// trusted proxy is configured, otherwise falling back to RemoteAddr.
+// extractClientIP returns the TCP connection's address. Client-supplied headers
+// such as X-Forwarded-For are ignored: no proxy fronts the API, and trusting them
+// would let a client pick a fresh rate-limit bucket per request (M226).
 func extractClientIP(request *http.Request) string {
-	if forwardedFor := request.Header.Get("X-Forwarded-For"); forwardedFor != "" {
-		firstAddress := forwardedFor
-		if commaIndex := strings.Index(forwardedFor, ","); commaIndex != -1 {
-			firstAddress = forwardedFor[:commaIndex]
-		}
-		trimmedAddress := strings.TrimSpace(firstAddress)
-		if parsedIP := net.ParseIP(trimmedAddress); parsedIP != nil {
-			return trimmedAddress
-		}
-	}
 	host, _, splitError := net.SplitHostPort(request.RemoteAddr)
 	if splitError != nil {
 		return request.RemoteAddr

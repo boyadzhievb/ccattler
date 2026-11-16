@@ -4,6 +4,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -134,6 +135,39 @@ func TestRateLimiterCleanupStale(t *testing.T) {
 
 	if bucketCount != 0 {
 		t.Errorf("expected 0 buckets after cleanup, got %d", bucketCount)
+	}
+}
+
+// TestRateLimiterIgnoresSpoofedForwardedFor sends 200 requests from one connection
+// address, each with a new made-up X-Forwarded-For; they must share one bucket (M226).
+func TestRateLimiterIgnoresSpoofedForwardedFor(t *testing.T) {
+	fixedTime := time.Now()
+	limiter := NewRateLimiter()
+	limiter.timeNow = func() time.Time { return fixedTime }
+
+	inner := http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.WriteHeader(http.StatusOK)
+	})
+	handler := limiter.Wrap(inner)
+
+	const spoofedRequestCount = 200
+	limitedRequestCount := 0
+	for requestIndex := 0; requestIndex < spoofedRequestCount; requestIndex++ {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest("GET", "/api/status", nil)
+		request.RemoteAddr = "10.0.0.1:12345"
+		request.Header.Set("X-Forwarded-For",
+			fmt.Sprintf("203.0.%d.%d", requestIndex/256, requestIndex%256))
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusTooManyRequests {
+			limitedRequestCount++
+		}
+	}
+
+	expectedLimitedCount := spoofedRequestCount - limiter.config.burstSize
+	if limitedRequestCount != expectedLimitedCount {
+		t.Errorf("limited %d of %d spoofed requests, want %d (one bucket per connection address)",
+			limitedRequestCount, spoofedRequestCount, expectedLimitedCount)
 	}
 }
 
