@@ -41,11 +41,11 @@ The replay SHALL run only the cases whose name matches the given pattern when on
 - Check: `test/e2e/adversarial/run_selftest.sh`
 
 ### Requirement: A code push starts a fast run
-A push to `master` or to a milestone branch that changes anything outside `openspec/`, `design/`, `website/` and Markdown files SHALL start a Deploy Testbed run with the workloads whoami and WordPress, the quick checks only, and the replay cases the push adds or changes. Docs-only pushes and tags SHALL start nothing. Of several pending push runs only the newest SHALL run, and a push run SHALL never cancel or replace a run started by hand.
+A push to `master` or to a milestone branch that changes anything outside `openspec/`, `design/`, `website/` and Markdown files SHALL start a Deploy Testbed run with the workload whoami, the quick checks only, and the replay cases the push adds or changes. Docs-only pushes and tags SHALL start nothing. Of several pending push runs only the newest SHALL run, and a push run SHALL never cancel or replace a run started by hand.
 
 #### Scenario: Code push
 - **WHEN** a commit changing Go code is pushed to `master`
-- **THEN** a Deploy Testbed run starts with workloads whoami and WordPress, logs `skipped check groups: gate-tls,node-failure,multiport,warmzero`, and runs no replay case unless the push changed `cases.yml`
+- **THEN** a Deploy Testbed run starts with workload whoami (WordPress joins with M232), logs `skipped check groups: gate-tls,node-failure,multiport,warmzero`, and runs no replay case unless the push changed `cases.yml`
 - Check: `deploy-run:push-fast`
 
 #### Scenario: Push with a changed replay case
@@ -70,7 +70,7 @@ The deploy test SHALL be able to deploy WordPress (MariaDB, two WordPress instan
 #### Scenario: WordPress deployed
 - **WHEN** a run includes the workload `wordpress`
 - **THEN** its five instances reach running and stay stable, and an HTTP request through the VIP and through the gate gets a WordPress page
-- Check: `deploy-run:wordpress-manual` (first, by hand), then `deploy-run:push-fast`
+- Check: `deploy-run:wordpress-manual` (first, by hand: failed on the `/run` bug, M232); passing is M232's closing check
 
 ### Requirement: A milestone closes on a full run
 The Deploy Testbed run that closes a milestone SHALL be a full run: at least the default workloads (airflow, whoami, whoami-multiport, gate-tls), no check group skipped, and every replay case. A narrowed or push run SHALL NOT be recorded as that run.

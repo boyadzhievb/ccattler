@@ -41,6 +41,9 @@ Alternative: a separate workflow file for push runs — rejected: the steps woul
 ### D5. Changed replay cases from a YAML diff
 For a push, the workflow takes `cases.yml` at `github.event.before` and at `HEAD`, and with `yq` lists case names that are new or whose content changed; that list becomes `--case`. Empty list → the replay step is skipped and the summary says so. A force push or a first push (`before` is all zeros) falls back to all cases.
 
+### D6a. Push profile is whoami until M232 (decided 2026-11-16, after task 3.2)
+The first WordPress deploy found a runtime bug (a tmpfs over `/run` in every container, M232) that keeps MariaDB from starting. The user chose to finish M231 with whoami alone in the push profile and add WordPress there in M232, rather than block M231 on the runtime fix. WordPress stays a selectable workload for manual runs; `PUSH_WORKLOADS` in `select_deploy_checks.sh` is the one line M232 changes.
+
 ### D6. WordPress first by hand, then automated
 `test/e2e/workloads/wordpress.cca` is the example with the LAN registry image names; `wordpress.workload` lists the three images, 5 expected containers, and an HTTP check through the VIP and the gate (WordPress answers its install page). Task 3.2 deploys it by hand on the deploy testbed (manual-first rule) before it enters the push profile. Expected risks there: the shared uploads volume on NFS, MariaDB start time, the nginx configuration file delivery.
 

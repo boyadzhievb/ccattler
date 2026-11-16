@@ -50,7 +50,7 @@ expect_equal "all workloads stay full" "$(selection run_kind EVENT_NAME=workflow
 
 # Push run: fast profile, only changed replay cases.
 head_sha=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
-expect_equal "push uses whoami and wordpress" "$(selection workload EVENT_NAME=push BEFORE_SHA="$head_sha")" "whoami,wordpress"
+expect_equal "push uses whoami (WordPress joins with M232)" "$(selection workload EVENT_NAME=push BEFORE_SHA="$head_sha")" "whoami"
 expect_equal "push skips the slow groups" "$(selection skip_checks EVENT_NAME=push BEFORE_SHA="$head_sha")" \
   "gate-tls,node-failure,multiport,warmzero"
 expect_equal "push without case changes skips the replay" "$(selection run_adversarial EVENT_NAME=push BEFORE_SHA="$head_sha")" "false"
