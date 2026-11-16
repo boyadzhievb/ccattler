@@ -475,7 +475,7 @@ Found by the M225 design review (R-6, 2026-11-15), verified: `extractClientIP` (
 - [x] Independent review 2026-11-16 (`code-reviewer` approve, `security-audit` no findings; both confirmed no other Go code reads `X-Forwarded-For`/`X-Real-IP`/`Forwarded`, and caddy-sync and Ansible reach :9770 directly). Outcome:
   - rejected — test covers only `X-Forwarded-For`: the code reads no client header at all, so other headers have no path to test
   - rejected — `plan-per-principal-stream-cap.md` still calls the limiter spoofable: historical M225 plan text; its R-6 row already points to M226
-- [ ] Unit tests, Deploy Testbed
+- [x] Unit tests, Deploy Testbed (run 43826544703 on b8fa495 green)
 
 ### Phase 217 — Scale API Safety (M217)
 
