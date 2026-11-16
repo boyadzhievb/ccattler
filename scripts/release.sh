@@ -17,7 +17,7 @@
 #   7. Prints the push command
 #
 # After running, review with "git log --oneline -2" and "git diff HEAD~1",
-# then push: git push && git push origin <tag>
+# then push: git push origin master --tags
 
 set -euo pipefail
 
@@ -170,5 +170,5 @@ echo "    git log --oneline -2"
 echo "    git diff HEAD~1"
 echo ""
 echo "  Push:"
-echo "    git push && git push origin ${TAG}"
+echo "    git push origin master --tags"
 echo "============================================"

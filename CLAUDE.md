@@ -110,7 +110,7 @@ Use `scripts/release.sh` for all releases. Never update changelog, CLAUDE.md sta
 
 ```bash
 scripts/release.sh M89 v1.17.0-beta
-git push && git push origin v1.17.0-beta
+git push origin master --tags
 ```
 
 **Prerequisites:** clean working tree, milestone in `milestones.md`, tests passing.
