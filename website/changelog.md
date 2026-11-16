@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.84.0-beta <Badge type="tip" text="latest" /> {#v1-84-0-beta}
+## v1.85.0-beta <Badge type="tip" text="latest" /> {#v1-85-0-beta}
+
+**2026-11-16** — Scale API Safety.
+
+- **Scale API Safety** (M217) — Bug fix (M214 run 1): scale had no upper bound (100000 accepted, 436 instances created), accepted undeclared services (orphan instances) and reported success on store errors. Now `cca scale` and `cca apply` warn from 500 instances per service, and above 600 a `cluster.admin` must approve by repeating the exact count (`--approve-above-limit`, or typing it again on a terminal); approvals are audited; there is no ceiling, and the limit is documented as not a capacity promise. Scaling an undeclared service is refused (404), a store error is 500, and orphan instances left by earlier scale calls are stopped. First milestone done as an OpenSpec change (`scale-api-safety`).
+
+---
+
+## v1.84.0-beta {#v1-84-0-beta}
 
 **2026-11-16** — OIDC Issuer Without Client ID Skips the Audience Check.
 
