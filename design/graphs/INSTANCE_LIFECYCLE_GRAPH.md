@@ -120,13 +120,15 @@ Scheduler.Reconcile
 
 ### reconcileDesiredInstance → full startup sequence
 ```
-reconcileDesiredInstance(instanceInfo)                        :726
+reconcileDesiredInstance(instanceInfo)                        :729
 ├── lookupServiceImageFromStore(ctx, service)                :1085
 │   └── store.Get(desired/service/{svc}/image)
 │       → BAIL if empty (silent return, no state change)
 │
-├── computeServiceConfigHash(ctx, service)                   :1355  [configHashBeforeBuild, M235]
-│   └── taken BEFORE any input is read; stored after the start (Flow 16)
+├── computeServiceConfigHash(ctx, service)                   :737 (def :1363)  [configHashBeforeBuild, M235]
+│   ├── Scan desired/service/{svc}/config/ + desired/service/{svc}/secret/
+│   ├── taken BEFORE any input is read; stored after the start (Flow 16)
+│   └── read error → BAIL this cycle ("cannot read config, retrying next cycle")
 │
 ├── prepareInstanceSecretMaterial(ctx, instanceInfo)          [agent/secret_delivery.go, M174]
 │   ├── no grants / connection secrets / pull secret → proceed
@@ -239,7 +241,7 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   └── addConnectionFileMounts → WriteConnectionFile         [connection URLs as files only]
 ├── addSecretHelperIfMounted                                 [cca-secret helper, not secret]
 │
-└── startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, spec)  :966
+└── startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, spec)  :971
     (… after start: PUT observed/instance/{id}/config-hash = configHashBeforeBuild, always)
     ├── runtime.Start(spec)
     │   ├── [containerd] WithNewSpec(WithImageConfig, buildOCISpecOptions(spec, netns)...)
@@ -279,11 +281,12 @@ reconcileDesiredInstance(instanceInfo)                        :726
 
 ### executeReconciliationCycle → running instance path
 ```
-executeReconciliationCycle                                   :525
+executeReconciliationCycle                                   :527
 └── FOR EACH running instance:
-    ├── detectConfigChange(ctx, instanceInfo)                :1267
+    ├── detectConfigChange(ctx, instanceInfo)                :1274
     │   ├── no stored hash → no compare (instance started by an older agent)
-    │   ├── computeServiceConfigHash(ctx, service)           :1355  [empty input → hash of "", never ""]
+    │   ├── computeServiceConfigHash(ctx, service)           :1363  [empty input → hash of "", never ""]
+    │   │   └── read error → no compare, instance keeps running (a blip is not a change)
     │   └── compare with observed/instance/{id}/config-hash
     │       → if changed: stopInstanceWithGracePeriod → restart
     │

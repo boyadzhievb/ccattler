@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/url"
@@ -733,7 +734,11 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	// Hash before anything the container is built from is read (Flow 16, M235):
 	// a fact written during the build or pull is then never in the stored hash,
 	// so detectConfigChange restarts the instance with it.
-	configHashBeforeBuild := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
+	configHashBeforeBuild, hashError := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
+	if hashError != nil {
+		logging.Default().Warn("cannot read config, retrying next cycle", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", hashError.Error())
+		return
+	}
 
 	secretValues, secretsReady := nodeAgent.prepareInstanceSecretMaterial(ctx, instanceInfo)
 	if !secretsReady {
@@ -1223,42 +1228,44 @@ func (nodeAgent *Agent) lookupServiceExposedPortsFromStore(ctx context.Context, 
 // resolveServiceConfigEnvVars reads the desired config env vars for a service
 // from the store and returns them as a map for the runtime spec.
 func (nodeAgent *Agent) resolveServiceConfigEnvVars(ctx context.Context, serviceName string) map[string]string {
-	prefix := types.ScanDesiredServiceConfig(serviceName)
-	facts, err := nodeAgent.store.Scan(ctx, prefix)
+	facts, err := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConfig(serviceName))
 	if err != nil || len(facts) == 0 {
 		return nil
 	}
+	return configFactsUnderPrefix(facts, serviceConfigEnvPrefix(serviceName))
+}
 
-	envVars := make(map[string]string)
-	envPrefix := fmt.Sprintf("%s/service/%s/config/env/", types.PrefixDesired, serviceName)
+// serviceConfigEnvPrefix is the key prefix of a service's env var facts.
+func serviceConfigEnvPrefix(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/config/env/", types.PrefixDesired, serviceName)
+}
+
+// serviceConfigFilePrefix is the key prefix of a service's config file facts.
+func serviceConfigFilePrefix(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/config/file/", types.PrefixDesired, serviceName)
+}
+
+// configFactsUnderPrefix maps the name after keyPrefix to the value for every
+// fact under keyPrefix (env var names, config file paths).
+func configFactsUnderPrefix(facts []store.Fact, keyPrefix string) map[string]string {
+	entries := make(map[string]string)
 	for _, fact := range facts {
-		if strings.HasPrefix(fact.Key, envPrefix) {
-			envVarName := strings.TrimPrefix(fact.Key, envPrefix)
-			envVars[envVarName] = string(fact.Value)
+		if strings.HasPrefix(fact.Key, keyPrefix) {
+			entries[strings.TrimPrefix(fact.Key, keyPrefix)] = string(fact.Value)
 		}
 	}
-	return envVars
+	return entries
 }
 
 // resolveServiceConfigFiles reads the desired config file mount definitions for
 // a service from the store and returns them as a map from container-absolute
 // file path to file content string.
 func (nodeAgent *Agent) resolveServiceConfigFiles(ctx context.Context, serviceName string) map[string]string {
-	prefix := types.ScanDesiredServiceConfig(serviceName)
-	facts, err := nodeAgent.store.Scan(ctx, prefix)
+	facts, err := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConfig(serviceName))
 	if err != nil || len(facts) == 0 {
 		return nil
 	}
-
-	configFileMounts := make(map[string]string)
-	filePrefix := fmt.Sprintf("%s/service/%s/config/file/", types.PrefixDesired, serviceName)
-	for _, fact := range facts {
-		if strings.HasPrefix(fact.Key, filePrefix) {
-			containerFilePath := strings.TrimPrefix(fact.Key, filePrefix)
-			configFileMounts[containerFilePath] = string(fact.Value)
-		}
-	}
-	return configFileMounts
+	return configFactsUnderPrefix(facts, serviceConfigFilePrefix(serviceName))
 }
 
 // detectConfigChange checks whether the config hash for a running instance has
@@ -1270,9 +1277,9 @@ func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo pla
 		return false
 	}
 	storedHash := string(storedHashFact.Value)
-	currentHash := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
-	if currentHash == storedHash {
-		return false
+	currentHash, hashError := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
+	if hashError != nil || currentHash == storedHash {
+		return false // a read error is not a config change: never stop on it
 	}
 	logging.Default().Info("config changed, restarting instance",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,
@@ -1350,43 +1357,38 @@ func (nodeAgent *Agent) lookupServiceNameForInstance(ctx context.Context, instan
 }
 
 // computeServiceConfigHash computes a deterministic SHA256 hash of all config
-// inputs (env vars, config files, secrets) for a service. A service with no
-// inputs gets the hash of the empty input, so its first input is a change (M235).
-func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceName string) string {
+// inputs (env vars, config files, secret grants) for a service; no inputs hash
+// as the empty input (M235). A failed store read returns an error, never a
+// hash of what could be read, so a store blip is not mistaken for a change.
+func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceName string) (string, error) {
+	configFacts, configScanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConfig(serviceName))
+	if configScanError != nil {
+		return "", fmt.Errorf("read config of service %s: %w", serviceName, configScanError)
+	}
+	secretFacts, secretScanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceSecrets(serviceName))
+	if secretScanError != nil {
+		return "", fmt.Errorf("read secret grants of service %s: %w", serviceName, secretScanError)
+	}
 	hasher := sha256.New()
-
-	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, serviceName)
-	if len(envVars) > 0 {
-		sortedEnvKeys := make([]string, 0, len(envVars))
-		for envKey := range envVars {
-			sortedEnvKeys = append(sortedEnvKeys, envKey)
-		}
-		sort.Strings(sortedEnvKeys)
-		for _, envKey := range sortedEnvKeys {
-			hasher.Write([]byte("env:" + envKey + "=" + envVars[envKey] + "\n"))
-		}
+	writeSortedConfigEntries(hasher, "env:", configFactsUnderPrefix(configFacts, serviceConfigEnvPrefix(serviceName)))
+	writeSortedConfigEntries(hasher, "file:", configFactsUnderPrefix(configFacts, serviceConfigFilePrefix(serviceName)))
+	for _, secretFact := range secretFacts {
+		hasher.Write([]byte("secret:" + secretFact.Key + "=" + string(secretFact.Value) + "\n"))
 	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
 
-	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, serviceName)
-	if len(configFiles) > 0 {
-		sortedFilePaths := make([]string, 0, len(configFiles))
-		for filePath := range configFiles {
-			sortedFilePaths = append(sortedFilePaths, filePath)
-		}
-		sort.Strings(sortedFilePaths)
-		for _, filePath := range sortedFilePaths {
-			hasher.Write([]byte("file:" + filePath + "=" + configFiles[filePath] + "\n"))
-		}
+// writeSortedConfigEntries writes "<label><name>=<value>\n" for each entry in
+// name order: the format every stored config hash was built with.
+func writeSortedConfigEntries(hasher io.Writer, label string, entries map[string]string) {
+	sortedNames := make([]string, 0, len(entries))
+	for entryName := range entries {
+		sortedNames = append(sortedNames, entryName)
 	}
-
-	secretFacts, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceSecrets(serviceName))
-	if scanError == nil {
-		for _, secretFact := range secretFacts {
-			hasher.Write([]byte("secret:" + secretFact.Key + "=" + string(secretFact.Value) + "\n"))
-		}
+	sort.Strings(sortedNames)
+	for _, entryName := range sortedNames {
+		_, _ = hasher.Write([]byte(label + entryName + "=" + entries[entryName] + "\n"))
 	}
-
-	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 // resolveSecretAPIBaseURL computes the HTTP base URL for the secret API server,

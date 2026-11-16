@@ -14,5 +14,11 @@
 ## 2. Close
 
 - [x] 2.1 gofmt, golangci-lint, `go test ./agent/ ./lang/ ./api/` — gofmt clean, golangci-lint `./agent/` 0 issues, all three pass
-- [ ] 2.2 Independent review: `code-reviewer` and `security-audit` (secret delivery path); record every finding as fixed or rejected with one line here
+- [x] 2.2 Independent review: `code-reviewer` and `security-audit` (secret delivery path); record every finding as fixed or rejected with one line here — 2026-11-16 on 6197f28..f56e635. `code-reviewer`: request changes, one medium (core fix confirmed: every hashed input is read after the hash; early returns store nothing). `security-audit`: no defect in the change (grant add/remove during a start now always restarts and re-fetches). Outcome:
+  - fixed (medium, code-reviewer) — a store read error at compare time hashed as "no config" and stopped every running instance with config (the old `== ""` guard had hidden it): `computeServiceConfigHash` now scans `config/` and `secret/` itself and returns an error; `detectConfigChange` compares nothing on error, the start path skips the cycle. Failing-first test `TestAgentKeepsInstanceWhenConfigReadFails` (instance was gone after one blip); `TestServiceConfigHashFormatUnchanged` pins the hash bytes so older agents' hashes still match after an upgrade; resolvers share `configFactsUnderPrefix`
+  - opened M236 (security-audit, pre-existing) — connection facts and the pull secret are not in the hash, so a late or retargeted connection never reaches a running instance; secret values are not in it either (open question in Phase 236). Flow 16 now states what the hash covers
+  - rejected for M235 (low, security-audit) — a node agent can forge another instance's `config-hash` and force a restart: agents can write all of `observed/instance/` today, the scope of M181 (Store Access Isolation)
+  - noted (security-audit, pre-existing) — the hash of env values is unsalted and readable with `observed/` read; every role that reads it also reads `desired/`
+  - fixed (nit, code-reviewer) — graph line numbers and call-site vs definition
+  - noted (nit, code-reviewer) — tests count starts rather than checking the new value reaches the restarted container; removing all of a service's config now restarts it (intended, spec "first config" mirror)
 - [ ] 2.3 A push run with WordPress passes (`deploy-run:push-fast`), then the closing full Deploy Testbed run

@@ -2,7 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,6 +81,91 @@ func TestAgentRestartsWhenConfigArrivesDuringStart(t *testing.T) {
 	waitFor(t, configHashTestTimeout, "instance restarted after the env var written during its start", func() bool {
 		return lateRuntime.startCount("late1") >= 2
 	})
+}
+
+// failingConfigScanStore fails every Scan of a service's config or secret
+// facts while failScans is set, as a store blip during a reconcile would.
+type failingConfigScanStore struct {
+	store.StateStore              // StateStore serves every other call.
+	failScans        atomic.Bool  // failScans makes config and secret scans fail.
+	failedScanCount  atomic.Int64 // failedScanCount counts the scans that failed.
+}
+
+// Scan fails config and secret scans while failScans is set.
+func (failingStore *failingConfigScanStore) Scan(ctx context.Context, prefix string) ([]store.Fact, error) {
+	if failingStore.failScans.Load() && (strings.Contains(prefix, "/config/") || strings.Contains(prefix, "/secret/")) {
+		failingStore.failedScanCount.Add(1)
+		return nil, errors.New("store unavailable")
+	}
+	return failingStore.StateStore.Scan(ctx, prefix)
+}
+
+// TestAgentKeepsInstanceWhenConfigReadFails checks that a store error while
+// comparing the config hash does not stop a running instance (M235 review).
+func TestAgentKeepsInstanceWhenConfigReadFails(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	failingStore := &failingConfigScanStore{StateStore: memoryStore}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	countingRuntime := &lateFactRuntime{
+		SimulatorRuntime: runtime.NewSimulatorRuntime(),
+		factStore:        memoryStore,
+		lateFactKey:      types.KeyDesiredServiceImage("web"), // same value: changes nothing
+		lateFactValue:    "nginx:1.28",
+		startCounts:      make(map[string]int),
+	}
+	nodeAgent := New("node-1", failingStore, countingRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.local"))
+	types.WriteInstance(ctx, memoryStore, types.Instance{ID: "blip1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, memoryStore, types.Placement{InstanceID: "blip1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, configHashTestTimeout, "config hash stored", func() bool {
+		_, getError := memoryStore.Get(ctx, types.KeyObservedInstanceConfigHash("blip1"))
+		return getError == nil
+	})
+	failingStore.failScans.Store(true)
+	waitFor(t, configHashTestTimeout, "several reconcile cycles with failing config reads", func() bool {
+		return failingStore.failedScanCount.Load() >= 10
+	})
+	observedStatus, statusError := countingRuntime.Status(ctx, "blip1")
+	if statusError != nil || !observedStatus.Running {
+		t.Fatalf("instance stopped during failing config reads (status %+v, error %v); a read error is not a config change", observedStatus, statusError)
+	}
+	if starts := countingRuntime.startCount("blip1"); starts != 1 {
+		t.Fatalf("instance started %d times; a config read error must not restart it", starts)
+	}
+}
+
+// TestServiceConfigHashFormatUnchanged pins the bytes the config hash is built
+// from: hashes stored by older agents must still match, or an upgrade would
+// restart every instance with config (M235 review).
+func TestServiceConfigHashFormatUnchanged(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "B_VAR"), []byte("2"))
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "A_VAR"), []byte("1"))
+	factStore.Put(ctx, types.KeyDesiredServiceConfigFile("web", "/etc/app.conf"), []byte("port=80"))
+	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "db-password"), []byte("/run/secrets/db"))
+	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
+
+	actualHash, hashError := nodeAgent.computeServiceConfigHash(ctx, "web")
+	if hashError != nil {
+		t.Fatalf("hash: %v", hashError)
+	}
+	legacyInput := "env:A_VAR=1\nenv:B_VAR=2\nfile:/etc/app.conf=port=80\n" +
+		"secret:" + types.KeyDesiredServiceSecret("web", "db-password") + "=/run/secrets/db\n"
+	legacyDigest := sha256.Sum256([]byte(legacyInput))
+	if expectedHash := hex.EncodeToString(legacyDigest[:]); actualHash != expectedHash {
+		t.Fatalf("config hash format changed: got %s, want %s", actualHash, expectedHash)
+	}
 }
 
 // TestAgentRestartsWhenFirstConfigArrivesAfterStart checks that the first env
