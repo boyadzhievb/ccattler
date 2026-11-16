@@ -1,0 +1,9 @@
+# actionlint configuration: the self-hosted runner labels of this repository
+# (gh api repos/{owner}/{repo}/actions/runners, 2026-11-16).
+self-hosted-runner:
+  labels:
+    - deploy   # m4800: deploy testbed (Deploy Testbed, Cluster Health Check)
+    - m4800
+    - e2e      # y510p: LAN E2E testbed
+    - ha
+    - y510p
