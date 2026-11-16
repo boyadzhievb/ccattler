@@ -499,7 +499,7 @@ Decision (2026-11-16): kube-apiserver, etcd, Consul and Vault all stop at startu
   - moved to M228 — `cca server --oidc-issuer` without `--oidc-client-id` builds the authenticator with an empty audience and `security/oidc.go` then skips the audience check (verified; pre-existing)
   - fixed (item above) — `cca join` treats unknown flags as extra positional arguments and ignores them, so a mistyped `--ca-cert` drops the CA file (verified; pre-existing)
   - noted, pre-existing — `--listen ""` and non-TLS `--listen 0.0.0.0:…` only warn
-- [ ] Unit tests, Deploy Testbed
+- [x] Unit tests, Deploy Testbed (run 43836945179 on 5a0751c green: servers and agents start through the new parsers, workers enrol with `cca join`)
 
 ### Phase 228 — OIDC Issuer Without Client ID Skips the Audience Check (M228, bug)
 
@@ -515,8 +515,14 @@ Found by the M227 security audit (2026-11-16), verified: `cca server --oidc-issu
   - fixed — `--` did not end flag parsing in `parseFlagsAndPositionals` (a flag after `--` was still read as a flag) → everything after `--` is an argument
   - confirmed — only two production authenticators exist: internal (audience `ccattler`, own signing key) and external (client ID, now always set); `SetExternalOIDCConfig`, `/api/auth/oidc-config` and `cca login` already require both values
   - noted, pre-existing, not in this milestone — a failed JWKS fetch at startup only warns and the server runs without external OIDC; only the provider's first public key is used, so a provider key rotation breaks validation until restart
-  - not reviewed independently — the two authenticator fixes above were written after the audit; covered by tests and the full suite only
-- [ ] Unit tests, Deploy Testbed
+- [x] Second `security-audit` 2026-11-16 on 5a0751c (the authenticator fixes and the `--` handling, written after the first audit; no critical or high finding; security, cmd/cca, api and integration tests pass). Outcome:
+  - confirmed — no authentication outage: nothing in api/, agent/ or controllers/ builds an authenticator; both production authenticators have a non-empty audience; workload tokens are verified by the cloud provider, not by CCattler
+  - confirmed — `aud` list handling refuses numbers, objects, null, a missing claim and non-string list entries; an empty entry cannot match
+  - rejected — require `azp` when `aud` lists several audiences: a recommendation for ID tokens in OIDC Core; would refuse providers that omit `azp`; needs the provider itself to put CCattler's client ID into tokens for other clients
+  - rejected — `--` given as the VALUE of a flag (`--node-id -- …`) is taken for the terminator, so later flags become arguments: fails closed (argument-count error or a failed join), never honours a flag after `--`, and nobody writes that
+  - rejected — the audience mismatch error prints the `aud` claim with `%v`: only reached by a token the provider signed; identifier, not a credential
+  - noted, pre-existing — user and workload tokens share issuer and signing key and are told apart only by `aud` (`ccattler` vs the cloud provider name); no exploit found (needs a provider named `ccattler` and a matching user record)
+- [x] Unit tests, Deploy Testbed (run 43836945179 on 5a0751c green; the testbed does not use external OIDC, so the run shows only that nothing else broke)
 
 ### Phase 217 — Scale API Safety (M217)
 
