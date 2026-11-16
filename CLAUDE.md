@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M232 — Containers Get a tmpfs Over /run (v1.87.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M235 — Instance Starts Without Secrets Applied Moments Later (v1.88.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.87.0-beta <Badge type="tip" text="latest" /> {#v1-87-0-beta}
+## v1.88.0-beta <Badge type="tip" text="latest" /> {#v1-88-0-beta}
+
+**2026-11-16** — Instance Starts Without Secrets Applied Moments Later.
+
+- **Instance Starts Without Secrets Applied Moments Later** (M235) — Bug fix (found by the first WordPress push run, M232): an apply wrote its facts one at a time, so an agent could start an instance before its service's secrets were written; the config hash was then taken after the start, from a store that already had the secrets, so the instance was never restarted and ran without them.
+
+---
+
+## v1.87.0-beta {#v1-87-0-beta}
 
 **2026-11-16** — Containers Get a tmpfs Over /run.
 
