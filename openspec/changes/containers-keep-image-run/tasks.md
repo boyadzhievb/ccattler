@@ -17,10 +17,10 @@
 
 ## 3. Crash-loop observations (D4)
 
-- [ ] 3.1 Restart accounting: why the crash-looping instance stayed `running` with `Restarts: 0` and was restarted about every second; confirmed or not, with evidence
-- [ ] 3.2 Probe target: why the readiness probe used `10.92.128.130` while the instance IP was `10.92.128.140`; confirmed or not, with evidence
-- [ ] 3.3 Log retention: whether each restart replaces the container log so the exit cause is lost; confirmed or not, with evidence
-- [ ] 3.4 Each confirmed observation gets a bug milestone row and phase in milestones.md
+- [x] 3.1 Restart accounting: why the crash-looping instance stayed `running` with `Restarts: 0` and was restarted about every second; confirmed or not, with evidence — **confirmed**: the agent's reconcile loop restarts an exited container in place on every cycle (`agent/agent.go`, `!runtimeStatus.Running` → `publishExitReasonFromStatus` + `reconcileDesiredInstance`) and never publishes `failed`, so the failure controller's crash-loop back-off (counts `failed` only) never starts; `observed/instance/{id}/restarts` is read by `cca describe` and `/api/status` but written nowhere → M233
+- [x] 3.2 Probe target: why the readiness probe used `10.92.128.130` while the instance IP was `10.92.128.140`; confirmed or not, with evidence — **not a separate bug**: the probe reads `observed/instance/{id}/ip` each cycle (`agent/probes.go:143`); the deploy agent takes IPs from CNI `host-local` (`buildCNIConflist`), and every in-place restart creates a new namespace and gets the next IP, so the status reason came from a probe of an earlier attempt. Recorded as part of M233 (whether an in-place restart should keep its IP)
+- [x] 3.3 Log retention: whether each restart replaces the container log so the exit cause is lost; confirmed or not, with evidence — **confirmed**: restarting an exited container runs `Start` → `Stop` → `removeContainerResources`, which removes `/var/lib/ccattler/logs/<id>/` with the failed run's log → M234
+- [x] 3.4 Each confirmed observation gets a bug milestone row and phase in milestones.md — M233 (restart without back-off or count, includes 3.2) and M234 (restart deletes the previous log)
 
 ## 4. Close
 
