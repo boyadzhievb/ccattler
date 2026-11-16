@@ -234,3 +234,13 @@ func extractServiceExposedPorts(facts []store.Fact) map[string][]int {
 	}
 	return servicePorts
 }
+
+// isActiveInstanceState returns true if the instance state represents a
+// workload that is still active (not yet stopped or failed), including one
+// waiting to restart in place (crash-loop-backoff, M233).
+func isActiveInstanceState(instanceState types.InstanceState) bool {
+	return instanceState == types.InstanceRunning ||
+		instanceState == types.InstancePending ||
+		instanceState == types.InstanceStarting ||
+		instanceState == types.InstanceCrashLoopBackoff
+}

@@ -728,11 +728,11 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 // the image is pulled with the delivered credentials, then init steps, volumes,
 // spec with read-only secret mounts, and start. Any unmet prerequisite skips
 // the instance for this cycle. Only services with legacy_secret_api get a
-// secret API token.
-func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceInfo placedInstanceInfo) {
+// secret API token. Returns true only when the runtime started the container.
+func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceInfo placedInstanceInfo) bool {
 	image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
 	if image == "" {
-		return
+		return false
 	}
 	// Hash before anything the container is built from is read (Flow 16, M235):
 	// a fact written during the build or pull is then never in the stored hash,
@@ -740,17 +740,17 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	configHashBeforeBuild, hashError := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
 	if hashError != nil {
 		logging.Default().Warn("cannot read config, retrying next cycle", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", hashError.Error())
-		return
+		return false
 	}
 
 	secretValues, secretsReady := nodeAgent.prepareInstanceSecretMaterial(ctx, instanceInfo)
 	if !secretsReady {
-		return
+		return false
 	}
 	credentials := nodeAgent.resolveImagePullCredentials(ctx, instanceInfo.service, secretValues)
 
 	if !nodeAgent.ensureImageAvailable(ctx, instanceInfo, image, credentials) {
-		return
+		return false
 	}
 
 	secretAPIToken, secretAPIBaseURL := nodeAgent.registerLegacySecretAPIToken(ctx, instanceInfo)
@@ -762,7 +762,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 			if secretAPIToken != "" {
 				nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
 			}
-			return
+			return false
 		}
 	}
 
@@ -776,7 +776,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 			if secretAPIToken != "" {
 				nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
 			}
-			return
+			return false
 		}
 	}
 
@@ -788,7 +788,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		if secretAPIToken != "" {
 			nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
 		}
-		return
+		return false
 	}
 	runtimeSpec.SecretMounts = secretMounts
 	runtimeSpec.ConfigFiles = addSecretHelperIfMounted(runtimeSpec.SecretMounts, runtimeSpec.ConfigFiles)
@@ -798,7 +798,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	if secretAPIToken != "" {
 		nodeAgent.injectSecretAPIIntoSpec(secretAPIToken, secretAPIBaseURL, &runtimeSpec)
 	}
-	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, runtimeSpec)
+	return nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, runtimeSpec)
 }
 
 // ensureImageAvailable checks that the container image is locally cached,
@@ -966,8 +966,9 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 // startInstanceAndPublishState starts an instance from runtimeSpec, records its
 // resources and host ports, and writes its observed state, image and
 // configHashBeforeBuild (taken before the spec was built, Flow 16) to the store.
-// On failure, cleans up secrets and publishes a failed state.
-func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, runtimeSpec runtime.Spec) {
+// On failure, cleans up secrets and publishes a failed state. Returns true when
+// the runtime started the container.
+func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, runtimeSpec runtime.Spec) bool {
 	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
 		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
 		if nodeAgent.secretAPIServer != nil {
@@ -978,7 +979,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 			logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
 		}
-		return
+		return false
 	}
 
 	nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
@@ -1011,6 +1012,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id), []byte(configHashBeforeBuild)); putError != nil {
 		logging.Default().Error("failed to write config hash", "instance", instanceInfo.id, "error", putError.Error())
 	}
+	return true
 }
 
 // republishHostPortIfNeeded re-publishes the host port fact for a running

@@ -89,8 +89,9 @@ func (crashRuntime *crashingRuntime) startsOf(instanceID string) []time.Time {
 }
 
 // startCrashLoopTestAgent places one "web" instance on node-1 and runs an
-// agent with the short crash-loop delays of D6 until the test ends.
-func startCrashLoopTestAgent(t *testing.T, instanceID string, baseDelay time.Duration, crashRuntime *crashingRuntime) (store.StateStore, context.Context) {
+// agent with the short crash-loop delays of D6 until the test ends. It returns
+// the agent for RunInAgentLoop.
+func startCrashLoopTestAgent(t *testing.T, instanceID string, baseDelay time.Duration, crashRuntime *crashingRuntime) (*Agent, store.StateStore, context.Context) {
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { factStore.Close() })
@@ -107,8 +108,9 @@ func startCrashLoopTestAgent(t *testing.T, instanceID string, baseDelay time.Dur
 	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.old.local"))
 	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: "web", State: types.InstancePending})
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+	nodeAgent.EnableTestHooks()
 	go nodeAgent.Run(ctx)
-	return factStore, ctx
+	return nodeAgent, factStore, ctx
 }
 
 // readFactValue returns the value of a store key, or "" when it is missing.
@@ -125,7 +127,7 @@ func readFactValue(ctx context.Context, factStore store.StateStore, key string) 
 // delay, and never earlier (spec instance-restart).
 func TestAgentBacksOffCrashLoopingInstance(t *testing.T) {
 	crashRuntime := newCrashingRuntime()
-	factStore, ctx := startCrashLoopTestAgent(t, "loop1", crashLoopTestBaseDelay, crashRuntime)
+	_, factStore, ctx := startCrashLoopTestAgent(t, "loop1", crashLoopTestBaseDelay, crashRuntime)
 
 	waitFor(t, crashLoopTestTimeout, "instance started three times", func() bool {
 		return len(crashRuntime.startsOf("loop1")) >= 3
@@ -148,7 +150,7 @@ func TestAgentBacksOffCrashLoopingInstance(t *testing.T) {
 func TestAgentResetsCrashLoopBackoffAfterStableRun(t *testing.T) {
 	crashRuntime := newCrashingRuntime()
 	crashRuntime.stableFromStartNumber = 3 // two crashes, then the third start runs on
-	factStore, ctx := startCrashLoopTestAgent(t, "stable1", crashLoopTestBaseDelay, crashRuntime)
+	_, factStore, ctx := startCrashLoopTestAgent(t, "stable1", crashLoopTestBaseDelay, crashRuntime)
 
 	waitFor(t, crashLoopTestTimeout, "third start ran longer than the reset period", func() bool {
 		startTimes := crashRuntime.startsOf("stable1")
@@ -166,7 +168,7 @@ func TestAgentResetsCrashLoopBackoffAfterStableRun(t *testing.T) {
 // and the waiting state with its reason while the agent backs off.
 func TestAgentCountsRestartsAndPublishesCrashLoopState(t *testing.T) {
 	crashRuntime := newCrashingRuntime()
-	factStore, ctx := startCrashLoopTestAgent(t, "count1", crashLoopTestBaseDelay, crashRuntime)
+	_, factStore, ctx := startCrashLoopTestAgent(t, "count1", crashLoopTestBaseDelay, crashRuntime)
 
 	if got := readFactValue(ctx, factStore, types.KeyObservedInstanceRestarts("count1")); got != "" {
 		t.Fatalf("restarts = %q before the first start, want none", got)
@@ -187,7 +189,7 @@ func TestAgentCountsRestartsAndPublishesCrashLoopState(t *testing.T) {
 // change ends the wait: the user who fixed the env does not wait minutes (D5).
 func TestAgentRestartsAtOnceWhenConfigChangesDuringBackoff(t *testing.T) {
 	crashRuntime := newCrashingRuntime()
-	factStore, ctx := startCrashLoopTestAgent(t, "cfg1", crashLoopLongBaseDelay, crashRuntime)
+	_, factStore, ctx := startCrashLoopTestAgent(t, "cfg1", crashLoopLongBaseDelay, crashRuntime)
 	waitFor(t, crashLoopTestTimeout, "instance waiting in crash-loop-backoff", func() bool {
 		return readFactValue(ctx, factStore, types.KeyObservedInstanceState("cfg1")) == string(types.InstanceCrashLoopBackoff)
 	})
@@ -199,4 +201,46 @@ func TestAgentRestartsAtOnceWhenConfigChangesDuringBackoff(t *testing.T) {
 		startTimes := crashRuntime.startsOf("cfg1")
 		return len(startTimes) > startsBeforeChange && startTimes[startsBeforeChange].After(configChangedAt)
 	})
+}
+
+// crashLoopBailOutWindow is how long the bail-out test watches the instance after the failed start.
+const crashLoopBailOutWindow = 600 * time.Millisecond
+
+// TestAgentDoesNotCountBailedOutStartAsCrash checks that a restart which
+// starts nothing (here: the image pull fails) neither counts as a restart nor
+// as a new exit, and does not hide the real state behind crash-loop-backoff.
+func TestAgentDoesNotCountBailedOutStartAsCrash(t *testing.T) {
+	crashRuntime := newCrashingRuntime()
+	crashRuntime.PullFailures = map[string]string{"nginx:broken": "registry down"}
+	nodeAgent, factStore, ctx := startCrashLoopTestAgent(t, "bail1", 500*time.Millisecond, crashRuntime)
+
+	waitFor(t, crashLoopTestTimeout, "first start", func() bool {
+		return len(crashRuntime.startsOf("bail1")) >= 1
+	})
+	// The restart after the wait needs an image that cannot be pulled.
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:broken"))
+	waitFor(t, crashLoopTestTimeout, "restart bails out on the pull failure", func() bool {
+		return readFactValue(ctx, factStore, types.KeyObservedInstanceState("bail1")) == string(types.InstanceImagePullBackoff)
+	})
+
+	windowStart := time.Now()
+	waitFor(t, crashLoopTestTimeout, "state stays image-pull-backoff without a counted restart or exit", func() bool {
+		if state := readFactValue(ctx, factStore, types.KeyObservedInstanceState("bail1")); state != string(types.InstanceImagePullBackoff) {
+			t.Errorf("state = %q during the pull back-off, want %q", state, types.InstanceImagePullBackoff)
+			return true
+		}
+		if restarts := readFactValue(ctx, factStore, types.KeyObservedInstanceRestarts("bail1")); restarts != "" {
+			t.Errorf("restarts = %q after a start that bailed out, want none", restarts)
+			return true
+		}
+		return time.Since(windowStart) > crashLoopBailOutWindow
+	})
+	var recordedAttempts int
+	nodeAgent.RunInAgentLoop(func() { recordedAttempts = nodeAgent.crashLoopBackoffs["bail1"].attempts })
+	if recordedAttempts != 1 {
+		t.Errorf("recorded %d exits, want 1: the bailed-out start is not an exit", recordedAttempts)
+	}
+	if starts := len(crashRuntime.startsOf("bail1")); starts != 1 {
+		t.Errorf("container started %d times, want 1", starts)
+	}
 }

@@ -39,19 +39,27 @@ type crashLoopBackoffEntry struct {
 // reconcileInstanceWithoutRunningContainer starts an instance whose container
 // is missing or has exited. A missing container is started at once; an exited
 // one is restarted in place only when its back-off wait is over (Flow 33).
+// Only a start that happened is counted: a start that bailed out (pull
+// failure, secrets, init, volumes) leaves the exit and its wait as they were.
 func (nodeAgent *Agent) reconcileInstanceWithoutRunningContainer(ctx context.Context, instanceInfo placedInstanceInfo, runtimeStatus runtime.Status, containerExited bool) {
 	if containerExited {
 		if !nodeAgent.isExitedInstanceDueForRestart(ctx, instanceInfo, runtimeStatus) {
 			return
 		}
-		nodeAgent.incrementRestartCountInStore(ctx, instanceInfo.id)
+	} else if backoffEntry, isTracked := nodeAgent.crashLoopBackoffs[instanceInfo.id]; isTracked {
+		backoffEntry.waiting = false // the exited container is gone; the next exit is a new one
 	}
-	nodeAgent.recordInstanceStartAttempt(instanceInfo.id)
 	logging.Default().Info("starting instance",
 		"agent", nodeAgent.nodeID,
 		"instance", instanceInfo.id,
 		"service", instanceInfo.service)
-	nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
+	if !nodeAgent.reconcileDesiredInstance(ctx, instanceInfo) {
+		return
+	}
+	if containerExited {
+		nodeAgent.incrementRestartCountInStore(ctx, instanceInfo.id)
+	}
+	nodeAgent.recordInstanceStarted(instanceInfo.id)
 }
 
 // isExitedInstanceDueForRestart reports whether the exited container of an
@@ -112,9 +120,9 @@ func describeContainerExit(runtimeStatus runtime.Status) string {
 	return fmt.Sprintf("exited with code %d (%s)", runtimeStatus.ExitCode, runtimeStatus.Error)
 }
 
-// recordInstanceStartAttempt notes that the agent is starting the instance
+// recordInstanceStarted notes that the runtime started the instance's container
 // now: the back-off wait is over and the stable-run period begins.
-func (nodeAgent *Agent) recordInstanceStartAttempt(instanceID string) {
+func (nodeAgent *Agent) recordInstanceStarted(instanceID string) {
 	backoffEntry, isTracked := nodeAgent.crashLoopBackoffs[instanceID]
 	if !isTracked {
 		backoffEntry = &crashLoopBackoffEntry{}
@@ -131,7 +139,11 @@ func (nodeAgent *Agent) incrementRestartCountInStore(ctx context.Context, instan
 	restartKey := types.KeyObservedInstanceRestarts(instanceID)
 	restartCount := 0
 	if restartFact, getError := nodeAgent.store.Get(ctx, restartKey); getError == nil {
-		restartCount, _ = strconv.Atoi(string(restartFact.Value))
+		parsedCount, parseError := strconv.Atoi(string(restartFact.Value))
+		if parseError != nil {
+			logging.Default().Error("corrupt restart count, counting from 0", "instance", instanceID, "value", string(restartFact.Value), "error", parseError.Error())
+		}
+		restartCount = parsedCount
 	} else if !errors.Is(getError, store.ErrKeyNotFound) {
 		logging.Default().Error("failed to read restart count", "instance", instanceID, "error", getError.Error())
 		return

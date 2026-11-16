@@ -443,10 +443,9 @@ func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, reque
 		return
 	}
 
-	instancesByState.Set(0, string(types.InstancePending))
-	instancesByState.Set(0, string(types.InstanceRunning))
-	instancesByState.Set(0, string(types.InstanceFailed))
-	instancesByState.Set(0, string(types.InstanceStopped))
+	for _, knownState := range types.AllInstanceStates() {
+		instancesByState.Set(0, string(knownState))
+	}
 	for _, instance := range status.Instances {
 		instancesByState.Inc(instance.State)
 	}

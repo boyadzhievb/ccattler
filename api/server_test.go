@@ -1730,3 +1730,42 @@ func TestSecretAPIWithoutStore(t *testing.T) {
 		t.Fatalf("expected 503 without secret store, got %d", resp.StatusCode)
 	}
 }
+
+// scrapeInstanceGaugeLine returns the ccattler_instances line for one state
+// from a /metrics scrape, or "" when the state is not reported.
+func scrapeInstanceGaugeLine(t *testing.T, baseURL string, state string) string {
+	t.Helper()
+	metricsResponse, scrapeError := http.Get(baseURL + "/metrics")
+	if scrapeError != nil {
+		t.Fatal(scrapeError)
+	}
+	defer metricsResponse.Body.Close()
+	metricsBody, _ := io.ReadAll(metricsResponse.Body)
+	for _, metricsLine := range strings.Split(string(metricsBody), "\n") {
+		if strings.HasPrefix(metricsLine, `ccattler_instances{state="`+state+`"}`) {
+			return metricsLine
+		}
+	}
+	return ""
+}
+
+// TestMetricsInstanceGaugeDoesNotGrowAcrossScrapes checks that every instance
+// state, including crash-loop-backoff, is reset on each scrape instead of
+// accumulating (Gauge.Inc adds to the previous scrape's value).
+func TestMetricsInstanceGaugeDoesNotGrowAcrossScrapes(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	factStore.Put(ctx, types.KeyObservedInstanceState("inst-1"), []byte(string(types.InstanceCrashLoopBackoff)))
+	factStore.Put(ctx, types.KeyObservedInstanceState("inst-2"), []byte(string(types.InstanceImagePullBackoff)))
+
+	for _, state := range []types.InstanceState{types.InstanceCrashLoopBackoff, types.InstanceImagePullBackoff} {
+		firstScrape := scrapeInstanceGaugeLine(t, baseURL, string(state))
+		secondScrape := scrapeInstanceGaugeLine(t, baseURL, string(state))
+		wantLine := `ccattler_instances{state="` + string(state) + `"} 1`
+		if firstScrape != wantLine || secondScrape != wantLine {
+			t.Errorf("state %s: scrapes reported %q then %q, want %q both times", state, firstScrape, secondScrape, wantLine)
+		}
+	}
+}

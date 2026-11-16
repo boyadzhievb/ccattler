@@ -501,7 +501,9 @@ func streamContainerLogs(serviceName string, instanceID string, logsConfig logsC
 		fmt.Fprintf(os.Stderr, "logs error: %s\n", string(responseBody))
 		if strings.Contains(string(responseBody), "not found") {
 			instanceState := lookupInstanceState(instanceID)
-			if instanceState != "" && instanceState != string(types.InstanceRunning) {
+			if instanceState == string(types.InstanceCrashLoopBackoff) {
+				fmt.Fprintf(os.Stderr, "hint: instance %s is waiting to restart after its container exited — see `cca describe instance %s` for the exit and the wait\n", instanceID, instanceID)
+			} else if instanceState != "" && instanceState != string(types.InstanceRunning) {
 				fmt.Fprintf(os.Stderr, "hint: instance %s is in %q state — no workload container exists yet\n", instanceID, instanceState)
 			}
 		}

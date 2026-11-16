@@ -139,6 +139,10 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 		fact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(killedInstanceID))
 		return getError == nil && types.InstanceState(fact.Value) == types.InstanceCrashLoopBackoff
 	})
+	waitFor(t, 5*time.Second, "exit reason OOMKilled published", func() bool {
+		fact, getError := factStore.Get(ctx, types.KeyObservedInstanceExitReason(killedInstanceID))
+		return getError == nil && string(fact.Value) == "OOMKilled"
+	})
 }
 
 // TestContainerRuntime_GracefulShutdown verifies that when the agent stops an

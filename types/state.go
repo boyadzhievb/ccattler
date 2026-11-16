@@ -52,6 +52,17 @@ const (
 	InstanceStopped InstanceState = "stopped"
 )
 
+// AllInstanceStates lists every instance lifecycle state, in lifecycle order.
+// Code that reports a value per state (metrics) iterates it so a new state is
+// never missed.
+func AllInstanceStates() []InstanceState {
+	return []InstanceState{
+		InstancePending, InstanceStarting, InstanceRunning, InstancePulling,
+		InstanceImagePullBackoff, InstanceWaitingForSecrets, InstanceCrashLoopBackoff,
+		InstanceFailed, InstanceStopped,
+	}
+}
+
 // NodeState represents the availability state of a cluster node.
 // The node agent maintains a lease; if the lease expires, the control plane
 // marks the node as unreachable.
