@@ -1007,7 +1007,8 @@ func (apiServer *Server) handleRolloutRestart(responseWriter http.ResponseWriter
 
 	var restartedCount int
 	for instanceID := range serviceInstances {
-		if instanceStates[instanceID] == string(types.InstanceRunning) || instanceStates[instanceID] == string(types.InstanceStarting) {
+		if instanceStates[instanceID] == string(types.InstanceRunning) || instanceStates[instanceID] == string(types.InstanceStarting) ||
+			instanceStates[instanceID] == string(types.InstanceCrashLoopBackoff) {
 			stateKey := types.KeyObservedInstanceState(instanceID)
 			if _, putError := apiServer.factStore.Put(requestContext, stateKey, []byte(string(types.InstanceStopped))); putError == nil {
 				restartedCount++

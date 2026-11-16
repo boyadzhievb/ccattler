@@ -264,7 +264,7 @@ func computeJobState(jobName string, instanceFields map[string]map[string]string
 		instanceState := effectiveInstanceState(fields)
 		switch instanceState {
 		case types.InstanceRunning, types.InstancePending, types.InstancePulling, types.InstanceStarting,
-			types.InstanceImagePullBackoff, types.InstanceWaitingForSecrets:
+			types.InstanceImagePullBackoff, types.InstanceWaitingForSecrets, types.InstanceCrashLoopBackoff:
 			state.activeCount++
 		case types.InstanceFailed:
 			state.failedCount++

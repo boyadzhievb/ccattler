@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/url"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/backoff"
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
@@ -123,6 +123,10 @@ type Agent struct {
 	dnsForwarder             *network.DNSForwarder                // dnsForwarder is the per-node caching DNS forwarder; nil means DNS forwarding is disabled.
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
+	crashLoopBackoffs        map[string]*crashLoopBackoffEntry    // crashLoopBackoffs tracks per-instance in-place restart back-off (M233).
+	crashLoopBaseDelay       time.Duration                        // crashLoopBaseDelay is the wait after the first exit; tests set a short value.
+	crashLoopMaxDelay        time.Duration                        // crashLoopMaxDelay caps the wait between restarts; tests set a short value.
+	crashLoopResetPeriod     time.Duration                        // crashLoopResetPeriod is the run time after which the back-off starts over; tests set a short value.
 	initStepBackoffs         map[string]*initStepBackoffEntry     // initStepBackoffs tracks per-instance init step retry state across reconcile cycles so the reconcile loop never blocks on retries.
 	bridgeRetryAttempted     bool                                 // bridgeRetryAttempted is true after the first deferred bridge attachment attempt, preventing repeated retries on every container start.
 	testHookChannel          chan func()                          // testHookChannel lets tests inject closures that execute inside the agent goroutine, avoiding data races on agent-internal state.
@@ -141,6 +145,10 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		heartbeatFrequency:       heartbeatInterval,
 		appliedInstanceResources: make(map[string]appliedResourceAllocation),
 		imagePullBackoffs:        make(map[string]*imagePullBackoffEntry),
+		crashLoopBackoffs:        make(map[string]*crashLoopBackoffEntry),
+		crashLoopBaseDelay:       crashLoopBaseDelay,
+		crashLoopMaxDelay:        crashLoopMaxDelay,
+		crashLoopResetPeriod:     crashLoopResetPeriod,
 		initStepBackoffs:         make(map[string]*initStepBackoffEntry),
 		secretDeliveryWaits:      make(map[string]*secretDeliveryWaitEntry),
 		legacyKeyFilePath:        LegacySecretMasterKeyPath,
@@ -573,14 +581,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 		if !exists || !runtimeStatus.Running {
-			if exists && runtimeStatus.ExitCode != 0 {
-				nodeAgent.publishExitReasonFromStatus(ctx, instanceInfo.id, runtimeStatus)
-			}
-			logging.Default().Info("starting instance",
-				"agent", nodeAgent.nodeID,
-				"instance", instanceInfo.id,
-				"service", instanceInfo.service)
-			nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
+			nodeAgent.reconcileInstanceWithoutRunningContainer(ctx, instanceInfo, runtimeStatus, exists)
 		} else if !nodeAgent.detectConfigChange(ctx, instanceInfo) {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
@@ -612,6 +613,8 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			nodeAgent.clearPullStatusFromStore(ctx, backoffInstanceID)
 		}
 	}
+
+	nodeAgent.cleanupStaleCrashLoopBackoffs(desiredByID)
 
 	// Clean up init-step backoff state for instances no longer placed on this node.
 	for backoffKey := range nodeAgent.initStepBackoffs {
@@ -857,11 +860,7 @@ func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo
 	backoffEntry.attempts++
 	backoffEntry.lastError = errorMessage
 
-	delaySeconds := float64(imagePullBaseDelay/time.Second) * math.Pow(2, float64(backoffEntry.attempts-1))
-	if delaySeconds > float64(imagePullMaxDelay/time.Second) {
-		delaySeconds = float64(imagePullMaxDelay / time.Second)
-	}
-	backoffEntry.retryAfter = time.Now().Add(time.Duration(delaySeconds) * time.Second)
+	backoffEntry.retryAfter = time.Now().Add(backoff.Delay(imagePullBaseDelay, imagePullMaxDelay, backoffEntry.attempts))
 
 	logging.Default().Warn("image pull failed",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", image,
@@ -1268,18 +1267,24 @@ func (nodeAgent *Agent) resolveServiceConfigFiles(ctx context.Context, serviceNa
 	return configFactsUnderPrefix(facts, serviceConfigFilePrefix(serviceName))
 }
 
-// detectConfigChange checks whether the config hash for a running instance has
-// changed since it was started. If so, stops the container so the next cycle
-// restarts it with the new config. Returns true if the instance was stopped.
-func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo placedInstanceInfo) bool {
+// hasConfigChangedSinceStart reports whether the service's config hash differs
+// from the one stored when the instance was last started. A read error is not
+// a config change: nothing is ever stopped on it.
+func (nodeAgent *Agent) hasConfigChangedSinceStart(ctx context.Context, instanceInfo placedInstanceInfo) bool {
 	storedHashFact, getError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id))
 	if getError != nil {
 		return false
 	}
-	storedHash := string(storedHashFact.Value)
 	currentHash, hashError := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
-	if hashError != nil || currentHash == storedHash {
-		return false // a read error is not a config change: never stop on it
+	return hashError == nil && currentHash != string(storedHashFact.Value)
+}
+
+// detectConfigChange checks whether the config hash for a running instance has
+// changed since it was started. If so, stops the container so the next cycle
+// restarts it with the new config. Returns true if the instance was stopped.
+func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo placedInstanceInfo) bool {
+	if !nodeAgent.hasConfigChangedSinceStart(ctx, instanceInfo) {
+		return false
 	}
 	logging.Default().Info("config changed, restarting instance",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,

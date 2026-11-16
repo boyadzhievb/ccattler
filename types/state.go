@@ -38,6 +38,11 @@ const (
 	// count. The reason is in observed/instance/{id}/secret-wait.
 	InstanceWaitingForSecrets InstanceState = "waiting-for-secrets"
 
+	// InstanceCrashLoopBackoff means the container exited and the agent is waiting
+	// before restarting it in place (M233). Not a failure: the failure controller
+	// does not replace it. The status reason names the exit and the wait.
+	InstanceCrashLoopBackoff InstanceState = "crash-loop-backoff"
+
 	// InstanceFailed means the instance encountered an error and is no longer
 	// running. The failure controller will create a replacement instance.
 	InstanceFailed InstanceState = "failed"

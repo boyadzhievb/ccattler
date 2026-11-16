@@ -873,3 +873,23 @@ func TestFailureCrashLoopBackoffCalculation(t *testing.T) {
 		}
 	}
 }
+
+// TestFailureControllerIgnoresCrashLoopBackoff checks that an instance the
+// agent is restarting in place with back-off (M233) is not replaced and does
+// not count toward the crash-loop circuit breaker.
+func TestFailureControllerIgnoresCrashLoopBackoff(t *testing.T) {
+	failureController := NewFailureController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), string(types.InstanceCrashLoopBackoff)),
+	)
+
+	changes, reconcileError := failureController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes for crash-loop-backoff instance, got %d: %+v", len(changes), changes)
+	}
+}

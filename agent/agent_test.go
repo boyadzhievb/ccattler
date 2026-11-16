@@ -2263,6 +2263,7 @@ func TestAgentPublishesExitReasonOnOOMKill(t *testing.T) {
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.crashLoopBaseDelay = 50 * time.Millisecond // short back-off so the blocked restart runs inside the test (M233)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	types.WriteInstance(ctx, factStore, types.Instance{ID: "oom1", Service: "web", State: types.InstancePending})

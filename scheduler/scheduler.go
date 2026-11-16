@@ -555,7 +555,7 @@ func computeRunningLoadPerNode(
 	}
 	for instanceID, nodeID := range placements {
 		if instanceInfo := instances[instanceID]; instanceInfo != nil {
-			if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending {
+			if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending || instanceInfo.state == types.InstanceCrashLoopBackoff {
 				nodeLoad[nodeID]++
 			}
 		}
@@ -1811,7 +1811,7 @@ func buildNodeServicesMap(placements map[string]string, instances map[string]*sc
 		if instanceInfo == nil {
 			continue
 		}
-		if instanceInfo.state != types.InstanceRunning && instanceInfo.state != types.InstancePending {
+		if instanceInfo.state != types.InstanceRunning && instanceInfo.state != types.InstancePending && instanceInfo.state != types.InstanceCrashLoopBackoff {
 			continue
 		}
 		if nodeServices[nodeID] == nil {

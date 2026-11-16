@@ -236,7 +236,7 @@ func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNode
 			continue
 		}
 		instanceState := effectiveInstanceState(fields)
-		if instanceState == types.InstanceRunning || instanceState == types.InstancePending || instanceState == types.InstanceStarting {
+		if isActiveInstanceState(instanceState) {
 			affectedInstanceIDs = append(affectedInstanceIDs, instanceID)
 		}
 	}

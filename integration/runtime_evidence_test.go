@@ -86,8 +86,8 @@ func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 }
 
 // TestContainerRuntime_OOMKill verifies that when a workload is killed (e.g.
-// OOM with exit code 137), the agent detects the killed container via runtime
-// Status and reports it as InstanceFailed.
+// OOM with exit code 137), the agent detects the exited container via runtime
+// Status and reports it as InstanceCrashLoopBackoff while it waits to restart.
 func TestContainerRuntime_OOMKill(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
@@ -130,14 +130,14 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 		t.Fatal("no running memhog instance found to kill")
 	}
 
-	// Kill the workload and block restarts so the failed state persists.
-	// InjectStartFailure is mutex-safe for concurrent use with the agent goroutine.
+	// Kill the workload. Since M233 the agent restarts an exited container in
+	// place after a back-off wait and shows crash-loop-backoff meanwhile; the
+	// exit reason is published at once.
 	simulatorRuntime.KillWorkload(killedInstanceID, 137, "OOMKilled")
-	simulatorRuntime.InjectStartFailure(killedInstanceID, "OOMKilled")
 
-	waitFor(t, 5*time.Second, "OOM-killed instance detected as failed", func() bool {
+	waitFor(t, 5*time.Second, "OOM-killed instance waiting in crash-loop-backoff", func() bool {
 		fact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(killedInstanceID))
-		return getError == nil && types.InstanceState(fact.Value) == types.InstanceFailed
+		return getError == nil && types.InstanceState(fact.Value) == types.InstanceCrashLoopBackoff
 	})
 }
 

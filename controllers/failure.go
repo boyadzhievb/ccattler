@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/backoff"
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -412,12 +412,7 @@ func (failureController *FailureController) stopAndReplace(instanceID string, se
 
 // calculateCrashLoopBackoff returns the backoff delay for a given crash count.
 func calculateCrashLoopBackoff(crashCount int) time.Duration {
-	delaySeconds := float64(crashLoopBaseDelay/time.Second) * math.Pow(2, float64(crashCount-1))
-	maxSeconds := float64(crashLoopMaxDelay / time.Second)
-	if delaySeconds > maxSeconds {
-		delaySeconds = maxSeconds
-	}
-	return time.Duration(delaySeconds) * time.Second
+	return backoff.Delay(crashLoopBaseDelay, crashLoopMaxDelay, crashCount)
 }
 
 // parseCrashLoopCounters extracts per-service crash-loop backoff state from

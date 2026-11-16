@@ -245,7 +245,7 @@ func buildOldInstanceStopChanges(
 		if stopped >= canStop {
 			break
 		}
-		if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending || instanceInfo.state == types.InstanceStarting {
+		if isActiveInstanceState(instanceInfo.state) {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyObservedInstanceState(instanceInfo.id),
