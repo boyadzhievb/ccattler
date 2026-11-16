@@ -532,7 +532,7 @@ Found by the first WordPress push run (Deploy Testbed 43906605190, M232, 2026-11
 3. `detectConfigChange` compares that hash with the store, finds them equal, and never restarts the instance. It stays without secrets until something else changes.
 An earlier hand run passed only because of timing. Any service whose secrets (or config) land after its instance is placed is affected.
 
-To be proposed as an OpenSpec change when work starts. Likely parts: store the hash of what the spec was built from (computed before building it), and write an apply's facts in one transaction (or in batches that keep a service's facts together) so agents never see half an apply.
+OpenSpec change: [`config-hash-before-start`](openspec/changes/config-hash-before-start/) (checklist in its `tasks.md`). Agent-side fix: the hash is taken before the container is built (as Flow 16 says), and a start with no config inputs stores a hash too. Atomic apply (one etcd transaction) is out of scope: it would not cover later grants or second applies, and etcd caps a transaction at 128 operations by default.
 
 ### Phase 233 — Crash-Looping Containers Restart Without Back-off or Count (M233, bug)
 
