@@ -24,6 +24,6 @@
 
 ## 4. Close
 
-- [ ] 4.1 gofmt, golangci-lint, `go test ./runtime/ ./agent/`
+- [x] 4.1 gofmt, golangci-lint, `go test ./runtime/ ./agent/` — gofmt clean, golangci-lint `./runtime/` 0 issues, both packages pass
 - [ ] 4.2 Independent review: `code-reviewer` and `security-audit` (secret mounts); record every finding as fixed or rejected with one line here
 - [ ] 4.3 Full Deploy Testbed run (summary says full run), then a push run that includes WordPress
