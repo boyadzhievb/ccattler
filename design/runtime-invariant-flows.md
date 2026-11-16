@@ -486,7 +486,7 @@ Steady-state path (else branch):
 
 ### What must match
 
-- Hash includes env vars, config files, and secrets — any change triggers restart.
+- Hash includes env vars, config files and secret grant facts (`desired/service/{svc}/secret/*`: names and mount paths) — any change to them triggers a restart. Not included today: secret values (`cca secret set` does not restart) and connection facts (M236).
 - The stored hash is never newer than what the container was built from. A fact that lands while an instance starts (an apply still writing, a slow pull) costs at most one extra restart, never a missed change (M235: WordPress ran without its secrets because the hash was taken after the start).
 - A service with no inputs stores the hash of the empty input, so its first env var, file or secret restarts its instances (M235). Instances with no stored hash (started by an older agent) are not compared until they restart.
 - Hash computation must be deterministic: sort keys before hashing.
