@@ -550,7 +550,7 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 - `observed/instance/{id}/restarts` has readers (`cca describe`, `/api/status`) but no writer anywhere, so every instance shows 0 restarts
 - each in-place restart creates a new network namespace and CNI `host-local` gives it the next IP, so probe messages and endpoints refer to an IP from an earlier attempt (seen as probe `10.92.128.130` vs instance `10.92.128.140`)
 
-To be proposed as an OpenSpec change when work starts. Open questions: back-off in the agent (in-place, like Kubernetes' kubelet) or by marking the instance failed and letting the failure controller replace it; whether an in-place restart should keep its IP.
+OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1); the IP is not kept across restarts (verify old IPs are released instead).
 
 ### Phase 234 — A Restart Deletes the Previous Container Log (M234, bug)
 

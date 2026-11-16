@@ -19,7 +19,7 @@ Both milestones are bug fixes of similar size in `agent/` and `runtime/`. They a
 
 | Metric | How | M233 | M234 |
 |---|---|---|---|
-| Main-session context growth | `/context` before proposal and after release | before: 339.7k total, 307k messages (2026-11-16, during M235) | |
+| Main-session context growth | `/context` before proposal and after release | before: 378.9k total, 346.2k messages (2026-11-16, after the M233 design questions; earlier baseline 339.7k during M235) | |
 | Implementation tokens | subagent completion notice (M233); `/cost` delta (M234) | | |
 | Wall time, "go" → ready for review | timestamps | | |
 | Review findings | count and severity in tasks.md 2.2 | | |
