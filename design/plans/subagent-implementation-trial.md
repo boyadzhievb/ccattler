@@ -25,8 +25,8 @@ Both milestones are bug fixes of similar size in `agent/` and `runtime/`. They a
 | Implementation tokens | subagent completion notice (M233); `/cost` delta (M234) | 156.8k subagent tokens, 66 tool calls (groups 0–2: 25 files, +643/−62, 2 commits) | |
 | Wall time, "go" → ready for review | timestamps | 11.3 min (22:44 → 22:55) | |
 | Quality of the hand-back | main session re-ran build, vet, lint, tests; read the core file | all green on re-run; 6 doubts reported, 2 were real inconsistencies in the change's own spec/design (fixed in d41a1f1), 1 a pre-existing rollout gap, 1 a testbed risk to check | |
-| Review findings | count and severity in tasks.md 2.2 | | |
-| Rework rounds after review | count | | |
+| Review findings | count and severity in tasks.md 4.1 | 2 real (1 medium: bail-out counted as crash; 1 low-medium: metrics gauge), 1 pre-existing bug → M238, 5 nits; review 110.2k tokens, 35 tool calls, 4.9 min | |
+| Rework rounds after review | count | 1 round by the same subagent (resumed): both defects fixed failing-first plus all nits, 4.3 min; cumulative subagent tokens 186.9k (156.8k first round), 88 tool calls; main session re-verified green | |
 | Failed test/testbed runs caused by the implementation | count | | |
 | User interventions during implementation | count | | |
 

@@ -29,6 +29,12 @@ Implementation (groups 0–2) by a `lead-developer` subagent on Sonnet, as the f
 
 ## 4. Close
 
-- [ ] 4.1 Independent review: `code-reviewer` (and `security-audit` only if the review touches auth/secrets); record every finding as fixed or rejected with one line here
+- [x] 4.1 Independent review: `code-reviewer` (and `security-audit` only if the review touches auth/secrets); record every finding as fixed or rejected with one line here — 2026-11-16 on 572e184..cdc4a86, `code-reviewer` (Sonnet, effort high): request changes, two real defects; no auth/secret code touched, so no `security-audit`. Fixes by the implementing subagent (rework round 1: 2d49d11, bfe520a), re-verified by the main session (build, vet, lint, all packages, crash-loop tests `-race -count=3`):
+  - fixed (medium) — a start that bailed out (pull failure, secrets, init, volumes) was counted as a restart and the stale exited container then recorded as a new crash (wait doubled, real state hidden behind `crash-loop-backoff`): `reconcileDesiredInstance`/`startInstanceAndPublishState` report a real start; only then is the restart counted and the wait ended. Failing-first `TestAgentDoesNotCountBailedOutStartAsCrash` (was `restarts = "1"` after one start)
+  - fixed (low-medium) — the `ccattler_instances` gauge reset only four states, so `crash-loop-backoff` (and other waiting states) grew on every scrape: `types.AllInstanceStates()`, all reset per scrape. Failing-first `TestMetricsInstanceGaugeDoesNotGrowAcrossScrapes`
+  - opened M238 (pre-existing) — a container already exited when first observed after its start is published `failed` and replaced, bypassing Flow 33; documented as a known limit in the graph
+  - fixed (nits) — integration OOM test asserts `OOMKilled` again; `cca status`/logs hint for `crash-loop-backoff`; corrupt restart count logged; `isActiveInstanceState` moved to controllers/helpers.go; docs describe the bail-out case
+  - noted — rollout `currentUnavailable` counts only `failed` (same gap as `image-pull-backoff`); scheduler load counts `crash-loop-backoff` but not `image-pull-backoff`/`waiting-for-secrets` (pre-existing inconsistency); task 3.2's identity check was vacuous: no production code registers endpoint identities yet (`RegisterEndpointIdentity` has no implementation)
+  - noted (residual, from the rework) — when a bailed-out restart publishes no state of its own (no image fact, config unreadable), the old reason "restarting in Ns" stays visible after the wait is over; cosmetic, the retry happens every cycle
 - [ ] 4.2 Trial numbers for M233 in design/plans/subagent-implementation-trial.md
 - [ ] 4.3 Closing full Deploy Testbed run
