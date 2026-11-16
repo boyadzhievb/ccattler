@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.86.0-beta <Badge type="tip" text="latest" /> {#v1-86-0-beta}
+## v1.87.0-beta <Badge type="tip" text="latest" /> {#v1-87-0-beta}
+
+**2026-11-16** — Containers Get a tmpfs Over /run.
+
+- **Containers Get a tmpfs Over /run** (M232) — Bug fix (found by the first WordPress deploy, M231): every container got a tmpfs mounted over `/run`, hiding what the image ships there, so images such as MariaDB (needs `/run/mysqld`) crash-looped. Containers now see the image's `/run`, as with Docker and nerdctl. WordPress joins the push-run profile.
+
+---
+
+## v1.86.0-beta {#v1-86-0-beta}
 
 **2026-11-16** — Faster Deploy Test Runs.
 
