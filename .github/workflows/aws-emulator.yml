@@ -1,0 +1,45 @@
+name: AWS Emulator Tests
+
+# Runs the AWS cloud provider and AWS KMS root key provider tests against a
+# local AWS Emulator (scripts/aws-emulator.sh). No AWS account or secret is used.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'cloud/**'
+      - 'security/*key_provider*.go'
+      - 'scripts/aws-emulator.sh'
+      - 'test/aws-emulator/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/aws-emulator.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'cloud/**'
+      - 'security/*key_provider*.go'
+      - 'scripts/aws-emulator.sh'
+      - 'test/aws-emulator/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/aws-emulator.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aws-emulator:
+    name: AWS Provider & KMS Against Emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run AWS tests against the emulator
+        run: scripts/aws-emulator.sh test

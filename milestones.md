@@ -577,8 +577,16 @@ The AWS cloud provider (`cloud/aws.go`: instances, load balancers, VPC routes) w
 - [x] `skipWithoutAWSCredentials` also runs when `AWS_ENDPOINT_URL` is a loopback emulator with its credentials file
 - [x] All 5 `TestAWSIntegration*` tests pass against the emulator (2026-11-14, ~6 s); again on m4800 (Debian 13, x86_64) 2026-11-14 through `scripts/aws-emulator.sh test`
 - [x] Script hardening after the m4800 setup (2026-11-14): rpm CPU from `docker info` (an x86_64 rpm in an arm64 base image failed with `ld-linux-x86-64.so.2 … is needed`); stop with a `chown` hint when `~/.aws/emulator` is not writable (a `sudo` run left it root-owned, emulator then fails `Permission denied (os error 13)`); check for the `aws` CLI before the STS guard. Verified: both new failure paths print their message, test run passes. Host needs: `docker` group (or rootless Docker), `awscli`
-- [ ] CI job (GitHub-hosted runner, x86_64) running `scripts/aws-emulator.sh test`
-- [ ] AWS KMS root key provider (`security/kms_cloud.go`) tested against the emulator, if it emulates KMS
+- [ ] CI job (GitHub-hosted runner, x86_64) running `scripts/aws-emulator.sh test`: `.github/workflows/aws-emulator.yml` written (path-filtered, manual dispatch, no secrets); open until a run on GitHub is green. Not a required check (path-filtered, and it downloads the emulator on every run)
+- [x] Independent review 2026-11-16 (`code-reviewer`; approve, no bugs). Outcome:
+  - fixed — failure tests accepted any error (a TLS failure would pass) → assert `NotFoundException` and `InvalidCiphertextException`
+  - fixed — `AWS_ENDPOINT_URL_KMS` overrides `AWS_ENDPOINT_URL`, so KMS calls could reach real AWS with the emulator environment set → tests skip when it is set
+  - fixed — path filter missed `security/key_provider.go` (the `KeyProvider` interface) → `security/*key_provider*.go`
+  - fixed — no emulator log on a test failure (the container removes itself on stop) → the script prints the last 50 log lines first
+  - fixed — unnamed literals in the test (provider name, unknown key ID, bit-flip mask) → constants
+  - accepted risk — `test/aws-emulator/Dockerfile` installs the unpinned `LTS/latest` rpm without a checksum (AWS publishes no versioned URL or image that we know of): a new emulator release or a download outage can fail the job with no change here; the job uses no secrets and a read-only token
+  - rejected — alias test does not prove the alias resolved to that key (second key + negative unwrap): the KMS ciphertext names its own key, alias resolution is AWS behaviour, not provider code
+- [x] AWS KMS root key provider (`security/cloud_key_providers.go`) tested against the emulator, which does emulate KMS (2026-11-16): `security/cloud_key_providers_aws_test.go` builds the provider through the registered `aws-kms` factory, as `cca server --root-key-provider aws-kms` does; wrap/unwrap round trip, wrap by alias and unwrap by key ID, unknown key and modified wrapped DEK refused. Emulator only, never real AWS (a KMS key costs money and cannot be deleted at once). `scripts/aws-emulator.sh test` now runs `./cloud/` and `./security/`: 8 tests pass locally
 
 ### Phase 221 — Key Provider Naming (M221)
 

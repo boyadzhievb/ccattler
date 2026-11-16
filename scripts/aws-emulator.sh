@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the AWS cloud-provider integration tests against a local AWS Emulator
+# Run the AWS integration tests (cloud provider in cloud/, AWS KMS root key
+# provider in security/) against a local AWS Emulator
 # (https://docs.aws.amazon.com/emulator/latest/userguide/) instead of real AWS.
 #
 # Usage:
@@ -22,6 +23,7 @@ EMULATOR_STATE_DIR="${HOME}/.aws/emulator"
 EMULATOR_FILES_DIR="${EMULATOR_STATE_DIR}/${EMULATOR_PORT}"
 EMULATOR_ACCOUNT="000000000000"
 HEALTH_WAIT_SECONDS=30
+FAILURE_LOG_LINES=50
 
 # Print a message and exit non-zero.
 fatal() {
@@ -126,7 +128,12 @@ run_emulator_tests() {
   [[ "$caller_account" == "$EMULATOR_ACCOUNT" ]] \
     || fatal "requests reach account '${caller_account}', not the emulator; refusing to run"
   local test_exit=0
-  (cd "$REPO_ROOT" && go test -tags cloudprovider -count=1 -run 'TestAWSIntegration' ./cloud/ -v) || test_exit=$?
+  (cd "$REPO_ROOT" && go test -tags cloudprovider -count=1 -run 'TestAWSIntegration' ./cloud/ ./security/ -v) || test_exit=$?
+  if [[ "$test_exit" != "0" ]]; then
+    # The container removes itself on stop (--rm), so show its log now.
+    echo "aws-emulator: tests failed, last ${FAILURE_LOG_LINES} emulator log lines:" >&2
+    docker logs "$EMULATOR_CONTAINER" 2>&1 | tail -n "$FAILURE_LOG_LINES" >&2 || true
+  fi
   if [[ "$started_here" == "1" ]]; then
     stop_emulator
   fi
@@ -138,5 +145,5 @@ case "${1:-}" in
   stop)  stop_emulator ;;
   env)   print_sdk_environment ;;
   test)  run_emulator_tests ;;
-  *)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *)     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
