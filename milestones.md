@@ -528,7 +528,7 @@ Found by the M227 security audit (2026-11-16), verified: `cca server --oidc-issu
 
 Found by the first WordPress deploy (M231 task 3.2, 2026-11-16), verified: `runtime/containerd.go` builds the container spec from containerd's defaults, which mount a tmpfs on `/run`, and never removes it (no `oci.WithoutRunMount`; Docker and nerdctl do not mount it). Whatever an image ships under `/run` (or `/var/run`, usually a symlink to it) disappears. MariaDB's entrypoint needs `/run/mysqld`: run by hand with `ctr` it prints `find: '/run/mysqld': No such file or directory` and exits 1; under CCattler it crash-looped about every second, and WordPress never got a database. Secret files are bind-mounted under `/run/secrets` and `/run/cca-secrets` (Flow 27) and must keep working without the tmpfs.
 
-To be proposed as an OpenSpec change when work starts. Also to verify during M232 (seen in the same crash loop; each becomes its own bug milestone if confirmed):
+OpenSpec change: [`containers-keep-image-run`](openspec/changes/containers-keep-image-run/) (checklist in its `tasks.md`). Also to verify during M232 (seen in the same crash loop; each becomes its own bug milestone if confirmed):
 - the crash-looping instance stayed `running` with `Restarts: 0` and was restarted about every second without back-off
 - its readiness probe targeted `10.92.128.130` while the instance IP was `10.92.128.140`
 - each restart replaced the container log, so `cca logs` never showed the error that caused the exit
