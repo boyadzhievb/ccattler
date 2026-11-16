@@ -11,7 +11,7 @@
 
 **Goals:** back-off between in-place restarts, a real restart count, a visible waiting state, no replacement by the failure controller, one back-off formula.
 
-**Non-Goals:** keeping the IP across restarts; rescheduling to another node; previous-run logs (M234); a per-service restart policy in the DSL (`restart never|on-failure`) — not asked for.
+**Non-Goals:** keeping the IP across restarts (M237); rescheduling to another node; previous-run logs (M234); a per-service restart policy in the DSL (`restart never|on-failure`) — not asked for.
 
 ## Decisions
 

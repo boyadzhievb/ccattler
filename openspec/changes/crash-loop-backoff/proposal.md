@@ -17,7 +17,7 @@ How others do it: Kubernetes' kubelet restarts a crashed container in place with
 - The exponential formula, which would now exist in three places (image pull back-off, the failure controller's crash-loop back-off, this one), becomes one shared helper.
 - Verification only: a crash-looping container on the testbed releases its old IP on every restart (CNI `host-local` allocations do not grow) and leaves no stale VIP backend or eBPF identity entry. A failure becomes its own bug milestone.
 
-Out of scope: keeping an instance's IP across in-place restarts (user decision 2026-11-16: each restart gets a new IP); rescheduling a crash-looping instance to another node; the previous run's log (M234).
+Out of scope: keeping an instance's IP across in-place restarts — the user wants it kept, as its own milestone M237 right after M234 (decision 2026-11-16, option 2); until then each restart gets a new IP and this change verifies old IPs are released; rescheduling a crash-looping instance to another node; the previous run's log (M234).
 
 ## Capabilities
 
