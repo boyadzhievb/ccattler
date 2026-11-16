@@ -42,8 +42,9 @@ executeReconciliationCycle
 │
 ├── FOR EACH desired instance:
 │   ├── IF not running:
-│   │   ├── publishExitReasonFromStatus         [if exitCode != 0]
-│   │   └── reconcileDesiredInstance             [full startup, see below]
+│   │   └── reconcileInstanceWithoutRunningContainer  [M233: missing → start; exited → back-off wait,
+│   │       │                                           publish crash-loop-backoff, then restart in place]
+│   │       └── reconcileDesiredInstance         [full startup, see below]
 │   │
 │   └── IF running:
 │       ├── detectConfigChange                   [if changed → stop+restart]
@@ -245,7 +246,8 @@ executeReconciliationCycle(controller, deltaEvents)
 |---|---|
 | `findInstancesPlacedOnThisNode` | `executeReconciliationCycle` (agent) |
 | `isInstanceMarkedForSkip` | `findInstancesPlacedOnThisNode` |
-| `reconcileDesiredInstance` | `executeReconciliationCycle` (agent, if instance not running) |
+| `reconcileDesiredInstance` | `reconcileInstanceWithoutRunningContainer` (agent, M233; was executeReconciliationCycle) |
+| `reconcileInstanceWithoutRunningContainer` | `executeReconciliationCycle` (agent, if instance not running) |
 | `ensureImageAvailable` | `reconcileDesiredInstance` |
 | `executeInitializationSteps` | `reconcileDesiredInstance` (if hasInitSteps) |
 | `executeInitStep` | `executeInitializationSteps` (for each step, sequential) |
@@ -257,8 +259,9 @@ executeReconciliationCycle(controller, deltaEvents)
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
 | `publishExitReasonIfFailed` | `executeReconciliationCycle` (if running) |
-| `publishExitReasonFromStatus` | `executeReconciliationCycle` (if not running, exitCode != 0) |
+| `publishExitReasonFromStatus` | `recordInstanceExit` (agent, exitCode != 0) |
 | `detectConfigChange` | `executeReconciliationCycle` (if running) |
+| `hasConfigChangedSinceStart` | `detectConfigChange`, `isExitedInstanceDueForRestart` (M233) |
 | `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |
 | `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs) |
 | `prepareInstanceSecretMaterial` | `reconcileDesiredInstance` (before image pull) |

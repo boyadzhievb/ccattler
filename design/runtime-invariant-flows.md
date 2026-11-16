@@ -310,6 +310,7 @@ placed → waiting-for-secrets → pulling → starting → running
 
 - **`pulling`**: Agent is actively pulling the image. Visible via `cca get instances` with pull progress.
 - **`image-pull-backoff`**: Pull failed, waiting for retry. Shows reason (timeout, auth failure, not found) and next retry time.
+- **`crash-loop-backoff`** (M233): the container exited and the agent waits before restarting it in place ([Flow 33](#flow-33-in-place-restart-with-back-off-m233)). Not a failure either.
 
 Neither state triggers replacement by the failure controller — the instance is not failed, it's waiting for its image.
 
@@ -389,6 +390,8 @@ The pull-status fact is queryable: `cca watch pull-status/` shows all active pul
 **Chain:** `controllers/failure.go:processInstanceForRecovery` → crash-loop counter → delayed replacement
 
 When a container crashes immediately after starting, the failure controller replaces it. If the replacement also crashes, this loops at full speed — thousands of container starts per hour. Crash loop backoff breaks this cycle.
+
+Since M233 ([Flow 33](#flow-33-in-place-restart-with-back-off-m233)) a container that exits after a successful start is restarted in place by the agent with its own back-off and shown as `crash-loop-backoff`; this flow covers instances that become `failed` (start errors, failed probes, failed nodes).
 
 ### Mechanism
 
@@ -513,7 +516,7 @@ Resource limits (`--cpus`, `--memory`) are already passed to `nerdctl run` via `
 3. ContainerRuntime.Status() parses all three fields:
    - ExitCode → Status.ExitCode
    - OOMKilled → Status.Error = "OOMKilled"
-4. Agent.observeInstanceState() sees ExitCode != 0 → InstanceFailed
+4. Agent sees ExitCode != 0 on an exited container → publishes crash-loop-backoff and the exit reason (Flow 33); observeInstanceState reports InstanceFailed only when a start fails
 5. Agent publishes exit-reason fact:
    observed/instance/{id}/exit-reason = "OOMKilled" | "exit(N)"
 6. cca get instances shows the reason in the STATUS column
@@ -1661,3 +1664,48 @@ When adding a new feature that touches the runtime:
 8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 14) — secrets delivered first when needed (Flow 27), then pull, start with `--pull=never`. Never assume the image is cached.
 9. **Does it expose external HTTPS?** If yes, verify certificates flow as facts and private keys only through sealed storage and gate-key delivery (Flows 13, 28). The agent never issues certs.
 10. **Does it mount volumes from several instances?** If yes, check whether the provider supports shared attach (Flow 14); exclusive volumes need all instances on one node.
+
+---
+
+## Flow 33: In-Place Restart With Back-off (M233)
+
+**Problem**: When a container exited, the agent restarted it on the same reconcile cycle, about once a second, forever. The instance stayed `running`, so the failure controller's crash-loop back-off and circuit breaker (which count `failed` instances only) never applied, and `observed/instance/{id}/restarts` was written nowhere (a MariaDB crash loop in M232 showed 0 restarts).
+
+**Invariant**: An exited container is restarted in place, on the same node under the same instance ID, only after a wait that doubles on each further exit. The wait is visible as the instance state `crash-loop-backoff`, every restart is counted, and the failure controller never replaces an instance in that state.
+
+```
+agent reconcile cycle, instance placed here, container missing or not running:
+
+  container missing (never started, stopped by a config reload)
+      → record start attempt (entry: waiting=false, lastStartedAt=now) → reconcileDesiredInstance
+
+  container exited, no back-off entry (agent restarted since the start)
+      → restart once at once (count +1, entry created), back off from the next exit
+
+  container exited, entry.waiting == false              (a new exit)
+      if now - lastStartedAt >= 10 min → attempts = 0   (stable run: start over)
+      attempts++ ; wait = backoff.Delay(10 s, 5 min, attempts)   10 s, 20 s, 40 s … 5 min
+      retryAfter = now + wait ; waiting = true
+      PUT observed/instance/{id}/exit-reason   (exit code ≠ 0)
+      PUT observed/instance/{id}/state         = crash-loop-backoff
+      PUT observed/instance/{id}/status-reason = "exited with code N; restarting in 40s"
+      → skip this cycle
+
+  container exited, waiting, now < retryAfter
+      config hash differs from observed/instance/{id}/config-hash (Flow 16)
+          → drop the entry (back-off reset), restart now          (a fix needs no wait)
+      else → nothing, state and reason stay as published
+
+  container exited, waiting, now >= retryAfter
+      → restart: restarts += 1 (observed/instance/{id}/restarts), record start attempt,
+        reconcileDesiredInstance (a new container, a new IP while M237 is open)
+
+instance no longer placed here → entry dropped with the stale-instance cleanup
+```
+
+- The back-off lives in agent memory (`crashLoopBackoffs`); an agent restart loses it, the count in the store survives.
+- `crash-loop-backoff` is not `failed`: `findInstancesPlacedOnThisNode` keeps the instance desired, the failure controller does not act on it, the endpoint controller removes its endpoint (not `running`). A node failure still marks it `failed` (node failure controller), a drain still evicts it, a rollout can stop it, `cca restart` restarts it.
+- A failed `Start` publishes `failed` as before (the failure controller replaces it, Flow 15); the back-off covers containers that start and then exit.
+- The base, maximum and reset durations are agent fields set from `crashLoopBaseDelay`, `crashLoopMaxDelay`, `crashLoopResetPeriod`; tests set short values.
+- The same `backoff.Delay` formula serves the image pull back-off (Flow 14 states) and the failure controller's replacement delay.
+- Not covered: keeping the IP across restarts (M237), the previous run's log (M234), rescheduling to another node.

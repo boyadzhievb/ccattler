@@ -19,8 +19,8 @@ Implementation (groups 0–2) by a `lead-developer` subagent on Sonnet, as the f
 
 ## 2. Docs and checks
 
-- [ ] 2.1 Flow 33 in design/runtime-invariant-flows.md; `design/graphs/INSTANCE_LIFECYCLE_GRAPH.md` (exited-container branch, new state); instance state lists in design/ and website docs where they appear
-- [ ] 2.2 gofmt, golangci-lint, `go test ./agent/ ./controllers/ ./api/ ./backoff/ ./types/`
+- [x] 2.1 Flow 33 in design/runtime-invariant-flows.md; `design/graphs/INSTANCE_LIFECYCLE_GRAPH.md` (exited-container branch, new state); instance state lists in design/ and website docs where they appear — done: Flow 33 added; INSTANCE_LIFECYCLE_GRAPH.md (state table, section 12b, diagnostic, reverse index, node-failure line), CALL_GRAPH.md (exited-container branch), Flows 14, 15, 17 cross-notes, etcd-schema.md state list and restarts, website/operations/troubleshooting.md (new section; no other website page lists instance states)
+- [x] 2.2 gofmt, golangci-lint, `go test ./agent/ ./controllers/ ./api/ ./backoff/ ./types/` — done: gofmt clean; golangci-lint 0 issues (agent, controllers, api, backoff, types, scheduler, integration); the five packages pass with -count=1, `go test ./...` passes, `go vet`, `go build ./...`, `openspec validate crash-loop-backoff --strict` valid
 
 ## 3. Testbed
 

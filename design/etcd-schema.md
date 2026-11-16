@@ -44,7 +44,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}                # instance existence (root marker)
 │   ├── instance/{instance-id}/service        # which service this belongs to
 │   ├── instance/{instance-id}/node           # which node it runs on
-│   ├── instance/{instance-id}/state          # pending | starting | pulling | image-pull-backoff | running | failed | stopped
+│   ├── instance/{instance-id}/state          # pending | starting | pulling | image-pull-backoff | waiting-for-secrets | running | crash-loop-backoff | failed | stopped
 │   ├── instance/{instance-id}/image          # actual image running
 │   ├── instance/{instance-id}/ip             # assigned overlay IP
 │   ├── instance/{instance-id}/health         # healthy | unhealthy | unknown
@@ -52,7 +52,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}/hostport       # legacy single host port
 │   ├── instance/{instance-id}/hostport/{port}  # per-container-port host port mapping
 │   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"
-│   ├── instance/{instance-id}/restarts       # restart count (integer)
+│   ├── instance/{instance-id}/restarts       # in-place restart count (integer), written by the agent from the first restart (M233)
 │   ├── instance/{instance-id}/config-hash    # SHA256 of config inputs
 │   ├── instance/{instance-id}/pull-status    # JSON: {error, attempts, retryAfter, image}
 │   ├── instance/{instance-id}/status-reason  # human-readable reason string

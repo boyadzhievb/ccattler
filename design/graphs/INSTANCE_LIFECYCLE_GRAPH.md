@@ -275,6 +275,8 @@ reconcileDesiredInstance(instanceInfo)                        :729
 | nil | false | 0 (non-empty error) | `InstanceFailed` |
 | nil | false | 0 (empty error) | `InstanceStarting` |
 
+An exited container (Running false, exit code or error set) is only observed this way right after a start; in later cycles the agent publishes `InstanceCrashLoopBackoff` instead (section 12b).
+
 ---
 
 ## 4. Steady State (agent/agent.go, agent/probes.go)
@@ -446,7 +448,7 @@ NodeFailureController.Reconcile(ctx, facts)                  :92
 │
 ├── markInstancesOnUnreachableNodesAsFailed(facts, set, budget) :219
 │   ├── reads placement/instance/{id} → nodeID
-│   ├── FOR EACH running/pending/starting on unreachable node:
+│   ├── FOR EACH running/pending/starting/crash-loop-backoff instance on unreachable node (isActiveInstanceState):
 │   │   └── PUT derived/instance/{id}/node_failure = "true"
 │   └── capped by remaining budget
 │
@@ -545,6 +547,7 @@ InstanceGCController.Reconcile(ctx, facts)                   :74
 | `InstancePulling` | `"pulling"` | Agent (ensureImageAvailable) |
 | `InstanceImagePullBackoff` | `"image-pull-backoff"` | Agent (recordImagePullFailure) |
 | `InstanceWaitingForSecrets` | `"waiting-for-secrets"` | Agent (recordSecretDeliveryWait, M174) |
+| `InstanceCrashLoopBackoff` | `"crash-loop-backoff"` | Agent (recordInstanceExit, M233) |
 | `InstanceStarting` | `"starting"` | Agent (observeInstanceState) |
 | `InstanceRunning` | `"running"` | Agent (observeInstanceState) |
 | `InstanceFailed` | `"failed"` | Agent (observeInstanceState / start error) |
@@ -610,7 +613,40 @@ ELSE                            → observed/instance/{id}/state value
 | Base delay | 10s (`imagePullBaseDelay`) |
 | Max delay | 5m (`imagePullMaxDelay`) |
 | Pull timeout | 5m per attempt (`imagePullTimeout`) |
-| Formula | `10s * 2^(attempts-1)`, capped at 5m |
+| Formula | `backoff.Delay(10s, 5m, attempts)` = `10s * 2^(attempts-1)`, capped at 5m |
+
+---
+
+## 12b. In-Place Restart Back-off (agent/crash_loop_backoff.go, M233)
+
+Flow 33 in design/runtime-invariant-flows.md. Called from `executeReconciliationCycle` when a desired instance has no running container.
+
+```
+reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerExited)
+├── containerExited:
+│   ├── isExitedInstanceDueForRestart
+│   │   ├── no crashLoopBackoffs entry → true (agent restarted: restart once)
+│   │   ├── entry.waiting == false → recordInstanceExit → false
+│   │   │   ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
+│   │   │   ├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts)
+│   │   │   ├── publishExitReasonFromStatus   [exit code != 0]
+│   │   │   ├── publishInstanceStateToStore(crash-loop-backoff)
+│   │   │   └── publishStatusReason("exited with code N; restarting in 40s")
+│   │   ├── now < retryAfter → hasConfigChangedSinceStart ? (drop entry → true) : false
+│   │   └── now >= retryAfter → true
+│   └── incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1 write]
+├── recordInstanceStartAttempt         [entry.waiting = false, lastStartedAt = now]
+└── reconcileDesiredInstance           [section 3]
+
+cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of instances not placed here]
+```
+
+| Parameter | Value |
+|---|---|
+| Base delay | 10s (`crashLoopBaseDelay`, agent field `crashLoopBaseDelay`) |
+| Max delay | 5m (`crashLoopMaxDelay`) |
+| Reset after clean run | 10m (`crashLoopResetPeriod`) |
+| Formula | `backoff.Delay(base, max, attempt)`, shared with image pull and `calculateCrashLoopBackoff` |
 
 ---
 
@@ -643,6 +679,11 @@ ELSE                            → observed/instance/{id}/state value
 | `runInitCommand` | executeInitStep (exec type) |
 | `resolveConnectionAddress` | runConnectionProbe |
 | `observeInstanceState` | executeReconciliationCycle (running path), startInstanceAndPublishState |
+| `reconcileInstanceWithoutRunningContainer` | executeReconciliationCycle (no running container) |
+| `isExitedInstanceDueForRestart` | reconcileInstanceWithoutRunningContainer |
+| `recordInstanceExit` | isExitedInstanceDueForRestart |
+| `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
+| `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |
 | `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState |
 
 ---
@@ -670,6 +711,11 @@ ELSE                            → observed/instance/{id}/state value
 3. `not_authorized` — missing grant for a mounted, connection or pull secret; wrong node; node disabled or not enrolled
 4. `secret_missing` — granted secret has no value (`cca secret set`)
 5. `delivery_not_configured` — agent has no node certificate or API address
+
+### Stuck in `crash-loop-backoff`
+1. Check `observed/instance/{id}/status-reason` (exit code and wait) and `exit-reason`
+2. `observed/instance/{id}/restarts` counts the in-place restarts
+3. The wait is in agent memory only (section 12b); a config/secret change ends it
 
 ### Stuck in `starting`
 1. runtime.Status() returning error — container may be running
