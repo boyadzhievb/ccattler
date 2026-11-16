@@ -45,6 +45,7 @@
 #   ./test/e2e/cluster_test.sh --cross-compile                 # cross-compile locally (old behavior)
 #   ./test/e2e/cluster_test.sh --keep-data                     # preserve volumes + etcd between runs
 #   ./test/e2e/cluster_test.sh --extended                      # run extended tests (sticky session, DNS churn)
+#   ./test/e2e/cluster_test.sh --skip-checks gate-tls,node-failure  # skip slow check groups (check_groups.sh)
 #   ./test/e2e/cluster_test.sh --upgrade                       # deploy latest release, upgrade to local build
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
@@ -84,6 +85,7 @@ UPGRADE_TEST=false
 EXTENDED_TESTS=false
 BAREMETAL=false
 DATAPLANE_OVERRIDE=""
+SKIP_CHECKS_ARGUMENT=""
 
 for arg in "$@"; do
     case "$arg" in
@@ -103,6 +105,8 @@ for arg in "$@"; do
         --workload)          ;; # handled below with next arg
         --dataplane=*)       DATAPLANE_OVERRIDE="${arg#--dataplane=}" ;;
         --dataplane)         ;; # handled below with next arg
+        --skip-checks=*)     SKIP_CHECKS_ARGUMENT="${arg#--skip-checks=}" ;;
+        --skip-checks)       ;; # handled below with next arg
     esac
 done
 # Handle two-arg forms: --env <value>, --workload <value>
@@ -125,7 +129,18 @@ for ((i=1; i<=$#; i++)); do
             DATAPLANE_OVERRIDE="${!next}"
         fi
     fi
+    if [[ "${!i}" == "--skip-checks" ]]; then
+        next=$((i+1))
+        if [[ $next -le $# ]]; then
+            SKIP_CHECKS_ARGUMENT="${!next}"
+        fi
+    fi
 done
+
+# Slow check groups to skip (M231); an unknown group name stops the run here.
+# shellcheck source=test/e2e/check_groups.sh
+source "$SCRIPT_DIR/check_groups.sh"
+set_skipped_check_groups "$SKIP_CHECKS_ARGUMENT" || exit 1
 
 # --upgrade implies --keep-data: upgrade tests must not wipe volumes or etcd.
 if [[ "$UPGRADE_TEST" == "true" ]]; then
@@ -846,6 +861,8 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     fi
 fi
 
+log "$(skipped_check_groups_report)"
+
 # ---- Step 5.5: Phase 69 — Node Runtime Inspection tests ----
 # The CLI commands (node-inspect, exec, images) connect to the control plane
 # HTTP API. In the E2E cluster, the API uses mTLS on a non-default address,
@@ -1413,7 +1430,7 @@ fi
 # absorb the load. In the 2-VM test env, the ctrl node also runs containers,
 # so the test still works — traffic from ctrl hits its local backend.
 
-if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
+if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]] && ! check_skipped node-failure; then
     log "Validating traffic during node failure (stop agent on worker-1)..."
 
     # Ensure whoami has at least one instance NOT on worker-1 before we stop it.
@@ -1618,7 +1635,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     [[ "$workload_name" == "whoami-multiport" ]] && MULTIPORT_DEPLOYED=true
 done
 
-if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
+if [[ "$MULTIPORT_DEPLOYED" == "true" ]] && ! check_skipped multiport; then
     log "Validating multi-port VIP data plane (whoami-multiport: ports 80, 8081)..."
 
     MULTIPORT_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
@@ -1728,7 +1745,7 @@ fi
 # arrives. Nodes without an agent have no VIP data plane and cannot send.
 # This proves DNAT routes multi-port traffic across the overlay, not just locally.
 
-if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
+if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]] && ! check_skipped multiport; then
     log "Validating multi-port cross-node traffic (whoami-multiport port 80)..."
 
     MULTIPORT_STATUS_FRESH=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
@@ -1791,7 +1808,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     [[ "$workload_name" == "warmzero" ]] && WARMZERO_DEPLOYED=true
 done
 
-if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
+if [[ "$WARMZERO_DEPLOYED" == "true" ]] && ! check_skipped warmzero; then
     log "Validating warm-zero lifecycle (nginx-warmzero)..."
 
     WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
@@ -1909,17 +1926,31 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     [[ "$workload_name" == "gate-tls" ]] && GATE_TLS_DEPLOYED=true
 done
 
-if [[ "$GATE_TLS_DEPLOYED" == "true" ]]; then
+if [[ "$GATE_TLS_DEPLOYED" == "true" ]] && ! check_skipped gate-tls; then
     # shellcheck source=/dev/null
     source "$WORKLOADS_DIR/gate-tls.workload"
     # shellcheck source=test/e2e/gate_tls_checks.sh
     source "$SCRIPT_DIR/gate_tls_checks.sh"
     run_gate_tls_checks
+elif check_skipped gate-tls; then
+    log "Skipping gate TLS checks — --skip-checks gate-tls"
 else
     log "Skipping gate TLS checks — gate-tls workload not deployed"
 fi
 
+# ---- Step 5.18: WordPress through VIP and gate (M231) ----
+WORDPRESS_DEPLOYED=false
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    [[ "$workload_name" == "wordpress" ]] && WORDPRESS_DEPLOYED=true
+done
+if [[ "$WORDPRESS_DEPLOYED" == "true" ]]; then
+    # shellcheck source=test/e2e/wordpress_checks.sh
+    source "$SCRIPT_DIR/wordpress_checks.sh"
+    run_wordpress_checks
+fi
+
 # ---- Step 6: Final status ----
+log "$(skipped_check_groups_report)"
 log "Final cluster status:"
 FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
 echo "$FINAL_STATUS" | jq . || true

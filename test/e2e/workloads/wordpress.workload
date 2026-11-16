@@ -1,0 +1,28 @@
+# Workload manifest for WordPress (M231): three tiers, two volumes (one shared
+# by both WordPress instances, NFS), a configuration file, readiness probes,
+# network rules and a TLS gate. Sourced by cluster_test.sh.
+
+WORKLOAD_DESCRIPTION="WordPress three-tier (mariadb + 2 wordpress + 2 nginx, shared NFS volume, TLS gate)"
+WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/mariadb:11" "${LOCAL_REGISTRY}/wordpress:6-apache" "${LOCAL_REGISTRY}/nginx:1.27")
+WORKLOAD_EXPECTED_CONTAINERS=5
+
+# The images read MARIADB_*_FILE / WORDPRESS_*_FILE; hex keeps the values shell-safe.
+WORKLOAD_SECRETS=(
+    "wordpress.db-password=$(openssl rand -hex 24)"
+    "wordpress.db-root-password=$(openssl rand -hex 24)"
+)
+for wordpress_key_name in auth-key secure-auth-key logged-in-key nonce-key auth-salt secure-auth-salt logged-in-salt nonce-salt; do
+    WORKLOAD_SECRETS+=("wordpress.${wordpress_key_name}=$(openssl rand -hex 32)")
+done
+
+# Caddy reverse proxy: domain → service_name. The gate wordpress.home.arpa is
+# checked on the nodes' :443 listener by wordpress_checks.sh.
+WORKLOAD_EXPOSE=("wordpress.home.arpa:nginx")
+
+# workload_pre_apply copies the nginx configuration next to the applied .cca
+# file on the control node, where `config { file … from "wordpress/nginx.conf" }`
+# reads it.
+workload_pre_apply() {
+    ssh_vm "$CTRL_NODE" "mkdir -p /tmp/wordpress"
+    scp_to_vm "$CTRL_NODE" "$WORKLOADS_DIR/wordpress/nginx.conf" "/tmp/wordpress/nginx.conf"
+}

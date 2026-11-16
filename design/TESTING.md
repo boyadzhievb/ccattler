@@ -94,6 +94,23 @@ Long-lived 3-node cluster on m4800 (192.168.100.71, 31 GB), managed by vmherd. R
 
 VM state: `test/e2e/vm-deploy/.vmherd/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
 
+#### Check groups and narrowed runs (M231)
+
+`cluster_test.sh` always runs the quick checks: Phase 69 runtime inspection, API authorization, VIP rules and cross-node DNS, HTTP through the VIP, the cross-node path, backend churn, and the final status and stability check. The slow groups can be skipped with `--skip-checks <group>[,<group>…]`; the names are defined once in `test/e2e/check_groups.sh`:
+
+| Group | What it does | Time (run 43876417058) |
+|---|---|---|
+| `node-failure` | stops the agent on worker-1, VIP must keep serving | 44 s |
+| `multiport` | whoami-multiport per-port VIP rules and cross-node traffic | 3 s |
+| `warmzero` | scale to zero and cold start (warmzero workload) | — (not in the default workloads) |
+| `gate-tls` | gate TLS T1–T18 | 1 min 20 s |
+
+Each run logs `skipped check groups: …` before Step 5 and again in the final status (`none` for a full run). An unknown group name stops the run before anything is deployed. `--extended` (sticky sessions, DNS churn) is separate and unchanged.
+
+The adversarial replay runs all cases in `cases.yml`, or only those whose name matches `--case <glob>[,<glob>…]` (e.g. `--case 'scale-*'`). Identity setup and cleanup always run; a pattern that matches no case fails the run. `--list-cases` prints the selection without a cluster.
+
+Self-tests that need no cluster: `test/e2e/check_groups_selftest.sh`, `test/e2e/adversarial/run_selftest.sh`.
+
 ### Resource requirements for workloads
 
 The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs at minimum 4 GB per node. On 2 GB nodes the Celery workers alone consume 500 MB–1 GB each, pushing the system deep into swap and causing multi-minute startup times. Lightweight workloads (whoami) run fine on 2 GB.

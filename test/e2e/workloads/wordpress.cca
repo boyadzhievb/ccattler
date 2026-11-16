@@ -1,0 +1,183 @@
+# Deploy test workload (M231): examples/wordpress.cca with images from the
+# local registry and a .home.arpa gate host. Keep the two files in step.
+#
+# WordPress as a three-tier application: web, middle and backend tier.
+#
+#   internet ──TLS──▶ gate blog ──▶ nginx (web tier, 2 instances)
+#                                      │ http://wordpress:80
+#                                      ▼
+#                                   wordpress (middle tier, 2 instances)
+#                                      │ mariadb:3306
+#                                      ▼
+#                                   mariadb (backend tier, 1 instance)
+#
+# Demonstrates:
+#   - a TLS gate in front of the web tier only (certificate issued by the cluster CA)
+#   - tiers that reach each other by service name (cluster DNS + VIP)
+#   - network rules: each tier talks only to the next one; the web tier can
+#     never reach the database
+#   - secrets mounted as files (the images read MARIADB_*_FILE / WORDPRESS_*_FILE)
+#   - persistent volumes for the database and for uploads
+#   - readiness probes, so a tier gets traffic only when it is ready
+#
+# Before applying, create the secrets once:
+#   cca secret set wordpress.db-password      "$(openssl rand -base64 24)"
+#   cca secret set wordpress.db-root-password "$(openssl rand -base64 24)"
+#   for key in auth-key secure-auth-key logged-in-key nonce-key \
+#              auth-salt secure-auth-salt logged-in-salt nonce-salt; do
+#     cca secret set "wordpress.$key" "$(openssl rand -base64 48)"
+#   done
+#
+# Run with:  cca apply examples/wordpress.cca
+#
+# Storage: two wordpress instances share the uploads volume, which needs a
+# storage backend that can attach one volume to several nodes (NFS,
+# `cca agent --storage-backend nfs`). With local storage, set wordpress to
+# `instances 1`.
+
+# ---------------------------------------------------------------------------
+# Backend tier: MariaDB
+# ---------------------------------------------------------------------------
+
+volume wordpress-db {
+    size 10Gi
+    persistent true
+}
+
+service mariadb {
+    image "{{ default "docker.io" .registry }}/mariadb:11"
+    instances 1
+    expose 3306
+
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+
+    config {
+        env MARIADB_DATABASE "wordpress"
+        env MARIADB_USER "wordpress"
+        env MARIADB_PASSWORD_FILE "/run/secrets/db-password"
+        env MARIADB_ROOT_PASSWORD_FILE "/run/secrets/db-root-password"
+    }
+
+    secret wordpress.db-password "/run/secrets/db-password"
+    secret wordpress.db-root-password "/run/secrets/db-root-password"
+
+    volume wordpress-db /var/lib/mysql
+
+    readiness {
+        tcp
+        port 3306
+        every 10s
+        timeout 3s
+        failure_threshold 3
+        success_threshold 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Middle tier: WordPress (PHP application)
+# ---------------------------------------------------------------------------
+
+volume wordpress-content {
+    size 5Gi
+    persistent true
+}
+
+service wordpress {
+    image "{{ default "docker.io" .registry }}/wordpress:6-apache"
+    instances 2
+    expose 80
+
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+
+    config {
+        env WORDPRESS_DB_HOST "mariadb:3306"
+        env WORDPRESS_DB_NAME "wordpress"
+        env WORDPRESS_DB_USER "wordpress"
+        env WORDPRESS_DB_PASSWORD_FILE "/run/secrets/db-password"
+        env WORDPRESS_AUTH_KEY_FILE "/run/secrets/auth-key"
+        env WORDPRESS_SECURE_AUTH_KEY_FILE "/run/secrets/secure-auth-key"
+        env WORDPRESS_LOGGED_IN_KEY_FILE "/run/secrets/logged-in-key"
+        env WORDPRESS_NONCE_KEY_FILE "/run/secrets/nonce-key"
+        env WORDPRESS_AUTH_SALT_FILE "/run/secrets/auth-salt"
+        env WORDPRESS_SECURE_AUTH_SALT_FILE "/run/secrets/secure-auth-salt"
+        env WORDPRESS_LOGGED_IN_SALT_FILE "/run/secrets/logged-in-salt"
+        env WORDPRESS_NONCE_SALT_FILE "/run/secrets/nonce-salt"
+        # TLS ends at the gate; tell WordPress the original request was https.
+        env WORDPRESS_CONFIG_EXTRA "if (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') { $_SERVER['HTTPS'] = 'on'; }"
+    }
+
+    secret wordpress.db-password "/run/secrets/db-password"
+    secret wordpress.auth-key "/run/secrets/auth-key"
+    secret wordpress.secure-auth-key "/run/secrets/secure-auth-key"
+    secret wordpress.logged-in-key "/run/secrets/logged-in-key"
+    secret wordpress.nonce-key "/run/secrets/nonce-key"
+    secret wordpress.auth-salt "/run/secrets/auth-salt"
+    secret wordpress.secure-auth-salt "/run/secrets/secure-auth-salt"
+    secret wordpress.logged-in-salt "/run/secrets/logged-in-salt"
+    secret wordpress.nonce-salt "/run/secrets/nonce-salt"
+
+    volume wordpress-content /var/www/html/wp-content
+
+    readiness {
+        tcp
+        port 80
+        every 10s
+        timeout 3s
+        failure_threshold 3
+        success_threshold 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Web tier: nginx reverse proxy
+# ---------------------------------------------------------------------------
+
+service nginx {
+    image "{{ default "docker.io" .registry }}/nginx:1.27"
+    instances 2
+    expose 80
+
+    resources {
+        cpu 250m
+        memory 128Mi
+    }
+
+    config {
+        file "/etc/nginx/conf.d/default.conf" from "wordpress/nginx.conf"
+    }
+
+    readiness {
+        tcp
+        port 80
+        every 10s
+        timeout 3s
+        failure_threshold 3
+        success_threshold 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Entry point: TLS gate in front of the web tier only
+# ---------------------------------------------------------------------------
+
+gate blog {
+    host "wordpress.home.arpa"
+    service nginx port 80
+    tls auto
+}
+
+# ---------------------------------------------------------------------------
+# Tier isolation: each tier reaches only the next one
+# ---------------------------------------------------------------------------
+
+network {
+    allow nginx -> wordpress port 80
+    allow wordpress -> mariadb port 3306
+    deny nginx -> mariadb
+}

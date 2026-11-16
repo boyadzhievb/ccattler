@@ -9,6 +9,8 @@
 # Usage:
 #   ./test/e2e/adversarial/run.sh --env deploy   # vmherd VMs on m4800
 #   ./test/e2e/adversarial/run.sh --env lan       # vmherd VMs on .77
+#   ./test/e2e/adversarial/run.sh --env deploy --case 'scale-*,reader-*'   # only matching cases (M231)
+#   ./test/e2e/adversarial/run.sh --case 'scale-*' --list-cases            # print the selection, no cluster
 #
 # Requires: yq (go-yq), jq, vmherd in PATH.
 # Exit codes: 0 = all passed (known_failure cases are skipped), 1 = any failure.
@@ -31,17 +33,57 @@ HELD_STREAM_WAIT_SECONDS=30
 # STEP_TIMEOUT_SECONDS bounds the current step on the VM (timeout_seconds:); 0 = none.
 STEP_TIMEOUT_SECONDS=0
 
+# CASE_PATTERNS selects cases by name (comma-separated shell globs); empty = all.
+CASE_PATTERNS=""
+# LIST_CASES prints the selected case names and exits, without a cluster.
+LIST_CASES=false
+
 usage() {
-  echo "Usage: $0 --env deploy|lan"
+  echo "Usage: $0 --env deploy|lan [--case <glob>[,<glob>...]] [--list-cases]"
   exit 1
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV="$2"; shift 2 ;;
+    --case) [[ $# -ge 2 ]] || usage; CASE_PATTERNS="$2"; shift 2 ;;
+    --list-cases) LIST_CASES=true; shift ;;
     *) usage ;;
   esac
 done
+
+# case_selected returns 0 when the case name matches CASE_PATTERNS (or no
+# patterns were given). Patterns are shell globs, so they stay unquoted below.
+case_selected() {
+  local case_name="$1" pattern
+  [[ -z "$CASE_PATTERNS" ]] && return 0
+  IFS=',' read -r -a case_patterns <<< "$CASE_PATTERNS"
+  for pattern in "${case_patterns[@]}"; do
+    # shellcheck disable=SC2053 # glob match on purpose
+    [[ -n "$pattern" && "$case_name" == $pattern ]] && return 0
+  done
+  return 1
+}
+
+# SELECTED_CASE_INDEXES holds the indexes in cases.yml of the cases to run.
+SELECTED_CASE_INDEXES=()
+ALL_CASE_COUNT=$(yq '. | length' "$CASES_FILE")
+for ((case_index=0; case_index<ALL_CASE_COUNT; case_index++)); do
+  if case_selected "$(yq ".[$case_index].name" "$CASES_FILE")"; then
+    SELECTED_CASE_INDEXES+=("$case_index")
+  fi
+done
+# A filter that selects nothing must not pass with nothing tested.
+if [[ ${#SELECTED_CASE_INDEXES[@]} -eq 0 ]]; then
+  echo "error: --case '$CASE_PATTERNS' matches no case in $CASES_FILE" >&2
+  exit 1
+fi
+if [[ "$LIST_CASES" == "true" ]]; then
+  for case_index in "${SELECTED_CASE_INDEXES[@]}"; do
+    yq ".[$case_index].name" "$CASES_FILE"
+  done
+  exit 0
+fi
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
@@ -239,8 +281,12 @@ echo "" >> "$TRANSCRIPT"
 echo "Environment: $ENV ($CTRL_VM)" >> "$TRANSCRIPT"
 echo "" >> "$TRANSCRIPT"
 
-TOTAL_CASES=$(yq '. | length' "$CASES_FILE")
-echo "Running $TOTAL_CASES adversarial cases against $CTRL_VM"
+TOTAL_CASES=${#SELECTED_CASE_INDEXES[@]}
+if [[ -n "$CASE_PATTERNS" ]]; then
+  echo "Running $TOTAL_CASES of $ALL_CASE_COUNT adversarial cases (--case '$CASE_PATTERNS') against $CTRL_VM"
+else
+  echo "Running $TOTAL_CASES adversarial cases against $CTRL_VM"
+fi
 
 # --- Setup: create the test identities ---
 
@@ -529,8 +575,8 @@ assert_step() {
 trap cleanup_identities EXIT
 setup_identities
 
-for ((i=0; i<TOTAL_CASES; i++)); do
-  run_case "$i"
+for case_index in "${SELECTED_CASE_INDEXES[@]}"; do
+  run_case "$case_index"
 done
 
 echo ""

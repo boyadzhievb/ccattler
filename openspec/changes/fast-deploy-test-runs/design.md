@@ -53,7 +53,7 @@ The workflow writes to `$GITHUB_STEP_SUMMARY`: trigger, workloads, skipped group
 - [WordPress makes push runs slower or flaky] → measured in task 3.3; if it is unstable, it stays manual until fixed and the push profile uses whoami alone (recorded, not silent).
 - [A push run deploys unmerged branch code to the shared testbed] → intended (milestone branches); the next run redeploys anyway.
 - [Self-hosted runner and `push`] → pushes come only from the repository's own branches; fork pull requests do not trigger `push`.
-- [Health check runs at the same time] → `health-check.yml` gets the manual concurrency group in task 1.1, so it never overlaps a deploy run.
+- [Health check runs at the same time] → it cannot: task 1.1 found exactly one `deploy` runner (m4800), which runs one job at a time. `health-check.yml` deliberately gets no concurrency group: GitHub keeps only the newest pending run per group, so an hourly health check in the manual group could replace a full run waiting behind it (changed during task 1.1).
 
 ## Migration Plan
 
