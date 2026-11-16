@@ -152,24 +152,47 @@
       expect_exit: 0
       must_contain: ["payments/adv-marker-@RUN@"]
 
-# --- M217: scale bounds (expected failures until M217 is implemented) ---
+# --- M217: scale bounds (spec service-scaling) ---
 
 - name: scale-undeclared-service
-  description: "M217: scale on a non-existent service should fail"
+  description: "M217: scale of a name with no service declaration is refused (404) and creates nothing"
   identity: adv-writer
   steps:
     - command: "scale adv-nosuch 2"
       expect_exit: 1
-      must_not_contain: ["ok"]
-  known_failure: "M217 not yet implemented — currently succeeds and creates orphans"
+      must_contain: ["adv-nosuch", "not declared"]
+    - command: "get instances"
+      as: adv-admin
+      expect_exit: 0
+      must_not_contain: ["adv-nosuch"]
 
 - name: scale-upper-bound
-  description: "M217: scale above limit should fail"
+  description: "M217: above 600 a scale needs an approval that repeats the count, from cluster.admin; api-writer cannot approve"
   identity: adv-writer
+  files:
+    # instances 0: the service never runs, even if the limit regresses.
+    - path: /tmp/adv-scale-bound.cca
+      content: |
+        service adv-scale-bound {
+            image nginx:1.27
+            instances 0
+        }
   steps:
-    - command: "scale adv-nosuch 100000"
+    - command: "apply /tmp/adv-scale-bound.cca"
+      expect_exit: 0
+    - command: "scale adv-scale-bound 601"
       expect_exit: 1
-  known_failure: "M217 not yet implemented — currently succeeds"
+      must_contain: ["approval limit of 600", "--approve-above-limit 601"]
+    - command: "scale adv-scale-bound 601 --approve-above-limit 601"
+      expect_exit: 1
+      must_contain: ["forbidden", "cluster.admin"]
+    - command: "scale adv-scale-bound 100000 --approve-above-limit 10000"
+      expect_exit: 1
+      must_contain: ["approval does not match"]
+    - command: "get instances"
+      as: adv-admin
+      expect_exit: 0
+      must_not_contain: ["adv-scale-bound"]
 
 # --- Authorization: role escalation ---
 

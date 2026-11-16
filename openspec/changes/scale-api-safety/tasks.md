@@ -43,7 +43,7 @@ M217. Every group lands its own tests and docs. Failing tests are recorded (comm
 
 ## 7. Verification and review
 
-- [ ] 7.1 `gofmt`, `golangci-lint run ./...`, `go test ./... -count=1` all clean
+- [x] 7.1 `gofmt`, `golangci-lint run ./...`, `go test ./... -count=1` all clean — 2026-11-16 on c14a53e: gofmt nothing, golangci-lint 0 issues (default and `cloudprovider` tags), `go test ./... -count=1` exit 0
 - [ ] 7.2 M214 replay cases that scale undeclared services or huge counts now expect 404 / 400; check `test/e2e/adversarial/cases.yml` and the e2e scripts for scale-before-apply; replay passes (run via `ssh bojan@localhost`)
 - [ ] 7.3 Independent review: `code-reviewer` and `security-audit` on the change diff against this change's specs and design; record every finding as fixed or rejected with one line in this file
 - [ ] 7.4 Deploy Testbed run green on the final commit (user pushes and dispatches)
