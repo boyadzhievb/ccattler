@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.82.0-beta <Badge type="tip" text="latest" /> {#v1-82-0-beta}
+## v1.83.0-beta <Badge type="tip" text="latest" /> {#v1-83-0-beta}
+
+**2026-11-16** — Daemons Ignore Unknown Flags.
+
+- **Daemons Ignore Unknown Flags** (M227) — Bug fix (M221 review): `cca server` silently ignores unknown flags and flags without a value, so a mistyped or removed security flag leaves the server running without that setting. `cca server`, `cca agent`, `cca init` and `cca join` now stop with an error on an unknown flag, a flag without its value or a stray argument, and `--help` lists every flag. The `cca init` setup script passed one such ignored flag (`--etcd-endpoints`); fixed.
+
+---
+
+## v1.82.0-beta {#v1-82-0-beta}
 
 **2026-11-16** — Rate Limiter Trusts Any `X-Forwarded-For`.
 

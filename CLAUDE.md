@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M226 — Rate Limiter Trusts Any `X-Forwarded-For` (v1.82.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M227 — Daemons Ignore Unknown Flags (v1.83.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
