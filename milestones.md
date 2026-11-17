@@ -552,6 +552,17 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 241 — Rollout Correctness (M241, bug)
+
+Split from M238 (user decision 2026-11-17) after its rework review found that counting crash-looping instances in the rollout controller (M238 D5, reverted there) needs its own design. Since M233/M238 broken instances no longer become `failed`, so auto-rollback (controllers/rollout.go, counts `failed` new-image instances, threshold 3) does not trigger for a crash-looping new image: the rollout stalls safely without rolling back. Problems to solve together, verified in the code:
+- B1 (high, found in the D5 attempt): `observed/instance/{id}/restarts` only grows (written by the agent, deleted by instance-gc), stateful ordinals are recreated with the same ID without clearing it, and an old instance restarting in place takes the new image with its old count — a restart count must be per image or per rollout before it can drive a rollback
+- B2: `node_failure` makes the effective state `failed`; a node loss must not count as an application failure for rollback
+- B3: crash-looping or failed old instances should be stopped first without spending `max_unavailable` (like Kubernetes' `cleanupUnhealthyReplicas`), so a fixing rollout is not slowed by them
+- P1 (pre-existing): `derived/service/{svc}/rollout/previous_image` is never deleted, so a later rollout's rollback reverts to an image two versions back; state `rollback` never moves to `complete`
+- the rollback threshold for small services (a one-at-a-time rollout has one new instance; the absolute 3 never triggers)
+- old instances to stop are picked in map order (not deterministic)
+To be proposed as an OpenSpec change with a design and failure analysis.
+
 ### Phase 240 — Log Reads Load Whole Files Into Memory (M240, bug)
 
 Found in the M238 security audit (2026-11-17), pre-existing. The containerd runtime's `newStaticLogReader` (runtime/containerd.go) reads an instance's whole log file into memory for every `cca logs` request, and containerd container logs have no size cap (`max-size` is set only for the nerdctl runtime, runtime/container.go). Any workload can write a large log; a principal with cluster-scope `workload.read` repeating log requests can push the agent toward running out of memory. `seekToTailLines` reads one byte per seek for a large `--tail`. Wanted: read the tail in blocks from the end with a cap on the bytes returned, and a size limit with rotation for containerd logs (the M234 previous-run rotation stays). To be proposed as an OpenSpec change when work starts.
@@ -1071,6 +1082,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M236 — Connection Changes Do Not Reach Running Instances | 236 | Bug fix (found in the M235 security audit): connection facts were not part of the agent's config hash, so a connection added or changed after an instance started never reached it. |
 | M234 — A Restart Deletes the Previous Container Log | 234 | Bug fix (found in M232): restarting an exited container deleted its log directory, so `cca logs` never showed why it exited. The previous run's log now survives a restart. |
 | M238 — Instant Exit Bypasses the Crash-Loop Back-off | 238 | Bug fix (found in the M233 review): a container that had already exited when the agent first looked at it after starting it was marked failed and replaced, instead of being restarted in place with back-off. |
+| M241 — Rollout Correctness | 241 | Bug fix (found in the M238 review): a rollout whose new image crash-loops rolls back again, using restart counts per image; a node loss no longer counts as an application failure; crash-looping old instances are replaced first; a rollback reverts to the image right before the rollout, not an older one. |
 | M240 — Log Reads Load Whole Files Into Memory | 240 | Bug fix (found in the M238 security audit): reading container logs loaded the whole file into memory and containerd logs had no size limit, so large logs could exhaust the agent's memory. Logs are now read from the end in bounded blocks and capped in size. |
 | M239 — Config Changes Roll Out Progressively | 239 | A change to a service's configuration (env vars, config files, secrets, connections) rolls out to its instances a few at a time within the service's `maxUnavailable`, like an image update, instead of restarting every replica at once. |
 | M237 — Instance Keeps Its IP Across In-Place Restarts | 237 | An instance restarted in place (crash loop, config change) keeps its network namespace and IP, as with Kubernetes' pod sandbox; only removing the instance releases them. |
