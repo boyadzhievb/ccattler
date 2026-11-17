@@ -68,4 +68,4 @@ Implementation (groups 0–2) by the `lead-developer` subagent (Opus, effort med
   - fixed (low-medium, B4, both reviews) — `InstanceIDPattern` refused real IDs (`db.migrate-0`, `ns:svc-0`, Unicode) → widened in rework 4
   - security-audit: no security defect in D7 or elsewhere in M238; CodeQL barrier plausible (alerts #14, #28 close only on the next scan); pre-existing low: log reads load whole files, no containerd log cap → M240
   - noted — the hourly deploy-cluster health check now fails while something crash-loops (D6 as intended); `cca logs --instance` takes the bare instance ID (UX nit); `executeReconciliationCycle` and `ContainerdRuntime.Start` exceed 80 lines (pre-existing)
-- [ ] 4.2 Closing full Deploy Testbed run
+- [x] 4.2 Closing full Deploy Testbed run — 44117528883 on 0d2475c (manual, form unchanged): `run_kind=full`, `skipped check groups: none`, deploy `TEST PASSED`, replay `32 passed, 0 failed, 0 skipped`, 593 s. CodeQL on the same push: alerts #14 and #28 (go/path-injection) fixed 2026-11-17T15:32:45Z, 0 open alerts
