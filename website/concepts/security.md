@@ -143,6 +143,12 @@ cca secret get database-password
 cca secret delete database-password
 ```
 
+### Changing a secret value
+
+Secrets are delivered to containers as files and environment variables when they start. When `cca secret set` stores a **different** value, every running instance that uses the secret (as a grant, a connection password or an image pull secret) is restarted so it reads the new value. Setting the same value again, or rotating the encryption keys, restarts nothing. Changing a connection definition or a service's image pull secret also restarts its instances.
+
+All instances of a service currently restart at the same time, so a service with a single instance has a short outage during a rotation.
+
 ### Encryption
 
 The control-plane server holds a 32-byte key at `/etc/ccattler/secret-master.key`. Each secret is encrypted with a unique data encryption key (DEK), which is itself wrapped by that key — standard envelope encryption. Worker nodes never receive the key and never decrypt.

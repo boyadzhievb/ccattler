@@ -125,8 +125,11 @@ reconcileDesiredInstance(instanceInfo)                        :729
 │   └── store.Get(desired/service/{svc}/image)
 │       → BAIL if empty (silent return, no state change)
 │
-├── computeServiceConfigHash(ctx, service)                   :737 (def :1363)  [configHashBeforeBuild, M235]
+├── computeServiceConfigHash(ctx, service)                   :741 (def :1416)  [configHashBeforeBuild, M235]
 │   ├── Scan desired/service/{svc}/config/ + desired/service/{svc}/secret/
+│   ├── writeSecretReferenceEntries                          :1441  [M236 D2]
+│   │   ├── loadServiceSecretRequirements (connections + definitions desired/connection/{name}, pull secret)
+│   │   └── Get desired/secret_generation/{secret} per used secret → line only if != 1
 │   ├── taken BEFORE any input is read; stored after the start (Flow 16)
 │   └── read error → BAIL this cycle ("cannot read config, retrying next cycle")
 │
@@ -286,9 +289,9 @@ In later reconcile cycles an exited container is not observed this way: the agen
 ```
 executeReconciliationCycle                                   :527
 └── FOR EACH running instance:
-    ├── detectConfigChange(ctx, instanceInfo)                :1274
+    ├── detectConfigChange(ctx, instanceInfo)                :1333
     │   ├── no stored hash → no compare (instance started by an older agent)
-    │   ├── computeServiceConfigHash(ctx, service)           :1363  [empty input → hash of "", never ""]
+    │   ├── computeServiceConfigHash(ctx, service)           :1416  [empty input → hash of "", never ""; M236 inputs above]
     │   │   └── read error → no compare, instance keeps running (a blip is not a change)
     │   └── compare with observed/instance/{id}/config-hash
     │       → if changed: stopInstanceWithGracePeriod → restart

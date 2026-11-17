@@ -24,6 +24,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/placement/zone
 │   ├── service/{name}/update/max_unavailable
 │   ├── service/{name}/update/max_extra
+│   ├── secret_generation/{name}    # secret value generation (decimal): 1 on create, +1 only when `cca secret set` stores a different value; read by agents into the config hash (M236, Flow 16)
 │   ├── volume/{name}               # volume definition
 │   ├── volume/{name}/size
 │   ├── volume/{name}/persistent

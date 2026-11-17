@@ -167,26 +167,32 @@ cca init --ca (HA secondary)           → no secret keys; Ansible copies the fi
 ### SecretStore (security/secrets.go)
 
 ```
-SecretStore.PutSecret(ctx, name, plaintext)                    [:58]
-├── SealEnvelope(ctx, keyProvider, plaintext)
-├── base64.StdEncoding.EncodeToString(envelope)
-└── factStore.Put("secrets/<name>", encoded)
+SecretStore.PutSecret(ctx, name, plaintext)                    [:60]
+├── computeNextSecretGeneration(ctx, name, plaintext)          [:99, M236 D1]
+│   ├── factStore.Get("secrets/<name>")                        [missing → generation 1, guard Revision 0]
+│   ├── openStoredSecretValue → equal plaintext → write nothing
+│   └── factStore.Get("desired/secret_generation/<name>")      [missing → 1; next = current + 1]
+├── SealSecretValue(ctx, codec, "secrets/<name>", plaintext)
+└── factStore.Transaction(guard secrets/<name> revision,
+        put secrets/<name>, put desired/secret_generation/<name>)  [lost guard → errSecretChangedConcurrently]
 
-SecretStore.GetSecret(ctx, name)                               [:77]
+SecretStore.GetSecret(ctx, name)                               [:140]
 └── GetSecretThroughStore(ctx, factStore, name)
 
-SecretStore.GetSecretThroughStore(ctx, readStore, name)        [:84, M174]
+SecretStore.GetSecretThroughStore(ctx, readStore, name)        [:146, M174]
 ├── readStore.Get("secrets/<name>")                            [e.g. store bound to service:secret-delivery]
-├── base64.StdEncoding.DecodeString(value)
-└── OpenEnvelope(ctx, keyProvider, envelope)                   [current provider, shared with rotation]
+└── openStoredSecretValue(ctx, name, value)                    [:160]
+    ├── base64.StdEncoding.DecodeString(value)
+    └── codec.OpenEnvelopeForKey(ctx, "secrets/<name>", envelope)
 
-SecretStore.DeleteSecret(ctx, name)                            [:101]
-└── factStore.Delete("secrets/<name>")
+SecretStore.DeleteSecret(ctx, name)                            [:177]
+├── factStore.Get("secrets/<name>")                            [missing → ErrKeyNotFound]
+└── factStore.Transaction(guard revision, delete secrets/<name>, delete desired/secret_generation/<name>)
 
-SecretStore.ListSecrets(ctx)                                   [:107]
+SecretStore.ListSecrets(ctx)                                   [:200]
 └── factStore.Scan("secrets/") → trim prefix → names
 
-SecretStore.IsAuthorized(ctx, serviceName, secretName)         [:123]
+SecretStore.IsAuthorized(ctx, serviceName, secretName)         [:216]
 └── factStore.Get("desired/service/{svc}/secret/{name}")       [grant check]
 
 SecretStore.GetSecretForService(ctx, svc, secret)              [:134]
@@ -252,6 +258,7 @@ Server-side `lang.Diff(..., allowLocalFiles=false)`, `applyDirect` and the polic
 | Key Pattern | Where Written |
 |---|---|
 | `secrets/{name}` | SecretStore.PutSecret, keyring migration and rotation controllers |
+| `desired/secret_generation/{name}` | SecretStore.PutSecret (only on a changed value), SecretStore.DeleteSecret (M236); read by the agent's config hash |
 
 ---
 
@@ -283,5 +290,5 @@ Server-side `lang.Diff(..., allowLocalFiles=false)`, `applyDirect` and the polic
 |---|---|
 | security/key_provider.go:97 | SealEnvelope — envelope encrypt |
 | security/key_provider.go:118 | OpenEnvelope — envelope decrypt |
-| security/secrets.go:58 | SecretStore.PutSecret |
-| security/secrets.go:77 | SecretStore.GetSecret |
+| security/secrets.go:60 | SecretStore.PutSecret |
+| security/secrets.go:140 | SecretStore.GetSecret |
