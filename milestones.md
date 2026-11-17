@@ -560,7 +560,7 @@ Split from M236 (user decision 2026-11-17, option A). Today every config change 
 
 Found in the M233 code review (2026-11-16), verified in the code. `startInstanceAndPublishState` (`agent/agent.go`) calls `observeInstanceState` right after `runtime.Start`; a container that has already exited with a non-zero code by then (missing binary, bad entrypoint, `exit 1` within milliseconds) is published as `failed`. The failure controller then replaces the instance (new instance ID, new placement, fresh secret delivery) with its own per-service back-off, instead of the agent restarting it in place under Flow 33 (M233). Effects: a fast-failing image churns through instance IDs, `observed/instance/{id}/restarts` never grows, and the user sees `failed` and replacements instead of `crash-loop-backoff`. The M233 testbed run (MariaDB, exits about 1 s after start) did not hit it. A `runtime.Start` error (the container could not be created at all) is a different case and may rightly stay `failed`.
 
-To be proposed as an OpenSpec change when work starts. Likely fix: an exit observed right after a successful start is treated like any other exit (Flow 33: `crash-loop-backoff`, in place); a test with a runtime whose container is already exited when first observed; a testbed check with an image whose entrypoint does not exist.
+OpenSpec change: [`instant-exit-backoff`](openspec/changes/instant-exit-backoff/). Covers both instant cases — an exit before the agent's first look, and a workload process that cannot start (containerd `start task` failure: bad entrypoint, missing binary) — while infrastructure start failures (image, network, create) stay `failed` and replaced.
 
 ### Phase 237 — Instance Keeps Its IP Across In-Place Restarts (M237)
 
