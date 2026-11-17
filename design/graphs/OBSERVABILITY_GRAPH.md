@@ -600,6 +600,13 @@ CREATE / ROTATE
         └── current exists and non-empty → rename to .previous (empty: kept, so a
             failed start never replaces the run that exited)
 
+    Instant exits and process start failures stay on the same instance ID (Flow 33, M238):
+    ├── instant exit (exits before the agent's first Status) → restarted in place,
+    │   its log rotates to .previous on the next start → `cca logs --previous` shows it
+    └── process could not start (runc exec failure in create/start task, ProcessFailed)
+        → no process ran, the log stays empty and is not rotated → --previous shows
+          the run before, if any (the start error is in exit-reason / status-reason)
+
 STOP — directory KEPT (removeContainerResources :863 forgets tracking only)
 ├── Stop / StopWithGracePeriod                      :771 / :807
 │   callers: Start (restart in place, Flow 33), detectConfigChange agent.go:1333,

@@ -133,8 +133,7 @@ func (simulator *SimulatorRuntime) InjectStartFailure(instanceID string, reason 
 
 // KillWorkload simulates a workload being killed (e.g. OOM kill with exit code
 // 137). The workload is marked as not running with the given exit code and error
-// message, which the agent's observeInstanceState will detect and report as
-// InstanceFailed.
+// message, which the agent records as an exit and restarts in place (Flow 33).
 func (simulator *SimulatorRuntime) KillWorkload(id string, exitCode int, errorMessage string) {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()

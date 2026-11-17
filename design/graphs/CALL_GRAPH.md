@@ -50,9 +50,9 @@ executeReconciliationCycle
 │       ├── detectConfigChange                   [if changed → stop+restart]
 │       ├── reconcileResourceChanges
 │       ├── republishHostPortIfNeeded
-│       ├── observeInstanceState
+│       ├── observeInstanceState                 [running | starting, never failed (M238)]
 │       ├── publishInstanceStateToStore
-│       └── publishExitReasonIfFailed
+│       └── deleteExitReason
 │
 ├── cleanup: stop running instances not in desired set
 │   └── cleanupUndesiredInstance
@@ -230,8 +230,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/instance/{id}/ip` | publishInstanceStateToStore |
 | `observed/instance/{id}/node` | publishInstanceStateToStore |
 | `observed/instance/{id}/created-at` | publishInstanceStateToStore (write-once) |
-| `observed/instance/{id}/image` | startInstanceAndPublishState |
-| `observed/instance/{id}/exit_reason` | publishExitReasonIfFailed |
+| `observed/instance/{id}/image` | publishInstanceImage (startInstanceAndPublishState, handleInstanceStartError) |
+| `observed/instance/{id}/exit-reason` | publishExitReason (recordInstanceExit via publishExitReasonFromStatus, recordInstanceStartFailure); deleted by deleteExitReason |
 | `observed/instance/{id}/status_reason` | publishStatusReason |
 | `observed/instance/{id}/pull_status` | recordImagePullFailure |
 | `observed/instance/{id}/init/{step}/state` | executeInitStep |
@@ -258,7 +258,9 @@ executeReconciliationCycle(controller, deltaEvents)
 | `buildRuntimeSpecForInstance` | `reconcileDesiredInstance` |
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
-| `publishExitReasonIfFailed` | `executeReconciliationCycle` (if running) |
+| `deleteExitReason` | `executeReconciliationCycle` (if running) |
+| `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
+| `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |
 | `publishExitReasonFromStatus` | `recordInstanceExit` (agent, exitCode != 0) |
 | `detectConfigChange` | `executeReconciliationCycle` (if running) |
 | `hasConfigChangedSinceStart` | `detectConfigChange`, `isExitedInstanceDueForRestart` (M233) |
@@ -377,8 +379,9 @@ reconcileDesiredInstance
 │   └── BAIL: revokes secret token, skips startup
 │
 └── startInstanceAndPublishState
-    └── runtime.Start → error
-        └── BAIL: publishes state=failed, returns
+    └── runtime.Start → error → handleInstanceStartError
+        ├── StartError.ProcessFailed → recordInstanceStartFailure (crash-loop-backoff in place, M238)
+        └── otherwise → BAIL: publishes state=failed, returns
 ```
 
 ### executeReconciliationCycle error paths (running instances)
@@ -390,10 +393,9 @@ executeReconciliationCycle (for running instance)
 ├── reconcileResourceChanges → error
 │   └── LOG: continues (non-fatal)
 │
-├── observeInstanceState → exited
-│   ├── exitCode == 0 → publishInstanceStateToStore(stopped)
-│   └── exitCode != 0 → publishExitReasonIfFailed, publishInstanceStateToStore(failed)
-│       └── next reconcile: publishExitReasonFromStatus, then reconcileDesiredInstance (restart)
+├── observeInstanceState → exited (between List and Status)
+│   └── publishInstanceStateToStore(starting), never failed (M238 D4)
+│       └── next reconcile: reconcileInstanceWithoutRunningContainer records the exit (Flow 33)
 │
 └── cleanupUndesiredInstance → error
     └── LOG: continues (best-effort cleanup)

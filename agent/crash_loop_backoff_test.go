@@ -44,6 +44,8 @@ type crashingRuntime struct {
 	crashPending              map[string]bool        // crashPending marks instances to kill on the next List.
 	stableFromStartNumber     int                    // stableFromStartNumber is the start from which workloads no longer crash; 0 means never.
 	exitBeforeFirstLook       bool                   // exitBeforeFirstLook makes a crashing workload exit inside Start, before the agent's first Status.
+	failingStartError         *runtime.StartError    // failingStartError, when set, is returned by every start (recorded, workload not started).
+	exitAfterListing          map[string]bool        // exitAfterListing marks workloads that exit right after the next List reported them running.
 }
 
 // newCrashingRuntime creates a crashingRuntime whose workloads crash on every start.
@@ -52,12 +54,23 @@ func newCrashingRuntime() *crashingRuntime {
 		SimulatorRuntime: runtime.NewSimulatorRuntime(),
 		startTimes:       make(map[string][]time.Time),
 		crashPending:     make(map[string]bool),
+		exitAfterListing: make(map[string]bool),
 	}
 }
 
 // Start records the start, starts the workload and schedules its crash, or
-// crashes it at once when exitBeforeFirstLook is set.
+// crashes it at once when exitBeforeFirstLook is set. With failingStartError
+// set, the start is recorded and fails with that error.
 func (crashRuntime *crashingRuntime) Start(ctx context.Context, spec runtime.Spec) error {
+	crashRuntime.mutex.Lock()
+	if crashRuntime.failingStartError != nil {
+		crashRuntime.startTimes[spec.ID] = append(crashRuntime.startTimes[spec.ID], time.Now())
+		failingStartError := *crashRuntime.failingStartError
+		crashRuntime.mutex.Unlock()
+		failingStartError.ID = spec.ID
+		return &failingStartError
+	}
+	crashRuntime.mutex.Unlock()
 	if startError := crashRuntime.SimulatorRuntime.Start(ctx, spec); startError != nil {
 		return startError
 	}
@@ -74,17 +87,31 @@ func (crashRuntime *crashingRuntime) Start(ctx context.Context, spec runtime.Spe
 }
 
 // List kills every workload with a pending crash, then lists as usual, so a
-// start survives until the next reconciliation cycle.
+// start survives until the next reconciliation cycle. Workloads marked in
+// exitAfterListing exit with code 1 right after being listed.
 func (crashRuntime *crashingRuntime) List(ctx context.Context) ([]runtime.Status, error) {
 	crashRuntime.mutex.Lock()
+	defer crashRuntime.mutex.Unlock()
 	for instanceID, pending := range crashRuntime.crashPending {
 		if pending {
 			crashRuntime.KillWorkload(instanceID, 1, "")
 			crashRuntime.crashPending[instanceID] = false
 		}
 	}
-	crashRuntime.mutex.Unlock()
-	return crashRuntime.SimulatorRuntime.List(ctx)
+	listedStatuses, listError := crashRuntime.SimulatorRuntime.List(ctx)
+	for instanceID := range crashRuntime.exitAfterListing {
+		crashRuntime.KillWorkload(instanceID, 1, "")
+		delete(crashRuntime.exitAfterListing, instanceID)
+	}
+	return listedStatuses, listError
+}
+
+// exitAfterNextListing makes a workload exit with code 1 right after the next
+// List has reported it running: the race between List and Status (M238 D4).
+func (crashRuntime *crashingRuntime) exitAfterNextListing(instanceID string) {
+	crashRuntime.mutex.Lock()
+	defer crashRuntime.mutex.Unlock()
+	crashRuntime.exitAfterListing[instanceID] = true
 }
 
 // startsOf returns a copy of the start times of one instance.

@@ -247,42 +247,47 @@ reconcileDesiredInstance(instanceInfo)                        :733
 │   └── addConnectionFileMounts → WriteConnectionFile         [connection URLs as files only]
 ├── addSecretHelperIfMounted                                 [cca-secret helper, not secret]
 │
-└── startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, spec)  :971
-    (… after start: PUT observed/instance/{id}/config-hash = configHashBeforeBuild, always)
+└── startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, spec) → attempted bool
     ├── runtime.Start(spec)
     │   ├── [containerd] rotateInstanceRunLog: <id>-json.log → <id>-json.log.previous (M234)
     │   ├── [containerd] WithNewSpec(WithImageConfig, buildOCISpecOptions(spec, netns)...)
     │   │   └── containerBaseSpecOptions: WithoutRunMount (no tmpfs on /run, M232)
-    │   ├── START FAILED:
-    │   │   ├── PUT observed/instance/{id}/state = "failed"
-    │   │   ├── publishStatusReason("start failed: {err}")
-    │   │   └── revoke token, return
+    │   ├── [containerd] NewTask / task.Start failed → cleanup (task, CNI, container),
+    │   │   newContainerdTaskStartError("create task"|"start task", err)
+    │   │   └── ProcessFailed = isRuncProcessExecFailure(err)   [runc "unable to start container process: exec: ", M238]
+    │   ├── START FAILED → handleInstanceStartError(ctx, instanceInfo, image, err)
+    │   │   ├── revoke token, publishInstanceImage
+    │   │   ├── StartError.ProcessFailed (workload's process could not start, M238):
+    │   │   │   └── recordInstanceStartFailure(reason) [section 12b] → return true (attempt counted)
+    │   │   └── otherwise (image, CNI, netns, create container, cgroup/seccomp/shim):
+    │   │       ├── PUT observed/instance/{id}/state = "failed"
+    │   │       ├── publishStatusReason("start failed: {err}")
+    │   │       └── return false
     │   └── START OK: continue
     │
     ├── retryBridgeAttachmentIfNeeded(ctx)                   :426
     ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1288
     ├── publishInstanceHostPorts(ctx, id, ...)
-    ├── runtime.Status(id) → get IP, running state
-    ├── observeInstanceState(status) → state decision; failed → starting (instant exit, M238)
+    ├── runtime.Status(id) → get IP
+    ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
     ├── publishInstanceStateToStore(ctx, id, state, ip, node)
     │   ├── PUT observed/instance/{id}/state    = "running"|"starting"
     │   ├── PUT observed/instance/{id}/ip       = containerIP
-    │   ├── PUT observed/instance/{id}/node     = nodeID
-    │   └── PUT observed/instance/{id}/image    = image
-    ├── publishStatusReason("running")
-    └── PUT observed/instance/{id}/config-hash  = hash
+    │   └── PUT observed/instance/{id}/node     = nodeID
+    ├── publishStatusReason("running")              [running only]
+    ├── publishInstanceImage → PUT observed/instance/{id}/image = image
+    ├── PUT observed/instance/{id}/config-hash  = configHashBeforeBuild
+    └── recordInstanceStarted(id)                   [section 12b] → return true
 ```
 
-### observeInstanceState Decision Table (agent.go:1674-1690)
-| runtime.Status() | Status.Running | Status.ExitCode | Result |
-|---|---|---|---|
-| error | — | — | `InstanceStarting` |
-| nil | true | — | `InstanceRunning` |
-| nil | false | != 0 | `InstanceFailed` |
-| nil | false | 0 (non-empty error) | `InstanceFailed` |
-| nil | false | 0 (empty error) | `InstanceStarting` |
+### observeInstanceState Decision Table
+| runtime.Status() | Status.Running | Result |
+|---|---|---|
+| error | — | `InstanceStarting` |
+| nil | true | `InstanceRunning` |
+| nil | false (any exit code, any error) | `InstanceStarting` |
 
-In later reconcile cycles an exited container is not observed this way: the agent publishes `InstanceCrashLoopBackoff` instead (section 12b). Right after `Start` (`startInstanceAndPublishState`) a `failed` result is published as `starting` and no exit reason is written (M238 D1): the next cycle finds the exited container and records the exit through Flow 33 (in place, back-off, `crash-loop-backoff`), so an instant exit is never replaced by the failure controller.
+The agent never publishes `failed` from observing a container (M238). An exited container is handled by the next reconcile cycle, which finds it not running in `List` and records the exit through Flow 33 (section 12b: in place, back-off, `crash-loop-backoff`). This covers an instant exit right after `Start` (D1) and a container that exits between `List` and `Status` on the running path (D4).
 
 ---
 
@@ -304,13 +309,12 @@ executeReconciliationCycle                                   :535
     │
     ├── republishHostPortIfNeeded(ctx, id)                   :1009
     │
-    ├── observeInstanceState(runtime.Status)
+    ├── observeInstanceState(id)
     │   ├── Running: true  → InstanceRunning
-    │   ├── Status error   → InstanceStarting
-    │   └── ExitCode != 0  → InstanceFailed
+    │   └── otherwise      → InstanceStarting   [exited after List: next cycle records it, Flow 33, M238 D4]
     │
     ├── publishInstanceStateToStore(ctx, id, state, ip, node)
-    └── publishExitReasonIfFailed(ctx, id, state, reason)    :905
+    └── deleteExitReason(ctx, id)               [DELETE observed/instance/{id}/exit-reason]
 ```
 
 ### ProbeScheduler.Run → independent goroutine (5s tick)
@@ -554,10 +558,10 @@ InstanceGCController.Reconcile(ctx, facts)                   :74
 | `InstancePulling` | `"pulling"` | Agent (ensureImageAvailable) |
 | `InstanceImagePullBackoff` | `"image-pull-backoff"` | Agent (recordImagePullFailure) |
 | `InstanceWaitingForSecrets` | `"waiting-for-secrets"` | Agent (recordSecretDeliveryWait, M174) |
-| `InstanceCrashLoopBackoff` | `"crash-loop-backoff"` | Agent (recordInstanceExit, M233) |
+| `InstanceCrashLoopBackoff` | `"crash-loop-backoff"` | Agent (beginCrashLoopWait via recordInstanceExit / recordInstanceStartFailure, M233/M238) |
 | `InstanceStarting` | `"starting"` | Agent (observeInstanceState) |
 | `InstanceRunning` | `"running"` | Agent (observeInstanceState) |
-| `InstanceFailed` | `"failed"` | Agent (observeInstanceState / start error) |
+| `InstanceFailed` | `"failed"` | Agent (handleInstanceStartError, start error without ProcessFailed); node failure controller |
 | `InstanceStopped` | `"stopped"` | Derived (controller_stopped marker) |
 
 ### Effective State Resolution (helpers.go:198)
@@ -630,25 +634,34 @@ Flow 33 in design/runtime-invariant-flows.md. Called from `executeReconciliation
 
 ```
 reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerExited)
-├── containerExited:
+├── retryAfterStartFailure = entry exists && entry.startFailed   [last attempt's process could not start, M238]
+├── containerExited || retryAfterStartFailure:
 │   └── isExitedInstanceDueForRestart  [false → return]
 │       ├── no crashLoopBackoffs entry → true (agent restarted: restart once)
 │       ├── entry.waiting == false → recordInstanceExit → false
-│       │   ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
-│       │   ├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts) ; waiting = true
 │       │   ├── publishExitReasonFromStatus   [exit code != 0]
-│       │   ├── publishInstanceStateToStore(crash-loop-backoff)
-│       │   └── publishStatusReason("exited with code N; restarting in 40s")
+│       │   └── beginCrashLoopWait("exited with code N")
 │       ├── now < retryAfter → hasConfigChangedSinceStart ? (drop entry → true) : false
 │       └── now >= retryAfter → true
-├── container missing: entry.waiting = false (the next exit is a new one)
-├── reconcileDesiredInstance → started bool         [section 3; false on any bail-out]
+├── otherwise (container missing): entry.waiting = false (the next exit is a new one)
+├── reconcileDesiredInstance → attempted bool       [section 3; false on any bail-out or a start error published failed]
+│   ├── started (startInstanceAndPublishState) → recordInstanceStarted   [entry.waiting = false, startFailed = false, lastStartedAt = now]
+│   ├── process could not start (handleInstanceStartError, StartError.ProcessFailed, M238)
+│   │   └── recordInstanceStartFailure(startErrorReason)
+│   │       ├── recordInstanceStarted ; entry.startFailed = true
+│   │       ├── publishExitReason(startErrorReason)          [PUT observed/instance/{id}/exit-reason]
+│   │       └── beginCrashLoopWait("start failed: {reason}")
 │   └── false → return: no count, entry stays waiting with its past retryAfter, so the next
 │       cycle retries without recording a new exit; the bail-out's own state and reason
 │       (image-pull-backoff, waiting-for-secrets, init, volumes) stay visible
-└── started:
-    ├── containerExited → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1 write]
-    └── recordInstanceStarted         [entry.waiting = false, lastStartedAt = now]
+└── attempted && (containerExited || retryAfterStartFailure)
+    → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1 write]
+
+beginCrashLoopWait(instanceInfo, entry, exitDescription)
+├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
+├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts) ; waiting = true
+├── publishInstanceStateToStore(crash-loop-backoff)
+└── publishStatusReason("{exitDescription}; restarting in 40s")
 
 cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of instances not placed here]
 ```
@@ -668,7 +681,7 @@ cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of 
 |---|---|---|
 | Init failure | Before BAIL | agent.go:728 |
 | Volume attach failure | Before BAIL | agent.go:741 |
-| Start failure | In startInstanceAndPublishState | agent.go:932 |
+| Start failure | In handleInstanceStartError (both outcomes) | agent.go |
 | Cleanup | In cleanupUndesiredInstance | agent.go:996 |
 
 Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
@@ -696,6 +709,11 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `reconcileInstanceWithoutRunningContainer` | executeReconciliationCycle (no running container) |
 | `isExitedInstanceDueForRestart` | reconcileInstanceWithoutRunningContainer |
 | `recordInstanceExit` | isExitedInstanceDueForRestart |
+| `recordInstanceStartFailure` | handleInstanceStartError (StartError.ProcessFailed, M238) |
+| `beginCrashLoopWait` | recordInstanceExit, recordInstanceStartFailure |
+| `recordInstanceStarted` | startInstanceAndPublishState, recordInstanceStartFailure |
+| `handleInstanceStartError` | startInstanceAndPublishState |
+| `newContainerdTaskStartError` / `isRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |
 | `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState |

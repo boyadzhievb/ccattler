@@ -585,9 +585,9 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		} else if !nodeAgent.detectConfigChange(ctx, instanceInfo) {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
-			observedState, exitReason := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeStatus.IP)
-			nodeAgent.publishExitReasonIfFailed(ctx, instanceInfo.id, observedState, exitReason)
+			nodeAgent.deleteExitReason(ctx, instanceInfo.id)
 		}
 		delete(runningByID, instanceInfo.id)
 	}
@@ -729,7 +729,7 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 // the image is pulled with the delivered credentials, then init steps, volumes,
 // spec with read-only secret mounts, and start. Any unmet prerequisite skips
 // the instance for this cycle. Only services with legacy_secret_api get a
-// secret API token. Returns true only when the runtime started the container.
+// secret API token. Returns true when the start counts as an attempt (Flow 33).
 func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceInfo placedInstanceInfo) bool {
 	image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
 	if image == "" {
@@ -911,23 +911,22 @@ func (nodeAgent *Agent) publishExitReasonFromStatus(ctx context.Context, instanc
 		exitReason = fmt.Sprintf("exit(%d)", runtimeStatus.ExitCode)
 	}
 	if exitReason != "" {
-		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceExitReason(instanceID), []byte(exitReason)); putError != nil {
-			logging.Default().Error("failed to publish exit reason", "instance", instanceID, "error", putError.Error())
-		}
+		nodeAgent.publishExitReason(ctx, instanceID, exitReason)
 	}
 }
 
-// publishExitReasonIfFailed writes the exit-reason fact when an instance is
-// failed, or deletes it when the instance has recovered.
-func (nodeAgent *Agent) publishExitReasonIfFailed(ctx context.Context, instanceID string, state types.InstanceState, exitReason string) {
-	if state == types.InstanceFailed && exitReason != "" {
-		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceExitReason(instanceID), []byte(exitReason)); putError != nil {
-			logging.Default().Error("failed to publish exit reason", "instance", instanceID, "error", putError.Error())
-		}
-	} else {
-		if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedInstanceExitReason(instanceID)); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
-			logging.Default().Error("failed to delete exit reason", "instance", instanceID, "error", deleteError.Error())
-		}
+// publishExitReason writes observed/instance/{id}/exit_reason.
+func (nodeAgent *Agent) publishExitReason(ctx context.Context, instanceID string, exitReason string) {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceExitReason(instanceID), []byte(exitReason)); putError != nil {
+		logging.Default().Error("failed to publish exit reason", "instance", instanceID, "error", putError.Error())
+	}
+}
+
+// deleteExitReason removes the exit-reason fact of an instance whose container
+// is running again; an exit seen by the next cycle publishes a new one (Flow 33).
+func (nodeAgent *Agent) deleteExitReason(ctx context.Context, instanceID string) {
+	if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedInstanceExitReason(instanceID)); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
+		logging.Default().Error("failed to delete exit reason", "instance", instanceID, "error", deleteError.Error())
 	}
 }
 
@@ -965,22 +964,13 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 	}
 }
 
-// startInstanceAndPublishState starts an instance, records its resources and host
-// ports, and writes its observed state, image and configHashBeforeBuild (Flow 16).
-// A start error revokes secrets and publishes failed; an instant exit publishes
-// starting (Flow 33). Returns true when the runtime started the container.
+// startInstanceAndPublishState starts an instance, records its resources, host
+// ports, observed state, image and configHashBeforeBuild (Flow 16) and the start
+// (Flow 33); an instant exit publishes starting. Returns true when the start
+// counts as an attempt (handleInstanceStartError for a failed start).
 func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, runtimeSpec runtime.Spec) bool {
 	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
-		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
-		if nodeAgent.secretAPIServer != nil {
-			nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
-		}
-		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed, "")
-		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
-		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
-			logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
-		}
-		return false
+		return nodeAgent.handleInstanceStartError(ctx, instanceInfo, image, startError)
 	}
 
 	nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
@@ -1001,23 +991,47 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		runtimeIP = runtimeStatus.IP
 	}
 
-	// A container that has already exited is left to the next cycle, which
-	// records the exit and backs off in place (Flow 33, M238): never failed here.
-	observedState, _ := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-	if observedState == types.InstanceFailed {
-		observedState = types.InstanceStarting
-	}
+	// A container that has already exited is observed as starting and left to
+	// the next cycle, which records the exit and backs off in place (Flow 33, M238).
+	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeIP)
 	if observedState == types.InstanceRunning {
 		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "running")
 	}
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
-		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
-	}
+	nodeAgent.publishInstanceImage(ctx, instanceInfo.id, image)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id), []byte(configHashBeforeBuild)); putError != nil {
 		logging.Default().Error("failed to write config hash", "instance", instanceInfo.id, "error", putError.Error())
 	}
+	nodeAgent.recordInstanceStarted(instanceInfo.id)
 	return true
+}
+
+// handleInstanceStartError revokes the instance's secret API token and records
+// a failed start. A workload process that could not start is recorded as an
+// exit with back-off and counts as an attempt (Flow 33, M238); any other start
+// error is published failed, for the failure controller to replace the instance.
+func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceInfo placedInstanceInfo, image string, startError error) bool {
+	logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
+	if nodeAgent.secretAPIServer != nil {
+		nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
+	}
+	nodeAgent.publishInstanceImage(ctx, instanceInfo.id, image)
+	var runtimeStartError *runtime.StartError
+	if errors.As(startError, &runtimeStartError) && runtimeStartError.ProcessFailed {
+		nodeAgent.recordInstanceStartFailure(ctx, instanceInfo, runtimeStartError.Reason)
+		return true
+	}
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed, "")
+	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
+	return false
+}
+
+// publishInstanceImage writes observed/instance/{id}/image, the image the
+// agent last tried to start the instance from.
+func (nodeAgent *Agent) publishInstanceImage(ctx context.Context, instanceID string, image string) {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceID), []byte(image)); putError != nil {
+		logging.Default().Error("failed to write instance image", "instance", instanceID, "error", putError.Error())
+	}
 }
 
 // republishHostPortIfNeeded re-publishes the host port fact for a running
@@ -1950,23 +1964,15 @@ func (nodeAgent *Agent) isInstanceMarkedForSkip(ctx context.Context, instanceID 
 }
 
 // observeInstanceState queries the runtime for the current state of an instance
-// and returns the corresponding InstanceState and exit reason (if failed).
-func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID string) (types.InstanceState, string) {
+// it has just started or listed as running: running, or starting otherwise. An
+// exited container is never failed here; the next cycle sees it exited and
+// records the exit in place (Flow 33, M238).
+func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID string) types.InstanceState {
 	observedStatus, statusError := nodeAgent.runtime.Status(ctx, instanceID)
-	if statusError != nil {
-		return types.InstanceStarting, ""
+	if statusError == nil && observedStatus.Running {
+		return types.InstanceRunning
 	}
-	if observedStatus.Running {
-		return types.InstanceRunning, ""
-	}
-	if observedStatus.ExitCode != 0 || observedStatus.Error != "" {
-		exitReason := observedStatus.Error
-		if exitReason == "" {
-			exitReason = fmt.Sprintf("exit(%d)", observedStatus.ExitCode)
-		}
-		return types.InstanceFailed, exitReason
-	}
-	return types.InstanceStarting, ""
+	return types.InstanceStarting
 }
 
 // publishInstanceStateToStore writes a complete set of observed-state facts for

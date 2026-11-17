@@ -443,14 +443,14 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 	if taskError != nil {
 		containerdRuntime.teardownCNINetwork(ctx, spec.ID, netnsPath)
 		_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
-		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create task: %v", taskError)}
+		return newContainerdTaskStartError(spec.ID, containerdTaskPhaseCreate, taskError)
 	}
 
 	if startError := task.Start(namespacedCtx); startError != nil {
 		_, _ = task.Delete(namespacedCtx)
 		containerdRuntime.teardownCNINetwork(ctx, spec.ID, netnsPath)
 		_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
-		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("start task: %v", startError)}
+		return newContainerdTaskStartError(spec.ID, containerdTaskPhaseStart, startError)
 	}
 
 	containerdRuntime.mutex.Lock()
@@ -473,6 +473,38 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 	containerdRuntime.mutex.Unlock()
 
 	return nil
+}
+
+const (
+	// containerdTaskPhaseCreate names the NewTask step (runc create) in a start error.
+	containerdTaskPhaseCreate = "create task"
+
+	// containerdTaskPhaseStart names the task Start step (runc start) in a start error.
+	containerdTaskPhaseStart = "start task"
+
+	// runcProcessExecFailureMarker is the text runc reports when it cannot exec
+	// the workload's process (missing or non-executable entrypoint); other
+	// container init failures follow "unable to start container process: " with
+	// "error during container init" instead (verified with runc 1.1.15).
+	runcProcessExecFailureMarker = "unable to start container process: exec: "
+)
+
+// newContainerdTaskStartError builds the start error of a failed containerd task
+// step and marks it ProcessFailed when runc could not exec the workload's
+// process, so the agent backs off in place instead of replacing it (M238).
+func newContainerdTaskStartError(instanceID string, taskPhase string, taskError error) *StartError {
+	return &StartError{
+		ID:            instanceID,
+		Reason:        fmt.Sprintf("%s: %v", taskPhase, taskError),
+		ProcessFailed: isRuncProcessExecFailure(taskError),
+	}
+}
+
+// isRuncProcessExecFailure reports whether a containerd task error says runc
+// could not exec the workload's process, as opposed to a cgroup, seccomp,
+// mount, namespace or shim failure, which is not the workload's own.
+func isRuncProcessExecFailure(taskError error) bool {
+	return strings.Contains(taskError.Error(), runcProcessExecFailureMarker)
 }
 
 // containerBaseSpecOptions returns the options every main and init container

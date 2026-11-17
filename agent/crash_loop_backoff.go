@@ -34,19 +34,21 @@ type crashLoopBackoffEntry struct {
 	lastStartedAt  time.Time // lastStartedAt is when the agent last tried to start the instance.
 	lastExitReason string    // lastExitReason describes the most recent exit, as published in the status reason.
 	waiting        bool      // waiting is true while the most recent exit has been recorded and its wait is running.
+	startFailed    bool      // startFailed is true when the most recent exit is a start whose workload process could not start (M238); no container is left.
 }
 
 // reconcileInstanceWithoutRunningContainer starts an instance whose container
 // is missing or has exited. A missing container is started at once; an exited
-// one is restarted in place only when its back-off wait is over (Flow 33).
-// Only a start that happened is counted: a start that bailed out (pull
-// failure, secrets, init, volumes) leaves the exit and its wait as they were.
+// one, or one whose process could not start, is restarted in place only when
+// its back-off wait is over (Flow 33). Only an attempted start is counted.
 func (nodeAgent *Agent) reconcileInstanceWithoutRunningContainer(ctx context.Context, instanceInfo placedInstanceInfo, runtimeStatus runtime.Status, containerExited bool) {
-	if containerExited {
+	backoffEntry, isTracked := nodeAgent.crashLoopBackoffs[instanceInfo.id]
+	retryAfterStartFailure := isTracked && backoffEntry.startFailed
+	if containerExited || retryAfterStartFailure {
 		if !nodeAgent.isExitedInstanceDueForRestart(ctx, instanceInfo, runtimeStatus) {
 			return
 		}
-	} else if backoffEntry, isTracked := nodeAgent.crashLoopBackoffs[instanceInfo.id]; isTracked {
+	} else if isTracked {
 		backoffEntry.waiting = false // the exited container is gone; the next exit is a new one
 	}
 	logging.Default().Info("starting instance",
@@ -56,10 +58,9 @@ func (nodeAgent *Agent) reconcileInstanceWithoutRunningContainer(ctx context.Con
 	if !nodeAgent.reconcileDesiredInstance(ctx, instanceInfo) {
 		return
 	}
-	if containerExited {
+	if containerExited || retryAfterStartFailure {
 		nodeAgent.incrementRestartCountInStore(ctx, instanceInfo.id)
 	}
-	nodeAgent.recordInstanceStarted(instanceInfo.id)
 }
 
 // isExitedInstanceDueForRestart reports whether the exited container of an
@@ -87,10 +88,30 @@ func (nodeAgent *Agent) isExitedInstanceDueForRestart(ctx context.Context, insta
 	return false
 }
 
-// recordInstanceExit counts a new exit of the instance's container, starts the
+// recordInstanceExit counts a new exit of the instance's container, publishes
+// its exit reason for a non-zero code and starts the back-off wait.
+func (nodeAgent *Agent) recordInstanceExit(ctx context.Context, instanceInfo placedInstanceInfo, backoffEntry *crashLoopBackoffEntry, runtimeStatus runtime.Status) {
+	if runtimeStatus.ExitCode != 0 {
+		nodeAgent.publishExitReasonFromStatus(ctx, instanceInfo.id, runtimeStatus)
+	}
+	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, describeContainerExit(runtimeStatus))
+}
+
+// recordInstanceStartFailure records a start whose workload process could not
+// start (bad entrypoint, missing binary) as an attempt followed by an exit: the
+// start error is the exit reason and the retry waits out the back-off (M238).
+func (nodeAgent *Agent) recordInstanceStartFailure(ctx context.Context, instanceInfo placedInstanceInfo, startErrorReason string) {
+	nodeAgent.recordInstanceStarted(instanceInfo.id)
+	backoffEntry := nodeAgent.crashLoopBackoffs[instanceInfo.id]
+	backoffEntry.startFailed = true
+	nodeAgent.publishExitReason(ctx, instanceInfo.id, startErrorReason)
+	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, "start failed: "+startErrorReason)
+}
+
+// beginCrashLoopWait counts an exit described by exitDescription, starts the
 // wait before the next restart and publishes the crash-loop-backoff state with
 // the exit and the wait as its reason.
-func (nodeAgent *Agent) recordInstanceExit(ctx context.Context, instanceInfo placedInstanceInfo, backoffEntry *crashLoopBackoffEntry, runtimeStatus runtime.Status) {
+func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo placedInstanceInfo, backoffEntry *crashLoopBackoffEntry, exitDescription string) {
 	now := time.Now()
 	if now.Sub(backoffEntry.lastStartedAt) >= nodeAgent.crashLoopResetPeriod {
 		backoffEntry.attempts = 0
@@ -99,14 +120,11 @@ func (nodeAgent *Agent) recordInstanceExit(ctx context.Context, instanceInfo pla
 	waitDelay := backoff.Delay(nodeAgent.crashLoopBaseDelay, nodeAgent.crashLoopMaxDelay, backoffEntry.attempts)
 	backoffEntry.retryAfter = now.Add(waitDelay)
 	backoffEntry.waiting = true
-	backoffEntry.lastExitReason = describeContainerExit(runtimeStatus)
+	backoffEntry.lastExitReason = exitDescription
 
 	logging.Default().Warn("container exited, restarting after back-off",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "service", instanceInfo.service,
 		"attempt", strconv.Itoa(backoffEntry.attempts), "wait", waitDelay.String(), "exit", backoffEntry.lastExitReason)
-	if runtimeStatus.ExitCode != 0 {
-		nodeAgent.publishExitReasonFromStatus(ctx, instanceInfo.id, runtimeStatus)
-	}
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceCrashLoopBackoff, "")
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, fmt.Sprintf("%s; restarting in %s", backoffEntry.lastExitReason, waitDelay))
 }
@@ -129,6 +147,7 @@ func (nodeAgent *Agent) recordInstanceStarted(instanceID string) {
 		nodeAgent.crashLoopBackoffs[instanceID] = backoffEntry
 	}
 	backoffEntry.waiting = false
+	backoffEntry.startFailed = false
 	backoffEntry.lastStartedAt = time.Now()
 }
 

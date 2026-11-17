@@ -1708,13 +1708,32 @@ agent reconcile cycle, instance placed here, container missing or not running:
                     cycle retries, and the bail-out's own state (image-pull-backoff,
                     waiting-for-secrets, …) stays visible instead of crash-loop-backoff
 
+  instant exit (M238): the container has exited by the first Status after a successful Start
+      → startInstanceAndPublishState publishes starting (never failed, no exit reason)
+      → the next cycle finds it exited and handles it as "a new exit" above
+
+  process could not start (M238): Start returns a StartError with ProcessFailed
+      (containerd: runc reports "unable to start container process: exec: …" from
+       create task or start task — missing or non-executable entrypoint; containerd has
+       already removed the container and its network)
+      → recordInstanceStartFailure: lastStartedAt = now, entry.startFailed = true,
+        PUT exit-reason = the start error, then the same wait as "a new exit":
+        state crash-loop-backoff, status-reason "start failed: create task: …; restarting in 10s"
+      → container missing but entry.startFailed: treated as "exited, waiting" (no restart
+        before retryAfter); the retry counts as a restart (restarts += 1) whether or not
+        its process starts this time
+
+  running path (List said running): Status no longer running (exited between the two calls)
+      → observeInstanceState returns starting, never failed; the next cycle sees the exit
+
 instance no longer placed here → entry dropped with the stale-instance cleanup
 ```
 
 - The back-off lives in agent memory (`crashLoopBackoffs`); an agent restart loses it, the count in the store survives.
 - `crash-loop-backoff` is not `failed`: `findInstancesPlacedOnThisNode` keeps the instance desired, the failure controller does not act on it, the endpoint controller removes its endpoint (not `running`). A node failure still marks it `failed` (node failure controller), a drain still evicts it, a rollout can stop it, `cca restart` restarts it.
-- A failed `Start` publishes `failed` as before (the failure controller replaces it, Flow 15); the back-off covers containers that start and then exit.
+- A failed `Start` that is not the workload's own (image not found, CNI, netns, create container, other task failures such as cgroup, seccomp, mounts or the shim; `ProcessFailed` false) publishes `failed` as before (the failure controller replaces it, Flow 15), possibly on another node. Only containerd sets `ProcessFailed` (`isRuncProcessExecFailure`); start errors of the process and nerdctl runtimes stay `failed`.
+- The agent never publishes `failed` from observing a container (start path or running path, M238): an exited container always reaches the back-off in place.
 - The base, maximum and reset durations are agent fields set from `crashLoopBaseDelay`, `crashLoopMaxDelay`, `crashLoopResetPeriod`; tests set short values.
 - The same `backoff.Delay` formula serves the image pull back-off (Flow 14 states) and the failure controller's replacement delay.
 - Not covered: keeping the IP across restarts (M237), rescheduling to another node.
-- Previous run's log (M234): every start (`ContainerdRuntime.Start`) moves `<id>-json.log` to `<id>-json.log.previous` before the new task opens the log (the shim appends), so the run that exited stays readable with `cca logs --previous`; one previous run per instance. Stopping a container keeps `/var/lib/ccattler/logs/<id>/`; the agent's stale-instance cleanup calls `RemoveInstanceData` (optional `runtime.InstanceDataRemover`) when the instance leaves the node.
+- Previous run's log (M234): every start (`ContainerdRuntime.Start`) moves `<id>-json.log` to `<id>-json.log.previous` before the new task opens the log (the shim appends), so the run that exited stays readable with `cca logs --previous`; one previous run per instance. An instant exit keeps its log the same way (it is restarted in place under the same ID, M238); a start whose process could not start writes no log (no process ran), so `--previous` then shows the run before it, if any. Stopping a container keeps `/var/lib/ccattler/logs/<id>/`; the agent's stale-instance cleanup calls `RemoveInstanceData` (optional `runtime.InstanceDataRemover`) when the instance leaves the node.

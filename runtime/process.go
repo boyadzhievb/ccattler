@@ -355,10 +355,12 @@ func (managedProc *managedProcess) isRunning() bool {
 }
 
 // StartError represents a failure to launch a workload. It captures the
-// workload ID and a human-readable reason for the failure.
+// workload ID, a human-readable reason for the failure, and whether the
+// workload's own process could not start (M238).
 type StartError struct {
-	ID     string // ID is the workload identifier that failed to start.
-	Reason string // Reason is a human-readable description of why the start failed.
+	ID            string // ID is the workload identifier that failed to start.
+	Reason        string // Reason is a human-readable description of why the start failed.
+	ProcessFailed bool   // ProcessFailed is true when the runtime could not exec the workload's process (bad entrypoint, missing binary); the agent then backs off in place.
 }
 
 // Error returns a formatted error string including the workload ID and failure reason.

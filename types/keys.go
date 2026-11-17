@@ -348,7 +348,8 @@ func KeyObservedInstanceConfigHash(instanceID string) string {
 }
 
 // KeyObservedInstanceExitReason returns the store path for an instance's exit
-// reason. Value is "OOMKilled" or "exit(N)" for non-zero exit codes.
+// reason. Value is "OOMKilled" or "exit(N)" for non-zero exit codes, or the
+// start error when the workload's process could not start (M238).
 // Path: observed/instance/{instanceID}/exit-reason
 func KeyObservedInstanceExitReason(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/exit-reason", PrefixObserved, instanceID)
