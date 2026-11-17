@@ -155,16 +155,23 @@ func TestServiceConfigHashFormatUnchanged(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceConfigFile("web", "/etc/app.conf"), []byte("port=80"))
 	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "db-password"), []byte("/run/secrets/db"))
 	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
-
-	actualHash, hashError := nodeAgent.computeServiceConfigHash(ctx, "web")
-	if hashError != nil {
-		t.Fatalf("hash: %v", hashError)
-	}
 	legacyInput := "env:A_VAR=1\nenv:B_VAR=2\nfile:/etc/app.conf=port=80\n" +
 		"secret:" + types.KeyDesiredServiceSecret("web", "db-password") + "=/run/secrets/db\n"
 	legacyDigest := sha256.Sum256([]byte(legacyInput))
-	if expectedHash := hex.EncodeToString(legacyDigest[:]); actualHash != expectedHash {
-		t.Fatalf("config hash format changed: got %s, want %s", actualHash, expectedHash)
+	expectedHash := hex.EncodeToString(legacyDigest[:])
+
+	// Without a generation fact (secret older than M236), then at generation 1.
+	for _, generationFactValue := range []string{"", "1"} {
+		if generationFactValue != "" {
+			factStore.Put(ctx, types.KeyDesiredSecretGeneration("db-password"), []byte(generationFactValue))
+		}
+		actualHash, hashError := nodeAgent.computeServiceConfigHash(ctx, "web")
+		if hashError != nil {
+			t.Fatalf("hash: %v", hashError)
+		}
+		if actualHash != expectedHash {
+			t.Fatalf("config hash format changed (generation fact %q): got %s, want %s", generationFactValue, actualHash, expectedHash)
+		}
 	}
 }
 
@@ -201,5 +208,93 @@ func TestAgentRestartsWhenFirstConfigArrivesAfterStart(t *testing.T) {
 
 	waitFor(t, configHashTestTimeout, "instance restarted after the first env var", func() bool {
 		return countingRuntime.startCount("first1") >= 2
+	})
+}
+
+// configChangeRestartCase seeds a service, waits for its instance to run,
+// applies changedFacts and expects a restart (M236).
+type configChangeRestartCase struct {
+	seedFacts    map[string]string // seedFacts are written before the agent starts.
+	changedFacts map[string]string // changedFacts are written once the instance runs.
+	secretValues map[string][]byte // secretValues are delivered by the fake delivery client.
+}
+
+// expectRestartAfterConfigChange runs the agent for one instance of "web",
+// writes the changed facts once it runs and waits for a second start.
+func expectRestartAfterConfigChange(t *testing.T, restartCase configChangeRestartCase) {
+	t.Helper()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	countingRuntime := &lateFactRuntime{
+		SimulatorRuntime: runtime.NewSimulatorRuntime(),
+		factStore:        factStore,
+		lateFactKey:      types.KeyDesiredServiceImage("web"), // same value: changes nothing
+		lateFactValue:    "nginx:1.28",
+		startCounts:      make(map[string]int),
+	}
+	nodeAgent := New("node-1", factStore, countingRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetSecretDelivery(&fakeSecretDeliveryClient{secretValues: restartCase.secretValues}, NewSecretMaterialStore(t.TempDir()))
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	for factKey, factValue := range restartCase.seedFacts {
+		factStore.Put(ctx, factKey, []byte(factValue))
+	}
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "change1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "change1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, configHashTestTimeout, "config hash stored", func() bool {
+		_, getError := factStore.Get(ctx, types.KeyObservedInstanceConfigHash("change1"))
+		return getError == nil
+	})
+	for factKey, factValue := range restartCase.changedFacts {
+		factStore.Put(ctx, factKey, []byte(factValue))
+	}
+	waitFor(t, configHashTestTimeout, "instance restarted after the change", func() bool {
+		return countingRuntime.startCount("change1") >= 2
+	})
+}
+
+// TestAgentRestartsWhenConnectionChanges checks that a changed connection
+// definition restarts its consumer (spec instance-config-reload, M236).
+func TestAgentRestartsWhenConnectionChanges(t *testing.T) {
+	expectRestartAfterConfigChange(t, configChangeRestartCase{
+		seedFacts: map[string]string{
+			types.KeyDesiredServiceConnection("web", "db"): "/run/connections/db",
+			types.KeyDesiredConnection("db"):               `{"driver":"postgresql","host":"db-old","port":5432}`,
+		},
+		changedFacts: map[string]string{
+			types.KeyDesiredConnection("db"): `{"driver":"postgresql","host":"db-new","port":5432}`,
+		},
+	})
+}
+
+// TestAgentRestartsWhenPullSecretChanges checks that a changed image pull
+// secret reference restarts the instance (spec instance-config-reload, M236).
+func TestAgentRestartsWhenPullSecretChanges(t *testing.T) {
+	registryCredentials := []byte(`{"username":"bot","password":"token"}`)
+	expectRestartAfterConfigChange(t, configChangeRestartCase{
+		seedFacts:    map[string]string{types.KeyDesiredServiceImagePullSecret("web"): "registry-a"},
+		changedFacts: map[string]string{types.KeyDesiredServiceImagePullSecret("web"): "registry-b"},
+		secretValues: map[string][]byte{"registry-a": registryCredentials, "registry-b": registryCredentials},
+	})
+}
+
+// TestAgentRestartsWhenSecretValueGenerationChanges checks that a raised value
+// generation of a granted secret restarts its consumer (spec
+// instance-config-reload, M236).
+func TestAgentRestartsWhenSecretValueGenerationChanges(t *testing.T) {
+	expectRestartAfterConfigChange(t, configChangeRestartCase{
+		seedFacts: map[string]string{
+			types.KeyDesiredServiceSecret("web", "api-key"): "/run/secrets/api-key",
+			types.KeyDesiredSecretGeneration("api-key"):     "1",
+		},
+		changedFacts: map[string]string{types.KeyDesiredSecretGeneration("api-key"): "2"},
+		secretValues: map[string][]byte{"api-key": []byte("value")},
 	})
 }

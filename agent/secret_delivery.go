@@ -57,6 +57,8 @@ type secretWaitStatus struct {
 type serviceSecretRequirements struct {
 	grantMountPaths       map[string]string // grantMountPaths maps granted secret name to its explicit mount path ("" if none).
 	referencedSecretNames map[string]bool   // referencedSecretNames are connection and image pull secrets; each must also be granted.
+	connectionDefinitions map[string]string // connectionDefinitions maps each connection the service uses to its definition JSON ("" if not yet defined).
+	pullSecretName        string            // pullSecretName is the image pull secret reference ("" if none).
 	needsSecrets          bool              // needsSecrets is true when any grant, connection secret or pull secret exists.
 	requirementsVersion   string            // requirementsVersion changes whenever any input above changes.
 }
@@ -73,7 +75,11 @@ func (nodeAgent *Agent) SetSecretDelivery(client SecretDeliveryClient, materialS
 // references and image pull secret. A store error is returned so the caller
 // treats the instance as not ready instead of as needing no secrets.
 func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, serviceName string) (serviceSecretRequirements, error) {
-	requirements := serviceSecretRequirements{grantMountPaths: make(map[string]string), referencedSecretNames: make(map[string]bool)}
+	requirements := serviceSecretRequirements{
+		grantMountPaths:       make(map[string]string),
+		referencedSecretNames: make(map[string]bool),
+		connectionDefinitions: make(map[string]string),
+	}
 	var versionParts []string
 	grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
 	grantFacts, scanError := nodeAgent.store.Scan(ctx, grantPrefix)
@@ -88,7 +94,7 @@ func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, servi
 		requirements.grantMountPaths[secretName] = string(grantFact.Value)
 		versionParts = append(versionParts, "grant="+secretName+"@"+string(grantFact.Value))
 	}
-	connectionVersionParts, connectionError := nodeAgent.collectConnectionSecretNames(ctx, serviceName, requirements.referencedSecretNames)
+	connectionVersionParts, connectionError := nodeAgent.collectConnectionSecretNames(ctx, serviceName, &requirements)
 	if connectionError != nil {
 		return requirements, connectionError
 	}
@@ -98,7 +104,8 @@ func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, servi
 		return requirements, fmt.Errorf("read image pull secret of %s: %w", serviceName, pullError)
 	}
 	if pullError == nil && len(pullSecretFact.Value) > 0 {
-		requirements.referencedSecretNames[string(pullSecretFact.Value)] = true
+		requirements.pullSecretName = string(pullSecretFact.Value)
+		requirements.referencedSecretNames[requirements.pullSecretName] = true
 		versionParts = append(versionParts, "pull="+string(pullSecretFact.Value))
 	}
 	requirements.needsSecrets = len(requirements.grantMountPaths) > 0 || len(requirements.referencedSecretNames) > 0
@@ -107,9 +114,10 @@ func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, servi
 	return requirements, nil
 }
 
-// collectConnectionSecretNames adds the password secret of every connection
-// the service uses to secretNames and returns their version parts.
-func (nodeAgent *Agent) collectConnectionSecretNames(ctx context.Context, serviceName string, secretNames map[string]bool) ([]string, error) {
+// collectConnectionSecretNames records every connection the service uses
+// with its definition ("" if not yet defined) and its password secret in
+// requirements, and returns the version parts of the password secrets.
+func (nodeAgent *Agent) collectConnectionSecretNames(ctx context.Context, serviceName string, requirements *serviceSecretRequirements) ([]string, error) {
 	connectionPrefix := types.ScanDesiredServiceConnections(serviceName)
 	connectionRefs, scanError := nodeAgent.store.Scan(ctx, connectionPrefix)
 	if scanError != nil {
@@ -118,6 +126,7 @@ func (nodeAgent *Agent) collectConnectionSecretNames(ctx context.Context, servic
 	var versionParts []string
 	for _, connectionRef := range connectionRefs {
 		connectionName := strings.TrimPrefix(connectionRef.Key, connectionPrefix)
+		requirements.connectionDefinitions[connectionName] = ""
 		connectionFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredConnection(connectionName))
 		if errors.Is(getError, store.ErrKeyNotFound) {
 			continue
@@ -125,8 +134,9 @@ func (nodeAgent *Agent) collectConnectionSecretNames(ctx context.Context, servic
 		if getError != nil {
 			return nil, fmt.Errorf("read connection %s: %w", connectionName, getError)
 		}
+		requirements.connectionDefinitions[connectionName] = string(connectionFact.Value)
 		if connectionSecret := parseConnectionJSON(string(connectionFact.Value)).secret; connectionSecret != "" {
-			secretNames[connectionSecret] = true
+			requirements.referencedSecretNames[connectionSecret] = true
 			versionParts = append(versionParts, "connection="+connectionName+"@"+connectionSecret)
 		}
 	}

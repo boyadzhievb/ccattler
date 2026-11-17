@@ -5,12 +5,16 @@ package security
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // SecretStorePrefix is the fact store prefix for encrypted secrets.
@@ -49,24 +53,76 @@ func NewSecretStoreWithMasterKey(factStore store.StateStore, masterKey []byte) (
 	return NewSecretStore(factStore, legacyOnlyEnvelopeCodec{keyProvider: localKeyProvider}), nil
 }
 
-// PutSecret encrypts and stores a secret value using envelope encryption,
-// bound to its store key secrets/{name}. The envelope blob is base64-encoded
-// before storage.
+// PutSecret encrypts and stores a secret value bound to secrets/{name} and
+// keeps its value generation (M236 D1): 1 on create, unchanged (nothing
+// written) for the same plaintext, +1 for a new one. Envelope and generation
+// are written in one transaction guarded on the previous envelope revision.
 func (secretStore *SecretStore) PutSecret(ctx context.Context, secretName string, plaintext []byte) error {
 	secretStore.mutex.Lock()
 	defer secretStore.mutex.Unlock()
 
 	secretKey := SecretStorePrefix + secretName
+	nextGeneration, envelopeGuard, valueChanged, generationError := secretStore.computeNextSecretGeneration(ctx, secretName, plaintext)
+	if generationError != nil {
+		return generationError
+	}
+	if !valueChanged {
+		return nil
+	}
 	encodedEnvelope, err := SealSecretValue(ctx, secretStore.envelopeCodec, secretKey, plaintext)
 	if err != nil {
 		return fmt.Errorf("encrypt secret %q: %w", secretName, err)
 	}
-
-	if _, err := secretStore.factStore.Put(ctx, secretKey, encodedEnvelope); err != nil {
+	writeOperations := []store.Op{
+		{Type: store.OpPut, Key: secretKey, Value: encodedEnvelope},
+		{Type: store.OpPut, Key: types.KeyDesiredSecretGeneration(secretName), Value: []byte(strconv.FormatInt(nextGeneration, 10))},
+	}
+	committed, err := secretStore.factStore.Transaction(ctx, []store.Compare{envelopeGuard}, writeOperations, nil)
+	if err != nil {
 		return fmt.Errorf("store secret %q: %w", secretName, err)
 	}
-
+	if !committed {
+		return fmt.Errorf("store secret %q: %w", secretName, errSecretChangedConcurrently)
+	}
 	return nil
+}
+
+// errSecretChangedConcurrently is returned by PutSecret and DeleteSecret when
+// another writer changed the secret between reading and writing it; the
+// caller may retry.
+var errSecretChangedConcurrently = errors.New("secret changed concurrently, retry")
+
+// computeNextSecretGeneration compares plaintext with the stored value and
+// returns the generation to write, the guard on the current envelope, and
+// whether anything must be written. An unreadable current value counts as
+// changed; a missing generation fact counts as generation 1.
+func (secretStore *SecretStore) computeNextSecretGeneration(ctx context.Context, secretName string, plaintext []byte) (int64, store.Compare, bool, error) {
+	secretKey := SecretStorePrefix + secretName
+	currentFact, getError := secretStore.factStore.Get(ctx, secretKey)
+	if errors.Is(getError, store.ErrKeyNotFound) {
+		return 1, store.Compare{Key: secretKey, Revision: 0}, true, nil
+	}
+	if getError != nil {
+		return 0, store.Compare{}, false, fmt.Errorf("read secret %q: %w", secretName, getError)
+	}
+	envelopeGuard := store.Compare{Key: secretKey, Revision: currentFact.Revision}
+	currentPlaintext, openError := secretStore.openStoredSecretValue(ctx, secretName, currentFact.Value)
+	if openError == nil && subtle.ConstantTimeCompare(currentPlaintext, plaintext) == 1 {
+		return 0, envelopeGuard, false, nil
+	}
+	currentGeneration := int64(1)
+	generationFact, generationError := secretStore.factStore.Get(ctx, types.KeyDesiredSecretGeneration(secretName))
+	if generationError != nil && !errors.Is(generationError, store.ErrKeyNotFound) {
+		return 0, store.Compare{}, false, fmt.Errorf("read generation of secret %q: %w", secretName, generationError)
+	}
+	if generationError == nil {
+		parsedGeneration, parseError := strconv.ParseInt(string(generationFact.Value), 10, 64)
+		if parseError != nil || parsedGeneration < 1 {
+			return 0, store.Compare{}, false, fmt.Errorf("invalid generation %q of secret %q", generationFact.Value, secretName)
+		}
+		currentGeneration = parsedGeneration
+	}
+	return currentGeneration + 1, envelopeGuard, true, nil
 }
 
 // SealSecretValue seals plaintext into the stored secret format for the
@@ -96,13 +152,18 @@ func (secretStore *SecretStore) GetSecretThroughStore(ctx context.Context, readS
 	if err != nil {
 		return nil, fmt.Errorf("secret %q not found: %w", secretName, err)
 	}
+	return secretStore.openStoredSecretValue(ctx, secretName, fact.Value)
+}
 
-	envelopeBlob, err := base64.StdEncoding.DecodeString(string(fact.Value))
+// openStoredSecretValue decodes and opens the stored form (base64 envelope)
+// of secretName. The caller holds the mutex.
+func (secretStore *SecretStore) openStoredSecretValue(ctx context.Context, secretName string, storedValue []byte) ([]byte, error) {
+	envelopeBlob, err := base64.StdEncoding.DecodeString(string(storedValue))
 	if err != nil {
 		return nil, fmt.Errorf("decode secret %q: %w", secretName, err)
 	}
 
-	plaintext, err := secretStore.envelopeCodec.OpenEnvelopeForKey(ctx, secretKey, envelopeBlob)
+	plaintext, err := secretStore.envelopeCodec.OpenEnvelopeForKey(ctx, SecretStorePrefix+secretName, envelopeBlob)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt secret %q: %w", secretName, err)
 	}
@@ -110,10 +171,29 @@ func (secretStore *SecretStore) GetSecretThroughStore(ctx context.Context, readS
 	return plaintext, nil
 }
 
-// DeleteSecret removes an encrypted secret from the store.
+// DeleteSecret removes an encrypted secret and its value generation (M236 D1)
+// from the store in one transaction guarded on the envelope's revision. A
+// missing secret returns store.ErrKeyNotFound, as before M236.
 func (secretStore *SecretStore) DeleteSecret(ctx context.Context, secretName string) error {
+	secretStore.mutex.Lock()
+	defer secretStore.mutex.Unlock()
 	secretKey := SecretStorePrefix + secretName
-	return secretStore.factStore.Delete(ctx, secretKey)
+	currentFact, getError := secretStore.factStore.Get(ctx, secretKey)
+	if getError != nil {
+		return getError
+	}
+	deleteOperations := []store.Op{
+		{Type: store.OpDelete, Key: secretKey},
+		{Type: store.OpDelete, Key: types.KeyDesiredSecretGeneration(secretName)},
+	}
+	committed, err := secretStore.factStore.Transaction(ctx, []store.Compare{{Key: secretKey, Revision: currentFact.Revision}}, deleteOperations, nil)
+	if err != nil {
+		return err
+	}
+	if !committed {
+		return fmt.Errorf("delete secret %q: %w", secretName, errSecretChangedConcurrently)
+	}
+	return nil
 }
 
 // ListSecrets returns the names of all stored secrets.

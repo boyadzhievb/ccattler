@@ -1409,10 +1409,10 @@ func (nodeAgent *Agent) lookupServiceNameForInstance(ctx context.Context, instan
 	return string(serviceFact.Value)
 }
 
-// computeServiceConfigHash computes a deterministic SHA256 hash of all config
-// inputs (env vars, config files, secret grants) for a service; no inputs hash
-// as the empty input (M235). A failed store read returns an error, never a
-// hash of what could be read, so a store blip is not mistaken for a change.
+// computeServiceConfigHash hashes a service's config inputs: env vars, files,
+// grants, connections, pull secret, secret value generations (M236); none
+// hash as the empty input (M235). A failed store read returns an error, never
+// a hash of what could be read, so a store blip is not mistaken for a change.
 func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceName string) (string, error) {
 	configFacts, configScanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConfig(serviceName))
 	if configScanError != nil {
@@ -1428,8 +1428,52 @@ func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceNam
 	for _, secretFact := range secretFacts {
 		hasher.Write([]byte("secret:" + secretFact.Key + "=" + string(secretFact.Value) + "\n"))
 	}
+	if referenceError := nodeAgent.writeSecretReferenceEntries(ctx, hasher, serviceName); referenceError != nil {
+		return "", referenceError
+	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
+
+// writeSecretReferenceEntries appends the M236 hash inputs (design D2):
+// connection definitions, the pull secret reference and the value generation
+// (> 1 only) of every secret the service uses. A service with none of them
+// writes nothing, so its hash is unchanged.
+func (nodeAgent *Agent) writeSecretReferenceEntries(ctx context.Context, hasher io.Writer, serviceName string) error {
+	requirements, requirementsError := nodeAgent.loadServiceSecretRequirements(ctx, serviceName)
+	if requirementsError != nil {
+		return requirementsError
+	}
+	writeSortedConfigEntries(hasher, "connection:", requirements.connectionDefinitions)
+	if requirements.pullSecretName != "" {
+		_, _ = hasher.Write([]byte("pull_secret=" + requirements.pullSecretName + "\n"))
+	}
+	changedGenerations := make(map[string]string)
+	usedSecretNames := make(map[string]bool, len(requirements.grantMountPaths)+len(requirements.referencedSecretNames))
+	for secretName := range requirements.grantMountPaths {
+		usedSecretNames[secretName] = true
+	}
+	for secretName := range requirements.referencedSecretNames {
+		usedSecretNames[secretName] = true
+	}
+	for secretName := range usedSecretNames {
+		generationFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredSecretGeneration(secretName))
+		if errors.Is(getError, store.ErrKeyNotFound) {
+			continue
+		}
+		if getError != nil {
+			return fmt.Errorf("read value generation of secret %s: %w", secretName, getError)
+		}
+		if generationValue := string(generationFact.Value); generationValue != initialSecretGeneration {
+			changedGenerations[secretName] = generationValue
+		}
+	}
+	writeSortedConfigEntries(hasher, "generation:", changedGenerations)
+	return nil
+}
+
+// initialSecretGeneration is the value generation of a secret whose value was
+// never changed; it adds no hash line so hashes survive the M236 upgrade.
+const initialSecretGeneration = "1"
 
 // writeSortedConfigEntries writes "<label><name>=<value>\n" for each entry in
 // name order: the format every stored config hash was built with.

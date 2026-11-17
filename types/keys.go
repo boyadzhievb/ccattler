@@ -905,6 +905,14 @@ func ScanDesiredServiceSecrets(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/secret/", PrefixDesired, serviceName)
 }
 
+// KeyDesiredSecretGeneration returns the store path for a secret's value
+// generation: a decimal number raised only when a different plaintext is
+// stored (M236). Agents hash it; it never reveals the value.
+// Path: desired/secret_generation/{secretName}
+func KeyDesiredSecretGeneration(secretName string) string {
+	return fmt.Sprintf("%s/secret_generation/%s", PrefixDesired, secretName)
+}
+
 // Connection keys. Top-level connection definitions are stored as JSON under
 // desired/connection/{name}. Service-level connection references are stored
 // under desired/service/{svc}/connection/{name} with the mount path as value.
