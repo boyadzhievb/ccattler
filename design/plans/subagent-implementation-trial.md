@@ -22,12 +22,12 @@ Both milestones are bug fixes of similar size in `agent/` and `runtime/`. They a
 | Metric | How | M233 | M234 |
 |---|---|---|---|
 | Main-session context growth | `/context` before proposal and after release | before 378.9k (346.2k messages), after release 459.5k (425k messages): **+80.6k** — proposal, design questions, verifying the hand-backs, two testbed crash-loop checks, review handling, release, conversation (mid-point 421.2k after the first testbed check) | before: 459.5k (425k messages) |
-| Implementation tokens | subagent completion notice (M233); `/cost` delta (M234) | 156.8k subagent tokens, 66 tool calls (groups 0–2: 25 files, +643/−62, 2 commits) | |
-| Wall time, "go" → ready for review | timestamps | 11.3 min (22:44 → 22:55) | |
+| Implementation tokens | subagent completion notice (M233); `/cost` delta (M234) | 156.8k subagent tokens, 66 tool calls (groups 0–2: 25 files, +643/−62, 2 commits) | in the main session (counted in its context growth below); first pass 1fcacba: 13 files |
+| Wall time, "go" → ready for review | timestamps | 11.3 min (22:44 → 22:55) | about 5 min by the clock (10:59:46 → 11:04:44; continuing session, the proposal and code reading were done before) |
 | Quality of the hand-back | main session re-ran build, vet, lint, tests; read the core file | all green on re-run; 6 doubts reported, 2 were real inconsistencies in the change's own spec/design (fixed in d41a1f1), 1 a pre-existing rollout gap, 1 a testbed risk to check | |
-| Review findings | count and severity in tasks.md 4.1 | 2 real (1 medium: bail-out counted as crash; 1 low-medium: metrics gauge), 1 pre-existing bug → M238, 5 nits; review 110.2k tokens, 35 tool calls, 4.9 min | |
-| Rework rounds after review | count | 1 round by the same subagent (resumed): both defects fixed failing-first plus all nits, 4.3 min; cumulative subagent tokens 186.9k (156.8k first round), 88 tool calls; main session re-verified green | |
-| Failed test/testbed runs caused by the implementation | count | | |
+| Review findings | count and severity in tasks.md 4.1 / 2.2 | 2 real (1 medium: bail-out counted as crash; 1 low-medium: metrics gauge), 1 pre-existing bug → M238, 5 nits; review 110.2k tokens, 35 tool calls, 4.9 min | 3 real (1 medium: log dirs leak on graceful agent stop; 1 low: path traversal on the new read path; 1 headline: `cca logs <svc> --previous` skipped crash-looping instances), 3 low, nits; review 111.0k tokens, 32 tool calls, 4.5 min |
+| Rework rounds after review | count | 1 round by the same subagent (resumed): both defects fixed failing-first plus all nits, 4.3 min; cumulative subagent tokens 186.9k (156.8k first round), 88 tool calls; main session re-verified green | 1 round in the main session: all fixed failing-first (6 new tests), plus a new "Container Logs" graph |
+| Failed test/testbed runs caused by the implementation | count | 0 (crash-loop checks passed before and after rework) | 1 (testbed 2.1 failed on the CLI selection before the rework; passed after) |
 | User interventions during implementation | count | | |
 
 ## Result
