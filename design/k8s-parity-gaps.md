@@ -66,7 +66,7 @@ Node-pressure eviction controller (`controllers/eviction.go`) monitors per-node 
 **K8s**: Container log rotation, `kubectl logs --previous`.
 **CCattler**: DSL `logging { max_size "10m" max_files 3 }`. Agent passes `--log-driver json-file --log-opt max-size=X --log-opt max-file=Y` to nerdctl run when configured.
 **Files**: `runtime/container.go`, `runtime/runtime.go`, `lang/ast.go`, `lang/parser.go`, `lang/compiler.go`, `types/keys.go`.
-**Remaining**: `cca logs --previous` (requires tracking previous container ID).
+**Previous run (M234)**: `cca logs --previous` shows the run before the current one of the same instance, as `kubectl logs --previous`; the containerd runtime keeps one previous run per instance until the instance leaves the node.
 
 ### 10. Events CLI — DONE (pre-existing)
 

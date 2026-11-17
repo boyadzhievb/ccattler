@@ -277,6 +277,7 @@ Stream container stdout/stderr for a service's running instances. Requires a run
 cca logs web                       # print recent logs for all running instances of web
 cca logs web --follow              # live tail (follows one instance)
 cca logs web --instance web-abc123 # specific instance
+cca logs web --previous            # the run before the current one (why did it exit?)
 cca logs --tag team=payments       # aggregate logs across all services matching the tag
 ```
 
@@ -284,6 +285,7 @@ cca logs --tag team=payments       # aggregate logs across all services matching
 |------|-------------|
 | `--follow`, `-f` | Live tail (streams one instance continuously) |
 | `--instance <id>` | Stream logs from a specific instance |
+| `--previous`, `-p` | Show the previous run of the same instance: the output of the container before it last restarted (crash loop, config change). The node keeps one previous run per instance until the instance leaves the node. Not with `--follow`; containerd runtime only |
 | `--tag key=value` | Filter services by tag (repeatable) |
 
 When multiple instances match, logs are printed sequentially with `==> service/instance <==` headers. With `--follow`, only the first matching instance is tailed.

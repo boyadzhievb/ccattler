@@ -95,7 +95,7 @@ cca logs webserver --tail 100
 # Logs since a timestamp
 cca logs webserver --since "2026-10-28T12:00:00Z"
 
-# Logs from a previous (terminated) instance
+# Logs of the run before the last restart (why a crash-looping container exited)
 cca logs webserver --previous
 
 # Logs for all services matching a tag

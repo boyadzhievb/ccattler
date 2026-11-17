@@ -424,6 +424,7 @@ func (debugServer *DebugServer) handleDebugLogs(responseWriter http.ResponseWrit
 		TailLines:  queryParams.Get("tail"),
 		Since:      queryParams.Get("since"),
 		Timestamps: queryParams.Get("timestamps") == "true",
+		Previous:   queryParams.Get("previous") == "true",
 	}
 
 	logsReader, logsError := debugServer.runtimeAdapter.Logs(request.Context(), instanceID, logsOptions)

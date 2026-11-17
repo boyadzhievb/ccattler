@@ -120,10 +120,18 @@ type HostPortProvider interface {
 
 // LogsOptions controls how container logs are retrieved.
 type LogsOptions struct {
-	Follow     bool
-	TailLines  string
-	Since      string
-	Timestamps bool
+	Follow     bool   // Follow streams new lines as they are written.
+	TailLines  string // TailLines limits the output to the last N lines.
+	Since      string // Since limits the output to lines after this time.
+	Timestamps bool   // Timestamps prefixes each line with its time.
+	Previous   bool   // Previous reads the run before the current one of the same instance (M234).
+}
+
+// InstanceDataRemover is implemented by runtimes that keep data for an
+// instance beyond its container, such as the logs of its current and previous
+// run. The agent calls it when the instance leaves the node (M234).
+type InstanceDataRemover interface {
+	RemoveInstanceData(ctx context.Context, instanceID string) error
 }
 
 // ResourceStats describes the observed resource usage of a running workload.

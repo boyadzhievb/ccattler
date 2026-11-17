@@ -28,6 +28,8 @@ import (
 	gocni "github.com/containerd/go-cni"
 	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 // containerdNamespace is the containerd namespace used for all CCattler workloads.
@@ -374,10 +376,15 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 	}
 
 	containerName := containerdRuntime.buildContainerName(spec.ServiceName, spec.ID)
-	logFilePath := filepath.Join(ContainerdLogBaseDir, spec.ID, spec.ID+"-json.log")
+	logFilePath := instanceRunLogPath(ContainerdLogBaseDir, spec.ID)
 
 	if mkdirError := os.MkdirAll(filepath.Dir(logFilePath), 0750); mkdirError != nil {
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create log dir: %v", mkdirError)}
+	}
+	// The shim appends to the log file: keep the run before as the previous
+	// log and start this run with an empty one (M234).
+	if rotateError := rotateInstanceRunLog(ContainerdLogBaseDir, spec.ID); rotateError != nil {
+		logging.Default().Warn("previous run log not kept", "instance", spec.ID, "error", rotateError.Error())
 	}
 
 	netnsPath := ""
@@ -850,7 +857,9 @@ func (containerdRuntime *ContainerdRuntime) cleanupCNIState(ctx context.Context,
 	containerdRuntime.teardownCNINetwork(ctx, instanceID, cniState.netnsPath)
 }
 
-// removeContainerResources cleans up tracking state and log files for a container.
+// removeContainerResources forgets the tracking state of a stopped container.
+// Its log directory stays: a restart keeps the run before as the previous log;
+// RemoveInstanceData deletes it when the instance leaves the node (M234).
 func (containerdRuntime *ContainerdRuntime) removeContainerResources(_ context.Context, instanceID string) {
 	containerdRuntime.mutex.Lock()
 	defer containerdRuntime.mutex.Unlock()
@@ -858,9 +867,12 @@ func (containerdRuntime *ContainerdRuntime) removeContainerResources(_ context.C
 	delete(containerdRuntime.trackedContainers, instanceID)
 	delete(containerdRuntime.instanceHostPorts, instanceID)
 	delete(containerdRuntime.containerCNIStates, instanceID)
+}
 
-	logDirectory := filepath.Join(ContainerdLogBaseDir, instanceID)
-	_ = os.RemoveAll(logDirectory)
+// RemoveInstanceData deletes the instance's log directory (current and previous
+// run logs, config files) once the instance has left the node (M234).
+func (containerdRuntime *ContainerdRuntime) RemoveInstanceData(_ context.Context, instanceID string) error {
+	return removeInstanceLogDirectory(ContainerdLogBaseDir, instanceID)
 }
 
 // --- Runtime interface: Phase E (exec & logs) ---
@@ -1067,8 +1079,12 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 
 // Logs returns a reader that streams the stdout/stderr log output of a
 // container. The log file path is stored as a label on the container when
-// created (Phase D). Supports tail, since, and follow options.
+// created (Phase D). Supports tail, since, follow and previous (the run before,
+// read from the node even when no container exists, M234).
 func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID string, options LogsOptions) (io.ReadCloser, error) {
+	if options.Previous {
+		return openPreviousRunLog(ContainerdLogBaseDir, instanceID, options)
+	}
 	namespacedCtx := containerdRuntime.containerdContext(ctx)
 	containerName := containerdRuntime.resolveContainerName(instanceID)
 
@@ -1101,7 +1117,7 @@ func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID
 
 // defaultLogPath returns the conventional log file path for a container.
 func (containerdRuntime *ContainerdRuntime) defaultLogPath(instanceID string) string {
-	return filepath.Join(ContainerdLogBaseDir, instanceID, instanceID+"-json.log")
+	return instanceRunLogPath(ContainerdLogBaseDir, instanceID)
 }
 
 // newStaticLogReader opens a log file and returns lines matching the filter

@@ -713,6 +713,9 @@ func (containerRuntime *ContainerRuntime) Resize(_ context.Context, _ string, _ 
 // container identified by id. If follow is true, the reader blocks for
 // new output. The caller must close the returned ReadCloser when done.
 func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, options LogsOptions) (io.ReadCloser, error) {
+	if options.Previous {
+		return nil, ErrPreviousLogNotAvailable
+	}
 	containerRuntime.mutex.Lock()
 	tracked := containerRuntime.trackedContainers[id]
 	containerName := containerRuntime.resolveContainerName(id)

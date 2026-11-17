@@ -1043,6 +1043,7 @@ func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanc
 	if stopError := nodeAgent.runtime.Stop(ctx, instanceID); stopError != nil {
 		logging.Default().Error("failed to remove stopped container", "instance", instanceID, "error", stopError.Error())
 	}
+	nodeAgent.removeInstanceDataIfSupported(ctx, instanceID)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
 		logging.Default().Error("failed to publish stopped state for stale instance", "instance", instanceID, "error", putError.Error())
 	}
@@ -1054,6 +1055,19 @@ func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanc
 		if deleteError := types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID); deleteError != nil {
 			logging.Default().Error("failed to delete network allocation for stale instance", "instance", instanceID, "error", deleteError.Error())
 		}
+	}
+}
+
+// removeInstanceDataIfSupported deletes what the runtime keeps for an instance
+// beyond its container (current and previous run logs) once the instance has
+// left the node (M234). Runtimes without such data do not implement it.
+func (nodeAgent *Agent) removeInstanceDataIfSupported(ctx context.Context, instanceID string) {
+	dataRemover, keepsInstanceData := nodeAgent.runtime.(runtime.InstanceDataRemover)
+	if !keepsInstanceData {
+		return
+	}
+	if removeError := dataRemover.RemoveInstanceData(ctx, instanceID); removeError != nil {
+		logging.Default().Error("failed to remove instance data", "instance", instanceID, "error", removeError.Error())
 	}
 }
 
@@ -1078,6 +1092,7 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 	if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceID, serviceName); stopError != nil {
 		logging.Default().Error("failed to stop instance", "instance", instanceID, "error", stopError.Error())
 	}
+	nodeAgent.removeInstanceDataIfSupported(ctx, instanceID)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
 		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", putError.Error())
 	}

@@ -262,7 +262,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	}
 
 	if parsedConfig.instanceID != "" {
-		streamContainerLogs(parsedConfig.serviceName, parsedConfig.instanceID, parsedConfig)
+		streamContainerLogs(parsedConfig.instanceID, parsedConfig)
 		return
 	}
 
@@ -294,7 +294,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	}
 
 	if parsedConfig.follow {
-		streamContainerLogs(allInstanceIDs[0].serviceName, allInstanceIDs[0].instanceID, parsedConfig)
+		streamContainerLogs(allInstanceIDs[0].instanceID, parsedConfig)
 		return
 	}
 
@@ -302,7 +302,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	nonFollowConfig.follow = false
 	for _, entry := range allInstanceIDs {
 		fmt.Printf("==> %s-%s <==\n", entry.serviceName, entry.instanceID)
-		streamContainerLogs(entry.serviceName, entry.instanceID, nonFollowConfig)
+		streamContainerLogs(entry.instanceID, nonFollowConfig)
 		fmt.Println()
 	}
 }
@@ -408,37 +408,6 @@ func findInstanceIDsForService(facts []struct {
 	return instanceIDs
 }
 
-// findPreviousInstance queries observed facts for a terminated (stopped or
-// failed) instance of the given service. Returns the instance ID if found,
-// or an empty string if no previous instance exists.
-func findPreviousInstance(serviceName string) string {
-	observedFacts := fetchObservedInstanceFacts()
-
-	serviceInstances := make(map[string]bool)
-	stateMap := make(map[string]string)
-
-	for _, factEntry := range observedFacts {
-		if strings.HasSuffix(factEntry.Key, "/service") && factEntry.Value == serviceName {
-			instanceID := strings.TrimPrefix(factEntry.Key, "observed/instance/")
-			instanceID = strings.TrimSuffix(instanceID, "/service")
-			serviceInstances[instanceID] = true
-		}
-		if strings.HasSuffix(factEntry.Key, "/state") {
-			instanceID := strings.TrimPrefix(factEntry.Key, "observed/instance/")
-			instanceID = strings.TrimSuffix(instanceID, "/state")
-			stateMap[instanceID] = factEntry.Value
-		}
-	}
-
-	for instanceID := range serviceInstances {
-		instanceState := stateMap[instanceID]
-		if instanceState == string(types.InstanceFailed) || instanceState == string(types.InstanceStopped) {
-			return instanceID
-		}
-	}
-	return ""
-}
-
 // lookupInstanceState queries the API for the current state of an instance.
 func lookupInstanceState(instanceID string) string {
 	stateURL := statusAPIBaseURL() + "/api/state?prefix=observed/instance/" + instanceID + "/state"
@@ -460,21 +429,16 @@ func lookupInstanceState(instanceID string) string {
 // streamContainerLogs fetches logs for a container instance through the API
 // server's agent debug proxy. It discovers the instance's placement and
 // streams the response to stdout.
-func streamContainerLogs(serviceName string, instanceID string, logsConfig logsCommandConfig) {
-	if logsConfig.previous {
-		previousID := findPreviousInstance(serviceName)
-		if previousID == "" {
-			fmt.Fprintf(os.Stderr, "no previous (terminated) instance found for service %q\n", serviceName)
-			return
-		}
-		instanceID = previousID
-	}
-
+func streamContainerLogs(instanceID string, logsConfig logsCommandConfig) {
 	placementNodeID := discoverInstancePlacement(instanceID)
 	endpointURL := nodeDebugProxyURL(placementNodeID, "logs")
 
 	queryParams := url.Values{}
 	queryParams.Set("instance", instanceID)
+	if logsConfig.previous {
+		// The run before the current one of this instance (M234).
+		queryParams.Set("previous", "true")
+	}
 	if logsConfig.tailLines != "" {
 		queryParams.Set("tail", logsConfig.tailLines)
 	}

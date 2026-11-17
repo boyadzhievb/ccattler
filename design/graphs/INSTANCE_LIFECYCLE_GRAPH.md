@@ -244,6 +244,7 @@ reconcileDesiredInstance(instanceInfo)                        :729
 └── startInstanceAndPublishState(ctx, instanceInfo, image, configHashBeforeBuild, spec)  :971
     (… after start: PUT observed/instance/{id}/config-hash = configHashBeforeBuild, always)
     ├── runtime.Start(spec)
+    │   ├── [containerd] rotateInstanceRunLog: <id>-json.log → <id>-json.log.previous (M234)
     │   ├── [containerd] WithNewSpec(WithImageConfig, buildOCISpecOptions(spec, netns)...)
     │   │   └── containerBaseSpecOptions: WithoutRunMount (no tmpfs on /run, M232)
     │   ├── START FAILED:
@@ -663,6 +664,8 @@ cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of 
 | Volume attach failure | Before BAIL | agent.go:741 |
 | Start failure | In startInstanceAndPublishState | agent.go:932 |
 | Cleanup | In cleanupUndesiredInstance | agent.go:996 |
+
+Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
 
 ---
 

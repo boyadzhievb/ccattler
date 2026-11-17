@@ -39,7 +39,7 @@ cca scale <service> <count> [--approve-above-limit <count>]
                                # declared services only (404 otherwise); warns from 500; above 600 a cluster.admin
                                # approves by typing the count again or with --approve-above-limit; no ceiling,
                                # not a capacity promise (M217, Flow 31). cca apply takes the same flag
-cca logs <service> [--follow]
+cca logs <service> [--follow] [--previous]
 cca events [--follow] [--service]  # event stream
 cca watch [prefix]             # stream fact store changes
 cca restart <container-name>   # restart a single instance

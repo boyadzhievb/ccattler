@@ -1713,4 +1713,5 @@ instance no longer placed here → entry dropped with the stale-instance cleanup
 - A failed `Start` publishes `failed` as before (the failure controller replaces it, Flow 15); the back-off covers containers that start and then exit.
 - The base, maximum and reset durations are agent fields set from `crashLoopBaseDelay`, `crashLoopMaxDelay`, `crashLoopResetPeriod`; tests set short values.
 - The same `backoff.Delay` formula serves the image pull back-off (Flow 14 states) and the failure controller's replacement delay.
-- Not covered: keeping the IP across restarts (M237), the previous run's log (M234), rescheduling to another node.
+- Not covered: keeping the IP across restarts (M237), rescheduling to another node.
+- Previous run's log (M234): every start (`ContainerdRuntime.Start`) moves `<id>-json.log` to `<id>-json.log.previous` before the new task opens the log (the shim appends), so the run that exited stays readable with `cca logs --previous`; one previous run per instance. Stopping a container keeps `/var/lib/ccattler/logs/<id>/`; the agent's stale-instance cleanup calls `RemoveInstanceData` (optional `runtime.InstanceDataRemover`) when the instance leaves the node.

@@ -312,7 +312,10 @@ func (processRuntime *ProcessRuntime) Resize(_ context.Context, _ string, _ int6
 
 // Logs returns a reader that streams the captured stdout/stderr of the process
 // identified by id. If follow is true, the reader blocks for new output.
-func (processRuntime *ProcessRuntime) Logs(_ context.Context, id string, _ LogsOptions) (io.ReadCloser, error) {
+func (processRuntime *ProcessRuntime) Logs(_ context.Context, id string, options LogsOptions) (io.ReadCloser, error) {
+	if options.Previous {
+		return nil, ErrPreviousLogNotAvailable
+	}
 	processRuntime.mutex.Lock()
 	defer processRuntime.mutex.Unlock()
 
