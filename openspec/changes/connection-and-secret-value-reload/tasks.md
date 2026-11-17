@@ -45,4 +45,4 @@ Implementation (groups 0–2) by the `lead-developer` subagent with **model Opus
   - noted (low, security-audit) — `PutSecret` lets a write-only caller learn whether a set matched (no restart): not a practical oracle, every wrong guess overwrites the value
   - noted (implementer) — `DeleteSecret` on a concurrent change still answers 500 (only set was asked for 409); tombstones are never removed (hidden from the API)
   - noted (code-reviewer) — the hash now reads more facts per running instance per cycle; caching per service per cycle if it shows in benchmarks
-- [ ] 4.2 Trial numbers for M236; closing full Deploy Testbed run
+- [x] 4.2 Trial numbers for M236; closing full Deploy Testbed run — closing full run 44074905065 on b646480: `run_kind=full`, `skipped check groups: none`, deploy `TEST PASSED`, replay `32 passed, 0 failed, 0 skipped`, 595 s. Trial numbers in design/plans/subagent-implementation-trial.md (context figure after release from the user)
