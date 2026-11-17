@@ -27,6 +27,12 @@ When a start fails because the workload's own process could not be started (the 
 - Test: `TestAgentPublishesFailedForInfrastructureStartError`
 
 #### Scenario: Start errors are classified by the runtime
-- **WHEN** the containerd runtime's task start fails
-- **THEN** its start error says the workload's process failed; other start errors do not
+- **WHEN** the containerd runtime fails to create or start the task because runc could not exec the workload's process (missing or non-executable entrypoint)
+- **THEN** its start error says the workload's process failed; other start errors (image, network, container creation, other task failures) do not
 - Test: `TestStartErrorMarksProcessStartFailure`
+
+#### Scenario: Exit between the runtime listing and the status check
+- **GIVEN** a running instance whose container exits after the agent listed it as running but before it reads its status
+- **WHEN** the agent observes the exited status on that cycle
+- **THEN** it does not publish `failed`; the next cycle restarts it in place with back-off
+- Test: `TestAgentRunningPathRaceDoesNotPublishFailed`

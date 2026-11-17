@@ -19,11 +19,14 @@
 ### D1. The first look after a start never publishes `failed`
 In `startInstanceAndPublishState`, an exited container observed right after a successful start is published as `starting` (not `failed`, no exit-reason fact from this path); the next cycle sees the exited container and Flow 33 records the exit (`recordInstanceExit`: back-off, `crash-loop-backoff`, exit reason). The instance was really started, so `recordInstanceStarted` runs as today and the restart count stays correct. Alternative (record the exit right away from the start path): saves one cycle but duplicates Flow 33's entry handling; rejected.
 
-### D2. `StartError` says whether the workload's process failed
-`runtime.StartError` gets `ProcessFailed bool` (field comment: the runtime created the workload but its process could not start). Containerd sets it only for the task start failure; others leave it false. In the agent, a start error with `ProcessFailed` is treated as an exit of a real start attempt: the container stays tracked as exited (no `failed`), the next cycle's Flow 33 path records it with the start error as the reason. Without it, the current `failed` path stays.
+### D2. `StartError` says whether the workload's process failed (revised 2026-11-17)
+Finding during apply (lead-developer, probed with runc 1.1.15): a missing or non-executable entrypoint fails in `runc create`, i.e. containerd `NewTask` → our `create task: …` error; an exec-format error passes create and start and exits at once (the D1 case). So the original "only `start task`" rule would miss the main case. User decision (option 1): `runtime.StartError` gets `ProcessFailed bool`; containerd sets it for a `create task` or `start task` failure whose error text contains runc's exec failure (`exec:` within `unable to start container process`), through one small classification function with a test against the real runc message texts. Every other start error (image, CNI, netns, create container, other task failures: cgroup, shim, seccomp) leaves it false and stays `failed`.
 
-### D3. Containerd keeps the failed task's container
-For a task start failure containerd must leave the container (and its log) in place so `Status` reports it exited and Flow 33 sees it on the next cycle (today the error path deletes the container and tears down the network). If keeping it is not possible without leaking the netns, the agent records the exit directly from the start path for this case instead (fallback; decide during apply and record it).
+### D3. The agent records the exit from the start path (revised)
+After a `create task` failure no task exists, so a kept container would report "exited, code 0, no error" and Flow 33 could not name the cause. Containerd therefore cleans up as today (container and network removed), and the agent, on a start error with `ProcessFailed`, records the exit itself through Flow 33's entry handling (`recordInstanceExit` with the start error as the reason): back-off, `crash-loop-backoff`, restart count on the next real attempt, never `failed`. No log file exists for such a run (the process never ran), so `cca logs --previous` shows the run before, if any.
+
+### D4. The running path never publishes `failed` from a lost race (added)
+Found by the lead-developer: in `executeReconciliationCycle`, a container that `List` reported running but that exits before `observeInstanceState` is published `failed` — another way around Flow 33. The running path publishes the exit as `starting`-equivalent no-op (no `failed`, no exit reason) and leaves it to the next cycle, where the container is seen exited and Flow 33 records it. Test: `TestAgentRunningPathRaceDoesNotPublishFailed`.
 
 ## Risks / Trade-offs
 
