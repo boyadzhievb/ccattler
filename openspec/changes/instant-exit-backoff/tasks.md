@@ -46,7 +46,9 @@ Implementation (groups 0–2) by the `lead-developer` subagent (Opus, effort med
 
 ## 3. Testbed
 
-- [ ] 3.1 By hand (`deploy-run:instant-exit`): a service with `command "sh /no/such/script"` (exits at once) and one with `command "/no/such/binary"` (cannot start); both stay on their instance ID in `crash-loop-backoff` with growing restart counts; `cca logs --previous` works for the first
+- [x] 3.1 By hand (`deploy-run:instant-exit`): a service with `command "sh /no/such/script"` (exits at once) and one with `command "/no/such/binary"` (cannot start); both stay on their instance ID in `crash-loop-backoff` with growing restart counts; `cca logs --previous` works for the first — 2026-11-17, nodes run runc 1.4.0:
+  - first run (6070348 binary): `quickexit` passed (same ID, `crash-loop-backoff`, `Restarts: 3`); `nobinary` **failed** — published failed and replaced (new ID): runc 1.4.0's text has `error during container init:` before `exec:`, the classifier only knew runc 1.1.15's → fixed in rework 1 (1.5 R1). `cca logs --instance <bare id> --previous` showed `sh: 0: cannot open /no/such/script` (the full `<service>-<id>` name is not accepted by `--instance`: UX nit)
+  - second run (2717225 binary, fresh cluster): both kept their IDs for 2+ minutes, `crash-loop-backoff`, `Restarts: 3`; reasons `exited with code 2; restarting in 1m20s` and `exec: "/no/such/binary": stat /no/such/binary: no such file or directory; restarting in 1m20s`; 0 failed/replacing events; RUNTIME HEALTH `2 running, 0 pending, 0 failed, 2 crash-loop-backoff, 1 stopped`; changed `health_check.sh` Check 6 `Crash-loop-backoff: 2` with a warning per instance and its reason, exit 1
 
 ## 4. Close
 
