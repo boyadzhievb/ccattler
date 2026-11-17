@@ -6,6 +6,8 @@ package security
 import (
 	"fmt"
 	"strings"
+
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // CapabilityFactAuthorizer authorizes writing compiled DSL facts with the
@@ -34,11 +36,13 @@ func (factAuthorizer *CapabilityFactAuthorizer) Authorize(principal string, perm
 }
 
 // clusterAdminFactPrefixes are fact areas only cluster admins may write
-// through apply: authorization rules, network policy and cloud identities.
+// through apply: authorization rules, network policy, cloud identities and
+// secret value generations.
 var clusterAdminFactPrefixes = []string{
 	"auth/",
 	"policy/network/",
 	"desired/cloud_identity/",
+	types.PrefixDesiredSecretGeneration, // written by SecretStore only (M236); no apply path may forge a rotation
 }
 
 // workloadFactPrefixes are fact areas a workload.create principal may write

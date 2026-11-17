@@ -73,11 +73,43 @@ func TestSecretGenerationRaisedOnlyOnValueChange(t *testing.T) {
 		t.Fatalf("after re-encryption: generation %q, want 3", actualGeneration)
 	}
 
+	// Delete keeps the generation as a name-only tombstone; a recreate raises it.
 	if deleteError := secretStore.DeleteSecret(ctx, "api-key"); deleteError != nil {
 		t.Fatalf("delete: %v", deleteError)
 	}
-	if actualGeneration := readSecretGeneration(t, factStore, "api-key"); actualGeneration != "" {
-		t.Fatalf("after delete: generation %q, want none", actualGeneration)
+	if actualGeneration := readSecretGeneration(t, factStore, "api-key"); actualGeneration != "3" {
+		t.Fatalf("after delete: generation %q, want 3 (kept)", actualGeneration)
+	}
+	if putError := secretStore.PutSecret(ctx, "api-key", []byte("first")); putError != nil {
+		t.Fatalf("recreate: %v", putError)
+	}
+	if actualGeneration := readSecretGeneration(t, factStore, "api-key"); actualGeneration != "4" {
+		t.Fatalf("after delete and recreate: generation %q, want 4", actualGeneration)
+	}
+}
+
+// TestSecretPutFailsWhenCurrentValueUnreadable checks that an envelope that
+// cannot be opened is an error, never a value change that would raise the
+// generation and restart every consumer (M236 review).
+func TestSecretPutFailsWhenCurrentValueUnreadable(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	secretStore, storeError := NewSecretStoreWithMasterKey(factStore, make([]byte, 32))
+	if storeError != nil {
+		t.Fatalf("secret store: %v", storeError)
+	}
+	if putError := secretStore.PutSecret(ctx, "api-key", []byte("first")); putError != nil {
+		t.Fatalf("put: %v", putError)
+	}
+	if _, putError := factStore.Put(ctx, SecretStorePrefix+"api-key", []byte("not-an-envelope")); putError != nil {
+		t.Fatalf("corrupt envelope: %v", putError)
+	}
+	if putError := secretStore.PutSecret(ctx, "api-key", []byte("first")); putError == nil {
+		t.Fatal("put over an unreadable value succeeded, want an error")
+	}
+	if actualGeneration := readSecretGeneration(t, factStore, "api-key"); actualGeneration != "1" {
+		t.Fatalf("generation %q, want 1 (unchanged)", actualGeneration)
 	}
 }
 

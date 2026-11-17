@@ -743,6 +743,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		logging.Default().Warn("cannot read config, retrying next cycle", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", hashError.Error())
 		return false
 	}
+	nodeAgent.dropSecretMaterialIfConfigChanged(ctx, instanceInfo.id, configHashBeforeBuild)
 
 	secretValues, secretsReady := nodeAgent.prepareInstanceSecretMaterial(ctx, instanceInfo)
 	if !secretsReady {
@@ -1327,6 +1328,19 @@ func (nodeAgent *Agent) hasConfigChangedSinceStart(ctx context.Context, instance
 	return hashError == nil && currentHash != string(storedHashFact.Value)
 }
 
+// dropSecretMaterialIfConfigChanged removes the instance's tmpfs secret
+// material when its stored config hash differs from currentHash, so a restart
+// of a stopped or crash-looping instance re-fetches current values (M236).
+func (nodeAgent *Agent) dropSecretMaterialIfConfigChanged(ctx context.Context, instanceID string, currentHash string) {
+	if nodeAgent.secretMaterialStore == nil {
+		return
+	}
+	storedHashFact, getError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceConfigHash(instanceID))
+	if getError == nil && string(storedHashFact.Value) != currentHash {
+		nodeAgent.secretMaterialStore.RemoveInstance(instanceID)
+	}
+}
+
 // detectConfigChange checks whether the config hash for a running instance has
 // changed since it was started. If so, stops the container so the next cycle
 // restarts it with the new config. Returns true if the instance was stopped.
@@ -1435,7 +1449,7 @@ func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceNam
 }
 
 // writeSecretReferenceEntries appends the M236 hash inputs (design D2):
-// connection definitions, the pull secret reference and the value generation
+// connections (name@mount path = definition), the pull secret and the generation
 // (> 1 only) of every secret the service uses. A service with none of them
 // writes nothing, so its hash is unchanged.
 func (nodeAgent *Agent) writeSecretReferenceEntries(ctx context.Context, hasher io.Writer, serviceName string) error {
@@ -1443,7 +1457,11 @@ func (nodeAgent *Agent) writeSecretReferenceEntries(ctx context.Context, hasher 
 	if requirementsError != nil {
 		return requirementsError
 	}
-	writeSortedConfigEntries(hasher, "connection:", requirements.connectionDefinitions)
+	connectionEntries := make(map[string]string, len(requirements.connectionDefinitions))
+	for connectionName, connectionDefinition := range requirements.connectionDefinitions {
+		connectionEntries[connectionName+"@"+requirements.connectionMountPaths[connectionName]] = connectionDefinition
+	}
+	writeSortedConfigEntries(hasher, "connection:", connectionEntries)
 	if requirements.pullSecretName != "" {
 		_, _ = hasher.Write([]byte("pull_secret=" + requirements.pullSecretName + "\n"))
 	}
@@ -1463,17 +1481,13 @@ func (nodeAgent *Agent) writeSecretReferenceEntries(ctx context.Context, hasher 
 		if getError != nil {
 			return fmt.Errorf("read value generation of secret %s: %w", secretName, getError)
 		}
-		if generationValue := string(generationFact.Value); generationValue != initialSecretGeneration {
+		if generationValue := string(generationFact.Value); generationValue != strconv.FormatInt(types.InitialSecretGeneration, 10) {
 			changedGenerations[secretName] = generationValue
 		}
 	}
 	writeSortedConfigEntries(hasher, "generation:", changedGenerations)
 	return nil
 }
-
-// initialSecretGeneration is the value generation of a secret whose value was
-// never changed; it adds no hash line so hashes survive the M236 upgrade.
-const initialSecretGeneration = "1"
 
 // writeSortedConfigEntries writes "<label><name>=<value>\n" for each entry in
 // name order: the format every stored config hash was built with.

@@ -26,6 +26,7 @@ func TestRequiredCapabilityForFactWrite(t *testing.T) {
 		"auth/role/developer/capability/workload.read": CapabilityClusterAdmin,
 		"policy/network/deny-all":                      CapabilityClusterAdmin,
 		"secrets/db-password":                          CapabilityClusterAdmin,
+		"desired/secret_generation/db-password":        CapabilityClusterAdmin,
 		"placement/instance/abc":                       CapabilityClusterAdmin,
 	}
 	for factKey, wantCapability := range expectations {

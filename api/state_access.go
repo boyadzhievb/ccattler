@@ -58,7 +58,19 @@ func isReadableFactKey(factKey string) bool {
 			return false
 		}
 	}
+	for _, unreadablePrefix := range unreadableKeyPrefixes {
+		if strings.HasPrefix(factKey, unreadablePrefix) {
+			return false
+		}
+	}
 	return true
+}
+
+// unreadableKeyPrefixes mark areas inside readable roots that no API caller
+// needs and that would reveal every secret name and its rotation timing:
+// secret value generations, read by agents from the store only (M236).
+var unreadableKeyPrefixes = []string{
+	types.PrefixDesiredSecretGeneration,
 }
 
 // filterReadableFacts returns the facts whose keys pass isReadableFactKey.

@@ -134,3 +134,37 @@ func TestReserveStreamSlotEnforcesServerLimit(t *testing.T) {
 		t.Fatal("connection at the limit must be accepted")
 	}
 }
+
+// TestStateAPIHidesSecretGenerations checks that secret value generations
+// (secret names and rotation timing, M236) are not returned by scans, gets or
+// watches of the raw state API.
+func TestStateAPIHidesSecretGenerations(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, _ = factStore.Put(ctx, types.KeyDesiredSecretGeneration("api-key"), []byte("2"))
+	_, _ = factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx"))
+
+	for _, scanPrefix := range []string{"desired/", types.PrefixDesiredSecretGeneration} {
+		resp, err := http.Get(baseURL + "/api/state?prefix=" + scanPrefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if strings.Contains(string(body), "secret_generation") {
+			t.Errorf("scan of %q returned a secret generation: %s", scanPrefix, body)
+		}
+	}
+	resp, err := http.Get(baseURL + "/api/state?key=" + types.KeyDesiredSecretGeneration("api-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("single generation read: got HTTP %d, want 403", resp.StatusCode)
+	}
+	if isReadableFactKey(types.KeyDesiredSecretGeneration("api-key")) {
+		t.Fatal("watch events of secret generations must be dropped (isReadableFactKey)")
+	}
+}

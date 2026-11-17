@@ -58,6 +58,7 @@ type serviceSecretRequirements struct {
 	grantMountPaths       map[string]string // grantMountPaths maps granted secret name to its explicit mount path ("" if none).
 	referencedSecretNames map[string]bool   // referencedSecretNames are connection and image pull secrets; each must also be granted.
 	connectionDefinitions map[string]string // connectionDefinitions maps each connection the service uses to its definition JSON ("" if not yet defined).
+	connectionMountPaths  map[string]string // connectionMountPaths maps each connection the service uses to its mount path.
 	pullSecretName        string            // pullSecretName is the image pull secret reference ("" if none).
 	needsSecrets          bool              // needsSecrets is true when any grant, connection secret or pull secret exists.
 	requirementsVersion   string            // requirementsVersion changes whenever any input above changes.
@@ -79,6 +80,7 @@ func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, servi
 		grantMountPaths:       make(map[string]string),
 		referencedSecretNames: make(map[string]bool),
 		connectionDefinitions: make(map[string]string),
+		connectionMountPaths:  make(map[string]string),
 	}
 	var versionParts []string
 	grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
@@ -127,6 +129,7 @@ func (nodeAgent *Agent) collectConnectionSecretNames(ctx context.Context, servic
 	for _, connectionRef := range connectionRefs {
 		connectionName := strings.TrimPrefix(connectionRef.Key, connectionPrefix)
 		requirements.connectionDefinitions[connectionName] = ""
+		requirements.connectionMountPaths[connectionName] = string(connectionRef.Value)
 		connectionFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredConnection(connectionName))
 		if errors.Is(getError, store.ErrKeyNotFound) {
 			continue

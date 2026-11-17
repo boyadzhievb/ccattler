@@ -913,6 +913,14 @@ func KeyDesiredSecretGeneration(secretName string) string {
 	return fmt.Sprintf("%s/secret_generation/%s", PrefixDesired, secretName)
 }
 
+// PrefixDesiredSecretGeneration is the scan prefix of all secret value
+// generations; hidden from the raw state API and admin-only to write (M236).
+var PrefixDesiredSecretGeneration = KeyDesiredSecretGeneration("")
+
+// InitialSecretGeneration is the value generation of a secret whose value was
+// never changed; it adds no config hash line, so hashes survive the upgrade.
+const InitialSecretGeneration int64 = 1
+
 // Connection keys. Top-level connection definitions are stored as JSON under
 // desired/connection/{name}. Service-level connection references are stored
 // under desired/service/{svc}/connection/{name} with the mount path as value.

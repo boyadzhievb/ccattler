@@ -1936,6 +1936,10 @@ func (apiServer *Server) handleSecretPut(responseWriter http.ResponseWriter, req
 
 	requestContext := request.Context()
 	if putErr := apiServer.secretStore.PutSecret(requestContext, secretName, body); putErr != nil {
+		if errors.Is(putErr, security.ErrSecretChangedConcurrently) {
+			writeJSONError(responseWriter, security.ErrSecretChangedConcurrently.Error(), http.StatusConflict)
+			return
+		}
 		writeJSONError(responseWriter, putErr.Error(), http.StatusInternalServerError)
 		return
 	}

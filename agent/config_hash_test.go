@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -296,5 +297,92 @@ func TestAgentRestartsWhenSecretValueGenerationChanges(t *testing.T) {
 		},
 		changedFacts: map[string]string{types.KeyDesiredSecretGeneration("api-key"): "2"},
 		secretValues: map[string][]byte{"api-key": []byte("value")},
+	})
+}
+
+// TestAgentRefetchesSecretsWhenRestartingAfterValueChange checks that a placed
+// instance that is not running (exited, crash loop, agent restart) and whose
+// config hash changed is started with freshly delivered secrets, not the stale
+// material on tmpfs (M236 review).
+func TestAgentRefetchesSecretsWhenRestartingAfterValueChange(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	materialStore := NewSecretMaterialStore(t.TempDir())
+	if writeError := materialStore.WriteInstanceSecrets("stale1", map[string][]byte{"api-key": []byte("old")}); writeError != nil {
+		t.Fatalf("seed material: %v", writeError)
+	}
+	deliveryClient := &fakeSecretDeliveryClient{secretValues: map[string][]byte{"api-key": []byte("new")}}
+	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
+	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetSecretDelivery(deliveryClient, materialStore)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "api-key"), []byte("/run/secrets/api-key"))
+	factStore.Put(ctx, types.KeyDesiredSecretGeneration("api-key"), []byte("2"))
+	// Hash stored at the previous start, before the value changed.
+	factStore.Put(ctx, types.KeyObservedInstanceConfigHash("stale1"), []byte("hash-before-value-change"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "stale1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "stale1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, configHashTestTimeout, "instance started with the new secret value", func() bool {
+		deliveryClient.mutex.Lock()
+		fetchCount := deliveryClient.fetchCount
+		deliveryClient.mutex.Unlock()
+		materialValues, hasMaterial := materialStore.ReadInstanceSecrets("stale1")
+		storedHash, hashError := factStore.Get(ctx, types.KeyObservedInstanceConfigHash("stale1"))
+		return fetchCount >= 1 && hasMaterial && string(materialValues["api-key"]) == "new" &&
+			hashError == nil && string(storedHash.Value) != "hash-before-value-change"
+	})
+}
+
+// TestSecretDeleteKeepsConsumerConfigHash checks that deleting a secret whose
+// value was changed does not change its consumers' config hash (the
+// generation stays as a tombstone, M236 review).
+func TestSecretDeleteKeepsConsumerConfigHash(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	secretStore, storeError := security.NewSecretStoreWithMasterKey(factStore, make([]byte, 32))
+	if storeError != nil {
+		t.Fatalf("secret store: %v", storeError)
+	}
+	for _, secretValue := range []string{"first", "second"} {
+		if putError := secretStore.PutSecret(ctx, "api-key", []byte(secretValue)); putError != nil {
+			t.Fatalf("put: %v", putError)
+		}
+	}
+	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "api-key"), []byte("/run/secrets/api-key"))
+	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
+
+	hashBeforeDelete, hashError := nodeAgent.computeServiceConfigHash(ctx, "web")
+	if hashError != nil {
+		t.Fatalf("hash: %v", hashError)
+	}
+	if deleteError := secretStore.DeleteSecret(ctx, "api-key"); deleteError != nil {
+		t.Fatalf("delete: %v", deleteError)
+	}
+	hashAfterDelete, hashError := nodeAgent.computeServiceConfigHash(ctx, "web")
+	if hashError != nil {
+		t.Fatalf("hash: %v", hashError)
+	}
+	if hashAfterDelete != hashBeforeDelete {
+		t.Fatalf("deleting the secret changed the consumer's hash: %s → %s", hashBeforeDelete, hashAfterDelete)
+	}
+}
+
+// TestAgentRestartsWhenConnectionMountPathChanges checks that moving a
+// connection file restarts the instance (M236 review).
+func TestAgentRestartsWhenConnectionMountPathChanges(t *testing.T) {
+	expectRestartAfterConfigChange(t, configChangeRestartCase{
+		seedFacts: map[string]string{
+			types.KeyDesiredServiceConnection("web", "db"): "/run/connections/db",
+			types.KeyDesiredConnection("db"):               `{"driver":"postgresql","host":"db","port":5432}`,
+		},
+		changedFacts: map[string]string{types.KeyDesiredServiceConnection("web", "db"): "/etc/app/db"},
 	})
 }
