@@ -254,11 +254,14 @@ reconcileDesiredInstance(instanceInfo)                        :733
     │   │   └── containerBaseSpecOptions: WithoutRunMount (no tmpfs on /run, M232)
     │   ├── [containerd] NewTask / task.Start failed → cleanup (task, CNI, container),
     │   │   newContainerdTaskStartError("create task"|"start task", err)
-    │   │   └── ProcessFailed = isRuncProcessExecFailure(err)   [runc "unable to start container process: exec: ", M238]
+    │   │   └── ProcessFailed, ProcessError = extractRuncProcessExecFailure(err)
+    │   │       [runc "unable to start container process: " + optional "error during container init: "
+    │   │        + `exec: "`; ProcessError = the `exec: "…": …` part (runc 1.1 / 1.4), M238]
     │   ├── START FAILED → handleInstanceStartError(ctx, instanceInfo, image, err)
     │   │   ├── revoke token, publishInstanceImage
     │   │   ├── StartError.ProcessFailed (workload's process could not start, M238):
-    │   │   │   └── recordInstanceStartFailure(reason) [section 12b] → return true (attempt counted)
+    │   │   │   ├── publishInstanceConfigHash(configHashBeforeBuild)   [compared during the wait]
+    │   │   │   └── recordInstanceStartFailure(ProcessError, else Reason) [section 12b] → return true (attempt counted)
     │   │   └── otherwise (image, CNI, netns, create container, cgroup/seccomp/shim):
     │   │       ├── PUT observed/instance/{id}/state = "failed"
     │   │       ├── publishStatusReason("start failed: {err}")
@@ -276,7 +279,7 @@ reconcileDesiredInstance(instanceInfo)                        :733
     │   └── PUT observed/instance/{id}/node     = nodeID
     ├── publishStatusReason("running")              [running only]
     ├── publishInstanceImage → PUT observed/instance/{id}/image = image
-    ├── PUT observed/instance/{id}/config-hash  = configHashBeforeBuild
+    ├── publishInstanceConfigHash → PUT observed/instance/{id}/config-hash = configHashBeforeBuild
     └── recordInstanceStarted(id)                   [section 12b] → return true
 ```
 
@@ -647,10 +650,12 @@ reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerE
 ├── reconcileDesiredInstance → attempted bool       [section 3; false on any bail-out or a start error published failed]
 │   ├── started (startInstanceAndPublishState) → recordInstanceStarted   [entry.waiting = false, startFailed = false, lastStartedAt = now]
 │   ├── process could not start (handleInstanceStartError, StartError.ProcessFailed, M238)
-│   │   └── recordInstanceStartFailure(startErrorReason)
-│   │       ├── recordInstanceStarted ; entry.startFailed = true
-│   │       ├── publishExitReason(startErrorReason)          [PUT observed/instance/{id}/exit-reason]
-│   │       └── beginCrashLoopWait("start failed: {reason}")
+│   │   ├── publishInstanceConfigHash(configHashBeforeBuild)  [so hasConfigChangedSinceStart compares with this attempt]
+│   │   └── recordInstanceStartFailure(processError)          [runc `exec: "…": …`]
+│   │       ├── ensureCrashLoopBackoffEntry
+│   │       ├── publishExitReason(processError)               [PUT observed/instance/{id}/exit-reason]
+│   │       ├── beginCrashLoopWait(processError)              [reset decided from the previous lastStartedAt]
+│   │       └── entry.startFailed = true ; lastStartedAt = now
 │   └── false → return: no count, entry stays waiting with its past retryAfter, so the next
 │       cycle retries without recording a new exit; the bail-out's own state and reason
 │       (image-pull-backoff, waiting-for-secrets, init, volumes) stay visible
@@ -711,9 +716,11 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `recordInstanceExit` | isExitedInstanceDueForRestart |
 | `recordInstanceStartFailure` | handleInstanceStartError (StartError.ProcessFailed, M238) |
 | `beginCrashLoopWait` | recordInstanceExit, recordInstanceStartFailure |
-| `recordInstanceStarted` | startInstanceAndPublishState, recordInstanceStartFailure |
+| `recordInstanceStarted` | startInstanceAndPublishState |
+| `ensureCrashLoopBackoffEntry` | recordInstanceStarted, recordInstanceStartFailure |
 | `handleInstanceStartError` | startInstanceAndPublishState |
-| `newContainerdTaskStartError` / `isRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
+| `publishInstanceConfigHash` | startInstanceAndPublishState, handleInstanceStartError (ProcessFailed) |
+| `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |
 | `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState |

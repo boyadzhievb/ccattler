@@ -98,14 +98,16 @@ func (nodeAgent *Agent) recordInstanceExit(ctx context.Context, instanceInfo pla
 }
 
 // recordInstanceStartFailure records a start whose workload process could not
-// start (bad entrypoint, missing binary) as an attempt followed by an exit: the
-// start error is the exit reason and the retry waits out the back-off (M238).
-func (nodeAgent *Agent) recordInstanceStartFailure(ctx context.Context, instanceInfo placedInstanceInfo, startErrorReason string) {
-	nodeAgent.recordInstanceStarted(instanceInfo.id)
-	backoffEntry := nodeAgent.crashLoopBackoffs[instanceInfo.id]
+// start (bad entrypoint, missing binary) as an attempt followed by an exit:
+// processError (runc's `exec: "…": …`) is the exit reason and the retry waits
+// out the back-off (M238). The reset decision uses the previous start, so a
+// failure after a long stable run waits the base delay again.
+func (nodeAgent *Agent) recordInstanceStartFailure(ctx context.Context, instanceInfo placedInstanceInfo, processError string) {
+	backoffEntry := nodeAgent.ensureCrashLoopBackoffEntry(instanceInfo.id)
+	nodeAgent.publishExitReason(ctx, instanceInfo.id, processError)
+	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, processError)
 	backoffEntry.startFailed = true
-	nodeAgent.publishExitReason(ctx, instanceInfo.id, startErrorReason)
-	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, "start failed: "+startErrorReason)
+	backoffEntry.lastStartedAt = time.Now()
 }
 
 // beginCrashLoopWait counts an exit described by exitDescription, starts the
@@ -141,14 +143,21 @@ func describeContainerExit(runtimeStatus runtime.Status) string {
 // recordInstanceStarted notes that the runtime started the instance's container
 // now: the back-off wait is over and the stable-run period begins.
 func (nodeAgent *Agent) recordInstanceStarted(instanceID string) {
+	backoffEntry := nodeAgent.ensureCrashLoopBackoffEntry(instanceID)
+	backoffEntry.waiting = false
+	backoffEntry.startFailed = false
+	backoffEntry.lastStartedAt = time.Now()
+}
+
+// ensureCrashLoopBackoffEntry returns the back-off entry of an instance,
+// creating an empty one when the agent does not track it yet.
+func (nodeAgent *Agent) ensureCrashLoopBackoffEntry(instanceID string) *crashLoopBackoffEntry {
 	backoffEntry, isTracked := nodeAgent.crashLoopBackoffs[instanceID]
 	if !isTracked {
 		backoffEntry = &crashLoopBackoffEntry{}
 		nodeAgent.crashLoopBackoffs[instanceID] = backoffEntry
 	}
-	backoffEntry.waiting = false
-	backoffEntry.startFailed = false
-	backoffEntry.lastStartedAt = time.Now()
+	return backoffEntry
 }
 
 // incrementRestartCountInStore adds one to observed/instance/{id}/restarts.

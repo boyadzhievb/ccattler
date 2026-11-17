@@ -482,29 +482,49 @@ const (
 	// containerdTaskPhaseStart names the task Start step (runc start) in a start error.
 	containerdTaskPhaseStart = "start task"
 
-	// runcProcessExecFailureMarker is the text runc reports when it cannot exec
-	// the workload's process (missing or non-executable entrypoint); other
-	// container init failures follow "unable to start container process: " with
-	// "error during container init" instead (verified with runc 1.1.15).
-	runcProcessExecFailureMarker = "unable to start container process: exec: "
+	// runcStartProcessFailurePrefix starts every runc failure to start the
+	// container process, the workload's own and container init failures alike.
+	runcStartProcessFailurePrefix = "unable to start container process: "
+
+	// runcContainerInitPrefix follows runcStartProcessFailurePrefix for failures
+	// inside container init; runc 1.4 puts it before an exec failure too.
+	runcContainerInitPrefix = "error during container init: "
+
+	// runcExecFailurePrefix starts runc's description of a failed exec of the
+	// workload's process: `exec: "/no/such/binary": stat …` (runc 1.1.15, 1.4.0).
+	runcExecFailurePrefix = `exec: "`
+
+	// containerdUnknownCodeSuffix is the gRPC code containerd appends to a runc error.
+	containerdUnknownCodeSuffix = ": unknown"
 )
 
 // newContainerdTaskStartError builds the start error of a failed containerd task
 // step and marks it ProcessFailed when runc could not exec the workload's
 // process, so the agent backs off in place instead of replacing it (M238).
 func newContainerdTaskStartError(instanceID string, taskPhase string, taskError error) *StartError {
+	processError, isProcessFailure := extractRuncProcessExecFailure(taskError)
 	return &StartError{
 		ID:            instanceID,
 		Reason:        fmt.Sprintf("%s: %v", taskPhase, taskError),
-		ProcessFailed: isRuncProcessExecFailure(taskError),
+		ProcessFailed: isProcessFailure,
+		ProcessError:  processError,
 	}
 }
 
-// isRuncProcessExecFailure reports whether a containerd task error says runc
-// could not exec the workload's process, as opposed to a cgroup, seccomp,
-// mount, namespace or shim failure, which is not the workload's own.
-func isRuncProcessExecFailure(taskError error) bool {
-	return strings.Contains(taskError.Error(), runcProcessExecFailureMarker)
+// extractRuncProcessExecFailure reports whether a containerd task error says
+// runc could not exec the workload's process (not a cgroup, seccomp, mount,
+// namespace or shim failure) and returns runc's "exec: …" part of it: the
+// start prefix, an optional container init prefix, then `exec: "`.
+func extractRuncProcessExecFailure(taskError error) (string, bool) {
+	_, afterStartPrefix, hasStartPrefix := strings.Cut(taskError.Error(), runcStartProcessFailurePrefix)
+	if !hasStartPrefix {
+		return "", false
+	}
+	processError := strings.TrimPrefix(afterStartPrefix, runcContainerInitPrefix)
+	if !strings.HasPrefix(processError, runcExecFailurePrefix) {
+		return "", false
+	}
+	return strings.TrimSuffix(processError, containerdUnknownCodeSuffix), true
 }
 
 // containerBaseSpecOptions returns the options every main and init container

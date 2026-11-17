@@ -970,7 +970,7 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 // counts as an attempt (handleInstanceStartError for a failed start).
 func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, runtimeSpec runtime.Spec) bool {
 	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
-		return nodeAgent.handleInstanceStartError(ctx, instanceInfo, image, startError)
+		return nodeAgent.handleInstanceStartError(ctx, instanceInfo, image, configHashBeforeBuild, startError)
 	}
 
 	nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
@@ -999,18 +999,16 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "running")
 	}
 	nodeAgent.publishInstanceImage(ctx, instanceInfo.id, image)
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id), []byte(configHashBeforeBuild)); putError != nil {
-		logging.Default().Error("failed to write config hash", "instance", instanceInfo.id, "error", putError.Error())
-	}
+	nodeAgent.publishInstanceConfigHash(ctx, instanceInfo.id, configHashBeforeBuild)
 	nodeAgent.recordInstanceStarted(instanceInfo.id)
 	return true
 }
 
-// handleInstanceStartError revokes the instance's secret API token and records
-// a failed start. A workload process that could not start is recorded as an
-// exit with back-off and counts as an attempt (Flow 33, M238); any other start
-// error is published failed, for the failure controller to replace the instance.
-func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceInfo placedInstanceInfo, image string, startError error) bool {
+// handleInstanceStartError revokes the secret API token and records a failed
+// start. A process that could not start is an exit with back-off, an attempt
+// with the config it was built from (Flow 33, M238); any other start error is
+// published failed, for the failure controller to replace the instance.
+func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, startError error) bool {
 	logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
 	if nodeAgent.secretAPIServer != nil {
 		nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
@@ -1018,12 +1016,26 @@ func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceIn
 	nodeAgent.publishInstanceImage(ctx, instanceInfo.id, image)
 	var runtimeStartError *runtime.StartError
 	if errors.As(startError, &runtimeStartError) && runtimeStartError.ProcessFailed {
-		nodeAgent.recordInstanceStartFailure(ctx, instanceInfo, runtimeStartError.Reason)
+		// The stored hash is what a config change during the wait is compared with.
+		nodeAgent.publishInstanceConfigHash(ctx, instanceInfo.id, configHashBeforeBuild)
+		processError := runtimeStartError.ProcessError
+		if processError == "" {
+			processError = runtimeStartError.Reason
+		}
+		nodeAgent.recordInstanceStartFailure(ctx, instanceInfo, processError)
 		return true
 	}
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed, "")
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
 	return false
+}
+
+// publishInstanceConfigHash writes observed/instance/{id}/config-hash, the hash
+// of the config the instance was last started (or tried) with (Flow 16).
+func (nodeAgent *Agent) publishInstanceConfigHash(ctx context.Context, instanceID string, configHash string) {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceID), []byte(configHash)); putError != nil {
+		logging.Default().Error("failed to write config hash", "instance", instanceID, "error", putError.Error())
+	}
 }
 
 // publishInstanceImage writes observed/instance/{id}/image, the image the

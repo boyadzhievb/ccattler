@@ -391,7 +391,7 @@ The pull-status fact is queryable: `cca watch pull-status/` shows all active pul
 
 When a container crashes immediately after starting, the failure controller replaces it. If the replacement also crashes, this loops at full speed — thousands of container starts per hour. Crash loop backoff breaks this cycle.
 
-Since M233 ([Flow 33](#flow-33-in-place-restart-with-back-off-m233)) a container that exits after a successful start is restarted in place by the agent with its own back-off and shown as `crash-loop-backoff`; this flow covers instances that become `failed` (start errors, failed probes, failed nodes).
+Since M233 ([Flow 33](#flow-33-in-place-restart-with-back-off-m233)) a container that exits after a successful start is restarted in place by the agent with its own back-off and shown as `crash-loop-backoff`, and since M238 so is one that exits at once or whose process cannot start; this flow covers instances that become `failed` (infrastructure start errors only — image, network, container creation —, failed probes, failed nodes).
 
 ### Mechanism
 
@@ -519,7 +519,7 @@ Resource limits (`--cpus`, `--memory`) are already passed to `nerdctl run` via `
 3. ContainerRuntime.Status() parses all three fields:
    - ExitCode → Status.ExitCode
    - OOMKilled → Status.Error = "OOMKilled"
-4. Agent sees ExitCode != 0 on an exited container → publishes crash-loop-backoff and the exit reason (Flow 33); observeInstanceState reports InstanceFailed only when a start fails
+4. Agent sees ExitCode != 0 on an exited container → publishes crash-loop-backoff and the exit reason (Flow 33); the agent never publishes failed from observing a container (M238)
 5. Agent publishes exit-reason fact:
    observed/instance/{id}/exit-reason = "OOMKilled" | "exit(N)"
 6. cca get instances shows the reason in the STATUS column
@@ -1713,12 +1713,17 @@ agent reconcile cycle, instance placed here, container missing or not running:
       → the next cycle finds it exited and handles it as "a new exit" above
 
   process could not start (M238): Start returns a StartError with ProcessFailed
-      (containerd: runc reports "unable to start container process: exec: …" from
-       create task or start task — missing or non-executable entrypoint; containerd has
-       already removed the container and its network)
-      → recordInstanceStartFailure: lastStartedAt = now, entry.startFailed = true,
-        PUT exit-reason = the start error, then the same wait as "a new exit":
-        state crash-loop-backoff, status-reason "start failed: create task: …; restarting in 10s"
+      (containerd: runc reports "unable to start container process: [error during
+       container init: ]exec: \"…" from create task or start task (runc 1.1 / 1.4) —
+       missing or non-executable entrypoint; containerd has already removed the
+       container and its network; StartError.ProcessError = runc's `exec: "…": …` part)
+      → PUT config-hash = hash the start was built from (Flow 16: a config change during
+        the wait ends it, an unchanged config does not)
+      → recordInstanceStartFailure: PUT exit-reason = ProcessError, then the same wait as
+        "a new exit" (reset decided from the previous lastStartedAt): state
+        crash-loop-backoff, status-reason `exec: "/x": stat /x: no such file or directory;
+        restarting in 10s`; then lastStartedAt = now, entry.startFailed = true
+        (the full containerd error is in the agent log only)
       → container missing but entry.startFailed: treated as "exited, waiting" (no restart
         before retryAfter); the retry counts as a restart (restarts += 1) whether or not
         its process starts this time
@@ -1731,7 +1736,7 @@ instance no longer placed here → entry dropped with the stale-instance cleanup
 
 - The back-off lives in agent memory (`crashLoopBackoffs`); an agent restart loses it, the count in the store survives.
 - `crash-loop-backoff` is not `failed`: `findInstancesPlacedOnThisNode` keeps the instance desired, the failure controller does not act on it, the endpoint controller removes its endpoint (not `running`). A node failure still marks it `failed` (node failure controller), a drain still evicts it, a rollout can stop it, `cca restart` restarts it.
-- A failed `Start` that is not the workload's own (image not found, CNI, netns, create container, other task failures such as cgroup, seccomp, mounts or the shim; `ProcessFailed` false) publishes `failed` as before (the failure controller replaces it, Flow 15), possibly on another node. Only containerd sets `ProcessFailed` (`isRuncProcessExecFailure`); start errors of the process and nerdctl runtimes stay `failed`.
+- A failed `Start` that is not the workload's own (image not found, CNI, netns, create container, other task failures such as cgroup, seccomp, mounts or the shim; `ProcessFailed` false) publishes `failed` as before (the failure controller replaces it, Flow 15), possibly on another node. Only containerd sets `ProcessFailed` (`extractRuncProcessExecFailure`); start errors of the process and nerdctl runtimes stay `failed`.
 - The agent never publishes `failed` from observing a container (start path or running path, M238): an exited container always reaches the back-off in place.
 - The base, maximum and reset durations are agent fields set from `crashLoopBaseDelay`, `crashLoopMaxDelay`, `crashLoopResetPeriod`; tests set short values.
 - The same `backoff.Delay` formula serves the image pull back-off (Flow 14 states) and the failure controller's replacement delay.

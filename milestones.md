@@ -749,6 +749,7 @@ Found during the M210 review (2026-11-12): agents read an instance's image only 
 - [ ] Failing test first: a job with no same-named service runs to completion on an agent (integration with the process or container runtime, not only the simulator)
 - [ ] Agent resolves job instances (typed reference from M211) from `desired/job/{name}/…`: image, command, pull secret, completion reporting
 - [ ] Deploy-cluster check: a one-shot job and a cronjob complete; add to the Deploy Testbed workloads
+- [ ] Exempt job instances from Flow 33 (M238 review, B2): since M233/M238 the agent restarts every exited container in place and never publishes `failed` from an observation, so a job instance would loop forever; job instances must report terminal states (`succeeded`/`failed`) instead. Flow 21 in `design/runtime-invariant-flows.md` is stale on this
 
 ### Phase 213 — VIP Pool Allocation (M213)
 

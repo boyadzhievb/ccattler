@@ -361,6 +361,7 @@ type StartError struct {
 	ID            string // ID is the workload identifier that failed to start.
 	Reason        string // Reason is a human-readable description of why the start failed.
 	ProcessFailed bool   // ProcessFailed is true when the runtime could not exec the workload's process (bad entrypoint, missing binary); the agent then backs off in place.
+	ProcessError  string // ProcessError is the runtime's short description of why the process could not start (runc's `exec: "…": …`), shown as the exit reason; may be empty.
 }
 
 // Error returns a formatted error string including the workload ID and failure reason.

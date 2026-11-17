@@ -114,6 +114,14 @@ func (crashRuntime *crashingRuntime) exitAfterNextListing(instanceID string) {
 	crashRuntime.exitAfterListing[instanceID] = true
 }
 
+// failStartsWith makes every following start fail with startError; nil lets
+// starts succeed again.
+func (crashRuntime *crashingRuntime) failStartsWith(startError *runtime.StartError) {
+	crashRuntime.mutex.Lock()
+	defer crashRuntime.mutex.Unlock()
+	crashRuntime.failingStartError = startError
+}
+
 // startsOf returns a copy of the start times of one instance.
 func (crashRuntime *crashingRuntime) startsOf(instanceID string) []time.Time {
 	crashRuntime.mutex.Lock()

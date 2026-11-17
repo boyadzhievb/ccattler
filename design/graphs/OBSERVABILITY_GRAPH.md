@@ -605,7 +605,8 @@ CREATE / ROTATE
     │   its log rotates to .previous on the next start → `cca logs --previous` shows it
     └── process could not start (runc exec failure in create/start task, ProcessFailed)
         → no process ran, the log stays empty and is not rotated → --previous shows
-          the run before, if any (the start error is in exit-reason / status-reason)
+          the run before, if any (runc's `exec: "…": …` is the exit-reason and starts the
+          status-reason; the full containerd error is in the agent log)
 
 STOP — directory KEPT (removeContainerResources :863 forgets tracking only)
 ├── Stop / StopWithGracePeriod                      :771 / :807

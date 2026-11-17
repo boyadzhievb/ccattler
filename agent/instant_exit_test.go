@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/store"
@@ -81,26 +82,35 @@ func assertStateFailedNeverWritten(t *testing.T, recordingStore *stateWriteRecor
 }
 
 // processStartErrorReason is the start error of a workload whose entrypoint
-// does not exist, as the containerd runtime reports it with runc 1.1.15.
-const processStartErrorReason = `create task: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: exec: "/no/such/binary": stat /no/such/binary: no such file or directory: unknown`
+// does not exist, as the containerd runtime reports it with runc 1.4.0.
+const processStartErrorReason = `create task: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "/no/such/binary": stat /no/such/binary: no such file or directory`
+
+// processStartExecError is runc's part of processStartErrorReason, the exit
+// reason the user sees (M238 N5).
+const processStartExecError = `exec: "/no/such/binary": stat /no/such/binary: no such file or directory`
+
+// newProcessStartError returns the StartError of a missing entrypoint.
+func newProcessStartError() *runtime.StartError {
+	return &runtime.StartError{Reason: processStartErrorReason, ProcessFailed: true, ProcessError: processStartExecError}
+}
 
 // TestAgentBacksOffProcessStartFailureInPlace checks that a start whose
 // workload process cannot start (StartError with ProcessFailed) is retried in
-// place after the back-off, counted, shown as crash-loop-backoff with the start
-// error as the reason, and never published failed (spec instance-restart, M238).
+// place after the back-off, counted, shown as crash-loop-backoff with runc's
+// exec error as the reason, and never published failed (instance-restart, M238).
 func TestAgentBacksOffProcessStartFailureInPlace(t *testing.T) {
 	recordingStore := newStateWriteRecordingStore(t, "nobinary1")
 	crashRuntime := newCrashingRuntime()
-	crashRuntime.failingStartError = &runtime.StartError{Reason: processStartErrorReason, ProcessFailed: true}
+	crashRuntime.failingStartError = newProcessStartError()
 	_, factStore, ctx := startCrashLoopTestAgentOnStore(t, recordingStore, "nobinary1", crashLoopTestBaseDelay, crashRuntime)
 
-	wantReason := "start failed: " + processStartErrorReason + "; restarting in " + (2 * crashLoopTestBaseDelay).String()
+	wantReason := processStartExecError + "; restarting in " + (2 * crashLoopTestBaseDelay).String()
 	waitFor(t, crashLoopTestTimeout, "second failed start waiting in crash-loop-backoff with one restart counted", func() bool {
 		return len(crashRuntime.startsOf("nobinary1")) >= 2 &&
 			readFactValue(ctx, factStore, types.KeyObservedInstanceStatusReason("nobinary1")) == wantReason &&
 			readFactValue(ctx, factStore, types.KeyObservedInstanceState("nobinary1")) == string(types.InstanceCrashLoopBackoff) &&
 			readFactValue(ctx, factStore, types.KeyObservedInstanceRestarts("nobinary1")) == "1" &&
-			readFactValue(ctx, factStore, types.KeyObservedInstanceExitReason("nobinary1")) == processStartErrorReason
+			readFactValue(ctx, factStore, types.KeyObservedInstanceExitReason("nobinary1")) == processStartExecError
 	})
 	startTimes := crashRuntime.startsOf("nobinary1")
 	if gap := startTimes[1].Sub(startTimes[0]); gap < crashLoopTestBaseDelay {
@@ -149,4 +159,75 @@ func TestAgentRunningPathRaceDoesNotPublishFailed(t *testing.T) {
 			readFactValue(ctx, factStore, types.KeyObservedInstanceState("race1")) == string(types.InstanceRunning)
 	})
 	assertStateFailedNeverWritten(t, recordingStore, "a container that exited between List and Status")
+}
+
+// TestAgentBacksOffProcessStartFailureAfterConfigChange checks that a config
+// change whose restart cannot start the process still backs off with a growing
+// wait: the failed start's config hash is stored, so the wait does not end on
+// every cycle (M238 rework B1).
+func TestAgentBacksOffProcessStartFailureAfterConfigChange(t *testing.T) {
+	crashRuntime := newCrashingRuntime()
+	crashRuntime.stableFromStartNumber = 1 // the first start runs on
+	_, factStore, ctx := startCrashLoopTestAgent(t, "cfgfail1", crashLoopTestBaseDelay, crashRuntime)
+
+	waitFor(t, crashLoopTestTimeout, "instance running", func() bool {
+		return readFactValue(ctx, factStore, types.KeyObservedInstanceState("cfgfail1")) == string(types.InstanceRunning)
+	})
+	startsBeforeChange := len(crashRuntime.startsOf("cfgfail1"))
+	crashRuntime.failStartsWith(newProcessStartError())
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.new.local"))
+
+	waitFor(t, crashLoopTestTimeout, "three failed starts after the config change", func() bool {
+		return len(crashRuntime.startsOf("cfgfail1")) >= startsBeforeChange+3
+	})
+	failedStartTimes := crashRuntime.startsOf("cfgfail1")[startsBeforeChange:]
+	if gap := failedStartTimes[1].Sub(failedStartTimes[0]); gap < crashLoopTestBaseDelay {
+		t.Errorf("second failed start came %v after the first, want at least the base delay %v", gap, crashLoopTestBaseDelay)
+	}
+	if gap := failedStartTimes[2].Sub(failedStartTimes[1]); gap < 2*crashLoopTestBaseDelay {
+		t.Errorf("third failed start came %v after the second, want at least twice the base delay %v", gap, 2*crashLoopTestBaseDelay)
+	}
+}
+
+// TestAgentRestartsAtOnceOnConfigFixAfterFirstStartFailure checks that when
+// the very first start cannot start the process, a config change ends the
+// back-off wait at once (M238 rework B1).
+func TestAgentRestartsAtOnceOnConfigFixAfterFirstStartFailure(t *testing.T) {
+	crashRuntime := newCrashingRuntime()
+	crashRuntime.stableFromStartNumber = 1 // once starts succeed, the workload runs on
+	crashRuntime.failingStartError = newProcessStartError()
+	_, factStore, ctx := startCrashLoopTestAgent(t, "firstfail1", crashLoopLongBaseDelay, crashRuntime)
+
+	waitFor(t, crashLoopTestTimeout, "first start failed, waiting in crash-loop-backoff", func() bool {
+		return len(crashRuntime.startsOf("firstfail1")) == 1 &&
+			readFactValue(ctx, factStore, types.KeyObservedInstanceState("firstfail1")) == string(types.InstanceCrashLoopBackoff)
+	})
+	crashRuntime.failStartsWith(nil)
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.fixed.local"))
+
+	waitFor(t, crashLoopTestTimeout, "instance running after the config fix, without waiting out the back-off", func() bool {
+		return len(crashRuntime.startsOf("firstfail1")) >= 2 &&
+			readFactValue(ctx, factStore, types.KeyObservedInstanceState("firstfail1")) == string(types.InstanceRunning)
+	})
+}
+
+// TestAgentResetsBackoffForStartFailureAfterStableRun checks that a start that
+// cannot start the process after a run longer than the reset period waits the
+// base delay again, not a wait grown by the exits before that run (M238 rework N2).
+func TestAgentResetsBackoffForStartFailureAfterStableRun(t *testing.T) {
+	crashRuntime := newCrashingRuntime()
+	crashRuntime.stableFromStartNumber = 3 // two crashes, then the third start runs on
+	_, factStore, ctx := startCrashLoopTestAgent(t, "stablefail1", crashLoopTestBaseDelay, crashRuntime)
+
+	waitFor(t, crashLoopTestTimeout, "third start ran longer than the reset period", func() bool {
+		startTimes := crashRuntime.startsOf("stablefail1")
+		return len(startTimes) >= 3 && time.Since(startTimes[2]) > 2*crashLoopTestResetPeriod
+	})
+	crashRuntime.failStartsWith(newProcessStartError())
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.new.local"))
+
+	wantReason := processStartExecError + "; restarting in " + crashLoopTestBaseDelay.String()
+	waitFor(t, crashLoopTestTimeout, "failed start after the stable run waits the base delay", func() bool {
+		return readFactValue(ctx, factStore, types.KeyObservedInstanceStatusReason("stablefail1")) == wantReason
+	})
 }
