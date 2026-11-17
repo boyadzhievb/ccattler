@@ -36,3 +36,14 @@ When a start fails because the workload's own process could not be started (the 
 - **WHEN** the agent observes the exited status on that cycle
 - **THEN** it does not publish `failed`; the next cycle restarts it in place with back-off
 - Test: `TestAgentRunningPathRaceDoesNotPublishFailed`
+
+#### Scenario: A crash-looping new image rolls back
+- **GIVEN** a rolling update with a previous image whose new-image instances are in `crash-loop-backoff` with at least 3 restarts each, at least 3 of them
+- **WHEN** the rollout controller reconciles
+- **THEN** it reverts the desired image to the previous one, as for failed new-image instances; fewer restarts do not
+- Test: `TestRolloutRollsBackWhenNewImageCrashLoops`, `TestRolloutDoesNotRollBackForFewCrashLoopRestarts`
+
+#### Scenario: Health summaries show crash-looping instances
+- **WHEN** some instances are in `crash-loop-backoff`
+- **THEN** the RUNTIME HEALTH summary of `cca status` and the e2e health check count them on their own as unhealthy, not as failed and not dropped
+- Test: `TestStatusTextCountsCrashLoopBackoffInRuntimeHealth`

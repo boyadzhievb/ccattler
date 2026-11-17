@@ -28,6 +28,12 @@ After a `create task` failure no task exists, so a kept container would report "
 ### D4. The running path never publishes `failed` from a lost race (added)
 Found by the lead-developer: in `executeReconciliationCycle`, a container that `List` reported running but that exits before `observeInstanceState` is published `failed` — another way around Flow 33. The running path publishes the exit as `starting`-equivalent no-op (no `failed`, no exit reason) and leaves it to the next cycle, where the container is seen exited and Flow 33 records it. Test: `TestAgentRunningPathRaceDoesNotPublishFailed`.
 
+### D5. A crash-looping new image counts toward rollout auto-rollback (added, user decision 2026-11-17)
+The rollout controller counted only `failed` new-image instances toward the rollback threshold, so a crash-looping new image stalled the rollout forever; `isInstanceFailedForRollout` (controllers/rollout.go) now also counts `crash-loop-backoff` with `observed/instance/{id}/restarts` ≥ `rolloutCrashLoopRestartThreshold` (3), for the rollback threshold and for old-image `currentUnavailable` in `buildOldInstanceStopChanges`. Tests: `TestRolloutRollsBackWhenNewImageCrashLoops`, `TestRolloutDoesNotRollBackForFewCrashLoopRestarts`, `TestRolloutCountsCrashLoopingOldInstancesAsUnavailable`.
+
+### D6. Health summaries show crash-loop-backoff (added, user decision 2026-11-17)
+The RUNTIME HEALTH summary of `cca status` (`renderRuntimeHealthSummary`, cmd/cca/command_server.go) and Check 6 of test/e2e/health_check.sh count `crash-loop-backoff` on its own as unhealthy, not merged into failed. Test: `TestStatusTextCountsCrashLoopBackoffInRuntimeHealth`.
+
 ## Risks / Trade-offs
 
 Failure cases and what happens:

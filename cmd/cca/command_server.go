@@ -1409,24 +1409,7 @@ func renderStatusText(statusData clusterStatusResponse, instanceStates []string)
 			node.AvailableMemory, node.CapacityMemory)
 	}
 
-	// Render runtime health summary counting all instances including stopped.
-	var runningTotal, pendingTotal, failedTotal, stoppedTotal int
-	for _, instanceState := range instanceStates {
-		switch types.InstanceState(instanceState) {
-		case types.InstanceRunning:
-			runningTotal++
-		case types.InstancePending:
-			pendingTotal++
-		case types.InstanceFailed:
-			failedTotal++
-		case types.InstanceStopped:
-			stoppedTotal++
-		}
-	}
-	textBuilder.WriteByte('\n')
-	textBuilder.WriteString("RUNTIME HEALTH\n")
-	fmt.Fprintf(&textBuilder, "  Containers:  %d running, %d pending, %d failed, %d stopped\n",
-		runningTotal, pendingTotal, failedTotal, stoppedTotal)
+	renderRuntimeHealthSummary(&textBuilder, instanceStates)
 
 	// Render networking section if VIPs exist.
 	if len(statusData.Networking) > 0 {
@@ -1461,4 +1444,29 @@ func renderStatusText(statusData clusterStatusResponse, instanceStates []string)
 	}
 
 	return textBuilder.String()
+}
+
+// renderRuntimeHealthSummary writes the RUNTIME HEALTH section, counting all
+// instances including stopped ones. Crash-looping instances are unhealthy but
+// not failed, so they have their own count (Flow 33, M238 D6).
+func renderRuntimeHealthSummary(textBuilder *strings.Builder, instanceStates []string) {
+	var runningTotal, pendingTotal, failedTotal, crashLoopTotal, stoppedTotal int
+	for _, instanceState := range instanceStates {
+		switch types.InstanceState(instanceState) {
+		case types.InstanceRunning:
+			runningTotal++
+		case types.InstancePending:
+			pendingTotal++
+		case types.InstanceFailed:
+			failedTotal++
+		case types.InstanceCrashLoopBackoff:
+			crashLoopTotal++
+		case types.InstanceStopped:
+			stoppedTotal++
+		}
+	}
+	textBuilder.WriteByte('\n')
+	textBuilder.WriteString("RUNTIME HEALTH\n")
+	fmt.Fprintf(textBuilder, "  Containers:  %d running, %d pending, %d failed, %d crash-loop-backoff, %d stopped\n",
+		runningTotal, pendingTotal, failedTotal, crashLoopTotal, stoppedTotal)
 }

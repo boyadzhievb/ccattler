@@ -264,12 +264,22 @@ if [[ -n "$STATUS_JSON" ]]; then
     total_instances=$(echo "$STATUS_JSON" | jq '.instances | length')
     running_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.state == "running")] | length')
     failed_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.state == "failed")] | length')
+    # Crash-looping instances are restarted in place, never failed (Flow 33, M238 D6).
+    crash_loop_instances=$(echo "$STATUS_JSON" \
+        | jq '[.instances[] | select(.state == "crash-loop-backoff")] | length')
 
-    log "  Total: $total_instances, Running: $running_instances, Failed: $failed_instances"
+    log "  Total: $total_instances, Running: $running_instances, Failed: $failed_instances," \
+        "Crash-loop-backoff: $crash_loop_instances"
 
     if [[ "$failed_instances" -gt 0 ]]; then
         warn "$failed_instances instance(s) in failed state"
         echo "$STATUS_JSON" | jq -r '.instances[] | select(.state == "failed") | "    \(.id) (\(.service)) on \(.node)"'
+    fi
+
+    if [[ "$crash_loop_instances" -gt 0 ]]; then
+        warn "$crash_loop_instances instance(s) in crash-loop-backoff"
+        echo "$STATUS_JSON" | jq -r '.instances[] | select(.state == "crash-loop-backoff")
+            | "    \(.id) (\(.service)) on \(.node): \(.status_reason // "")"'
     fi
 
     unhealthy_filter='[.instances[] | select(.health != null and .health != "" and .health != "healthy" and .health != "-")] | length'

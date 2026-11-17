@@ -282,3 +282,94 @@ func TestRolloutPausedSkipsStops(t *testing.T) {
 		}
 	}
 }
+
+// buildCrashLoopingRolloutFacts returns a rolling "web" service (previous image
+// nginx:1.27) with one old-image instance running and three new-image instances
+// in crash-loop-backoff with the given restart count.
+func buildCrashLoopingRolloutFacts(newInstanceRestarts string) []store.Fact {
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyObservedInstanceState("old-1"), Value: []byte(types.InstanceRunning)},
+		{Key: types.KeyObservedInstanceService("old-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("old-1"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyDerivedServiceRolloutState("web"), Value: []byte("rolling")},
+		{Key: types.KeyDerivedServiceRolloutImage("web"), Value: []byte("nginx:1.27")},
+	}
+	for _, newInstanceID := range []string{"new-1", "new-2", "new-3"} {
+		inputFacts = append(inputFacts,
+			store.Fact{Key: types.KeyObservedInstanceState(newInstanceID), Value: []byte(types.InstanceCrashLoopBackoff)},
+			store.Fact{Key: types.KeyObservedInstanceService(newInstanceID), Value: []byte("web")},
+			store.Fact{Key: types.KeyObservedInstanceImage(newInstanceID), Value: []byte("nginx:1.28")},
+			store.Fact{Key: types.KeyObservedInstanceRestarts(newInstanceID), Value: []byte(newInstanceRestarts)},
+		)
+	}
+	store.SortFacts(inputFacts)
+	return inputFacts
+}
+
+// hasRollbackChange reports whether changes revert web's desired image to nginx:1.27.
+func hasRollbackChange(proposedChanges []Change) bool {
+	for _, change := range proposedChanges {
+		if change.Key == types.KeyDesiredServiceImage("web") && string(change.Value) == "nginx:1.27" {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRolloutRollsBackWhenNewImageCrashLoops checks that new-image instances
+// in crash-loop-backoff with at least rolloutCrashLoopRestartThreshold restarts
+// count toward the auto-rollback threshold like failed ones (M238 D5).
+func TestRolloutRollsBackWhenNewImageCrashLoops(t *testing.T) {
+	proposedChanges, reconcileError := NewRolloutController().Reconcile(context.Background(), buildCrashLoopingRolloutFacts("3"))
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+	if !hasRollbackChange(proposedChanges) {
+		t.Errorf("no rollback for three crash-looping new-image instances with 3 restarts; changes: %v", proposedChanges)
+	}
+}
+
+// TestRolloutDoesNotRollBackForFewCrashLoopRestarts checks that crash-looping
+// new-image instances below the restart threshold do not trigger a rollback (M238 D5).
+func TestRolloutDoesNotRollBackForFewCrashLoopRestarts(t *testing.T) {
+	proposedChanges, reconcileError := NewRolloutController().Reconcile(context.Background(), buildCrashLoopingRolloutFacts("2"))
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+	if hasRollbackChange(proposedChanges) {
+		t.Errorf("rollback for crash-looping new-image instances with only 2 restarts; changes: %v", proposedChanges)
+	}
+}
+
+// TestRolloutCountsCrashLoopingOldInstancesAsUnavailable checks that an
+// old-image instance crash-looping past the restart threshold uses up
+// max_unavailable, so no further old instance is stopped (M238 D5).
+func TestRolloutCountsCrashLoopingOldInstancesAsUnavailable(t *testing.T) {
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDerivedServiceRolloutState("web"), Value: []byte("rolling")},
+		{Key: types.KeyDerivedServiceRolloutImage("web"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyObservedInstanceState("old-1"), Value: []byte(types.InstanceRunning)},
+		{Key: types.KeyObservedInstanceService("old-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("old-1"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyObservedInstanceState("old-2"), Value: []byte(types.InstanceCrashLoopBackoff)},
+		{Key: types.KeyObservedInstanceService("old-2"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("old-2"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyObservedInstanceRestarts("old-2"), Value: []byte("5")},
+		{Key: types.KeyObservedInstanceState("new-1"), Value: []byte(types.InstanceRunning)},
+		{Key: types.KeyObservedInstanceService("new-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("new-1"), Value: []byte("nginx:1.28")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := NewRolloutController().Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			t.Errorf("old instance stopped although the crash-looping one uses up max_unavailable 1: %v", change)
+		}
+	}
+}

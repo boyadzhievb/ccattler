@@ -47,6 +47,24 @@ func putStatusFixtureFacts(t *testing.T, factStore store.StateStore) {
 	}
 }
 
+// TestStatusTextCountsCrashLoopBackoffInRuntimeHealth checks that the RUNTIME
+// HEALTH summary shows crash-looping instances on their own, not as failed and
+// not dropped (M238 D6).
+func TestStatusTextCountsCrashLoopBackoffInRuntimeHealth(t *testing.T) {
+	instanceStates := []string{
+		string(types.InstanceRunning),
+		string(types.InstanceCrashLoopBackoff),
+		string(types.InstanceCrashLoopBackoff),
+		string(types.InstanceFailed),
+		string(types.InstanceStopped),
+	}
+	statusText := renderStatusText(clusterStatusResponse{}, instanceStates)
+	wantSummary := "Containers:  1 running, 0 pending, 1 failed, 2 crash-loop-backoff, 1 stopped"
+	if !strings.Contains(statusText, wantSummary) {
+		t.Errorf("runtime health summary lacks %q:\n%s", wantSummary, statusText)
+	}
+}
+
 // TestStatusTextThroughAPIMatchesInProcessText checks that rendering the
 // /api/status?all=true JSON gives the same text the in-process builder
 // printed before `cca status` moved to the API (task 3.2: same layout).
