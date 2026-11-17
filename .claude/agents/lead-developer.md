@@ -8,6 +8,7 @@ tools:
   - Read
   - Edit
   - Write
+  - Skill
 ---
 
 # CCattler Lead Developer Agent
