@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.89.0-beta <Badge type="tip" text="latest" /> {#v1-89-0-beta}
+## v1.90.0-beta <Badge type="tip" text="latest" /> {#v1-90-0-beta}
+
+**2026-11-17** — A Restart Deletes the Previous Container Log.
+
+- **A Restart Deletes the Previous Container Log** (M234) — Bug fix (found in M232): restarting an exited container deleted its log directory, so `cca logs` never showed why it exited. The previous run's log now survives a restart.
+
+---
+
+## v1.89.0-beta {#v1-89-0-beta}
 
 **2026-11-16** — Crash-Looping Containers Restart Without Back-off or Count.
 

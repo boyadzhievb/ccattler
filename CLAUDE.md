@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M233 — Crash-Looping Containers Restart Without Back-off or Count (v1.89.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M234 — A Restart Deletes the Previous Container Log (v1.90.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
