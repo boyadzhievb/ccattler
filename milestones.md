@@ -531,7 +531,7 @@ Found in the M235 security audit (2026-11-16), verified in the code: `computeSer
 - a connection reference that lands after the agent's scan (an apply still writing, M235's race) starts the container without its connection file, and nothing restarts it
 Flow 16 says "secrets — any change triggers restart"; in fact a new secret *value* (`cca secret set`) never restarts an instance either.
 
-To be proposed as an OpenSpec change when work starts. Open question for the user: should a changed secret value restart instances (Nomad template restart) or not (Kubernetes: mounted secrets update in place, env-var secrets need a restart)? Connection facts in the hash is the clear part.
+OpenSpec change: [`connection-and-secret-value-reload`](openspec/changes/connection-and-secret-value-reload/). Decided 2026-11-17: a changed secret value restarts its consumers (option 1), through a server-side value generation, never a digest; progressive replacement for all config changes split off to M239 (option A).
 
 ### Phase 235 — Instance Starts Without Secrets Applied Moments Later (M235, bug)
 
@@ -551,6 +551,10 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 - each in-place restart creates a new network namespace and CNI `host-local` gives it the next IP, so probe messages and endpoints refer to an IP from an earlier attempt (seen as probe `10.92.128.130` vs instance `10.92.128.140`)
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
+
+### Phase 239 — Config Changes Roll Out Progressively (M239)
+
+Split from M236 (user decision 2026-11-17, option A). Today every config change (env vars, config files, secret grants; with M236 also connections and secret values) restarts instances through the agent-local hash check (Flow 16, M235): each agent restarts its instances as soon as it sees the change, so **all replicas of a service restart at once**, with no availability guard. Only image changes go through the rollout controller (`derived/service/{svc}/rollout/*`, `maxUnavailable`). Wanted (user's requirements for secret rotation, M236 discussion): a config revision per service (like Kubernetes' pod template hash) that the rollout controller rolls out progressively within `maxUnavailable`; a failed replacement is not reported as converged; single-instance services restart (documented downtime). The hash calculation stays separate from the rollout mechanism. To be proposed as an OpenSpec change when work starts; needs a design with failure analysis (agent and controller disagree on the revision, rollout stuck, rollback).
 
 ### Phase 238 — Instant Exit Bypasses the Crash-Loop Back-off (M238, bug)
 
@@ -1062,6 +1066,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M236 — Connection Changes Do Not Reach Running Instances | 236 | Bug fix (found in the M235 security audit): connection facts were not part of the agent's config hash, so a connection added or changed after an instance started never reached it. |
 | M234 — A Restart Deletes the Previous Container Log | 234 | Bug fix (found in M232): restarting an exited container deleted its log directory, so `cca logs` never showed why it exited. The previous run's log now survives a restart. |
 | M238 — Instant Exit Bypasses the Crash-Loop Back-off | 238 | Bug fix (found in the M233 review): a container that had already exited when the agent first looked at it after starting it was marked failed and replaced, instead of being restarted in place with back-off. |
+| M239 — Config Changes Roll Out Progressively | 239 | A change to a service's configuration (env vars, config files, secrets, connections) rolls out to its instances a few at a time within the service's `maxUnavailable`, like an image update, instead of restarting every replica at once. |
 | M237 — Instance Keeps Its IP Across In-Place Restarts | 237 | An instance restarted in place (crash loop, config change) keeps its network namespace and IP, as with Kubernetes' pod sandbox; only removing the instance releases them. |
 | M218 — CLI Remote Correctness | 218 | Bug fix (M214 run 1): remote `cca apply` silently simulates instead of applying; `whoami` ignores contexts; `get secrets` vs `secret list`; local-only commands fail with raw etcd errors. |
 | M219 — CLI/API Authorization Alignment | 219 | CLI and API share one authorization model: `cca apply`/`diff`/`status`/`token` go only through the API (`--simulate` for local), legacy `/status` removed, `/api/node/join-token` (cluster.admin, audited), credentials never over plain HTTP to another host, `cca run` memory-only, apply checks the capability of every fact it deletes, diff hides unreadable state. Also in this release: M216 (user delete revokes access; `/api/gc` needs cluster.admin), M222 (container bridge drops a stale subnet address after redeploy), HA fixes (cca-server survives an etcd restart, agent unit keeps `Restart=`), M214 adversarial replay in CI, M220 AWS emulator tests, M221 key provider naming, otel 1.47 / x/crypto 0.59. Still open: M216 SSE streams after user delete, M220 CI job, M221 review. |
