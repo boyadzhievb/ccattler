@@ -57,4 +57,24 @@ M236 implementation (Opus, effort low, subagent): 88.7k subagent tokens, 74 tool
 
 M236 review: `code-reviewer` 89.7k tokens / 3.5 min, `security-audit` 78.6k / 2.6 min. Real defects: 3 — 1 high in the implementation (restart reused stale secret material for non-running instances), 2 from the main session's own design (generation reset on delete + recreate; generation keys visible cross-team through the state API) — plus 5 low/hardening items. Rework round 1 by the same subagent (resumed, still Opus low): all 7 items fixed failing-first, 6.2 min, about 59k more tokens (148.0k total, 79 tool calls); main-session re-run green. One process slip: its docs commit swept in an unrelated uncommitted file (reported by the subagent; harmless).
 
+### Three-way result (2026-11-17, M236 released as v1.91.0-beta)
+
+| | M233 | M234 | M236 |
+|---|---|---|---|
+| Implementer | Sonnet, medium, subagent | Opus, medium, main session | Opus, low, subagent |
+| Main-session growth, release to release | +80.6k | +145.5k | +79.2k (605k → 684.2k; includes the trial write-up and M236's design questions) |
+| Implementer tokens outside the main session | 186.9k (2 rounds) | — | 148.0k (2 rounds; 88.7k first) |
+| Implementation time, first round | 11.3 min | ~5 min | 6.4 min |
+| Review tokens | 110.2k (1 reviewer) | 111.0k (1 reviewer) | 168.3k (2 reviewers: secrets) |
+| Real defects in the implementation at review | 2 (1 medium) | 3 (1 medium) | 1 (high: stale secret material on restart) |
+| Real defects from the change's own design (main session) | 0 | 0 | 2 |
+| Rework rounds | 1 | 1 | 1 |
+| Testbed failures caused by the implementation | 0 | 1 | 0 (first testbed run missed the non-running case; the review found it) |
+
+Findings:
+- **Main-session context:** both subagent arms grew the main session by about 80k per milestone; implementing in the main session cost about 145k. The saving holds for both models.
+- **Opus at low effort vs Sonnet at medium, as subagent:** Opus-low used fewer tokens (148k vs 187k incl. rework) and was faster; it had fewer defects at review, but its one miss was the most severe of the trial (would have left crash-looping consumers on an old secret). Sonnet's misses were medium. With one milestone each, the quality difference is within noise; the review and the testbed caught every miss in all three arms.
+- **Design defects come from the main session:** in M236 two of the three real defects were in the proposal (generation reset on delete, cross-team visibility). Reviews cover design as well as code; the security audit matters for secret-related changes.
+- Cost per token differs between models (Opus costs more than Sonnet); the token counts above are not costs.
+
 Preliminary recommendation (before the third arm): implement well-specified OpenSpec changes (tasks with failing tests named) with the `lead-developer` subagent on Sonnet at high effort; keep proposals, decisions, testbed work, diagnosis, review handling and releases in the main session; send rework back to the same subagent (SendMessage keeps its context). Debugging and investigations stay in the main session. Pending the user's decision.
