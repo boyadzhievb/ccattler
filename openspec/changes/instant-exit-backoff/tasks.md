@@ -57,5 +57,15 @@ Implementation (groups 0–2) by the `lead-developer` subagent (Opus, effort med
 
 ## 4. Close
 
-- [ ] 4.1 Independent review: `code-reviewer` (Opus, high); record every finding as fixed or rejected with one line here
+- [x] 4.1 Independent review: `code-reviewer` (Opus, high); record every finding as fixed or rejected with one line here — reviews 2026-11-17, all Opus high. Round C (`code-reviewer` on rework 4, 841ed30): approve, no defects; rollout.go identical to 6070348; pattern matches the lexer, Unicode slash look-alikes and invalid UTF-8 refused. Pre-existing finding: secret delivery refuses instance IDs that are not lowercase DNS labels (`db.migrate-0`, `web_1`) → M242 (names the DSL accepts are refused elsewhere). Optional suggestions not taken (three-instance variant of the stall test; spec wording). Round A (`code-reviewer` on b6b48e5..6070348):
+  - fixed (medium, B1) — a ProcessFailed start stored no config hash: after a config change the wait ended every cycle (74 starts in 1.5 s, secrets re-fetched each time); a first-start failure ignored a config fix → rework 1 (1.5)
+  - fixed (from the testbed + review R1) — runc 1.4.0's `error during container init: exec:` was not classified → rework 1
+  - fixed (low, N2, N4, N5) — back-off reset for start failures; stale Flow 15/OOM doc lines; short readable reason → rework 1
+  - decided by the user (B3, N6) — rollout auto-rollback for crash-looping new images (D5) and health summaries counting `crash-loop-backoff` (D6) → rework 2/3; D6 kept
+  - recorded (B2) — jobs must be exempted from Flow 33 and report terminal states: note in milestones.md Phase 212
+  Round B (`code-reviewer` on the rework 6070348..2717225, `security-audit` on D7):
+  - reverted, moved to M241 (high B1 lifetime restart count / stateful ordinal reuse, medium B2 node_failure counted, medium B3 crash-looping old instances block the rollout, pre-existing P1 stale previous_image) — the rollout change D5 needed its own design; user decision → rework 4 (1.8), interim: a crash-looping new image stalls without rollback
+  - fixed (low-medium, B4, both reviews) — `InstanceIDPattern` refused real IDs (`db.migrate-0`, `ns:svc-0`, Unicode) → widened in rework 4
+  - security-audit: no security defect in D7 or elsewhere in M238; CodeQL barrier plausible (alerts #14, #28 close only on the next scan); pre-existing low: log reads load whole files, no containerd log cap → M240
+  - noted — the hourly deploy-cluster health check now fails while something crash-loops (D6 as intended); `cca logs --instance` takes the bare instance ID (UX nit); `executeReconciliationCycle` and `ContainerdRuntime.Start` exceed 80 lines (pre-existing)
 - [ ] 4.2 Closing full Deploy Testbed run

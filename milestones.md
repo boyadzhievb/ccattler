@@ -552,6 +552,14 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 242 — Names the DSL Accepts Are Refused Elsewhere (M242, bug)
+
+Found in the M238 reviews (2026-11-17), verified in the code, not yet run end to end. DSL identifiers may contain `.`, `:`, `_`, uppercase and any Unicode letter (lang/lexer.go), job names may be quoted strings and service names hierarchical (`team/db`, parser.go); stateful and job instance IDs are built as `<name>-<N>`. Other components accept far less:
+- secret delivery refuses any instance ID that is not a lowercase DNS label (`authorizeNodeForInstance` → `types.ValidateResourceName`, security/secret_delivery.go): a stateful service or job named e.g. `db.migrate` or `web_api` that uses secrets would never get them
+- containerd identifiers (`cca-<id>`) refuse `:`, non-ASCII and some leading characters
+- the log paths accept a different set again (`runtime.InstanceIDPattern`, M238)
+Wanted: one rule for names that become instance IDs and runtime identifiers, enforced when a configuration is applied (a clear error instead of a later refusal), with the components checking against the same rule. Relates to M230 (hierarchical service names). To be proposed as an OpenSpec change; first reproduce the secret-delivery refusal on the testbed.
+
 ### Phase 241 — Rollout Correctness (M241, bug)
 
 Split from M238 (user decision 2026-11-17) after its rework review found that counting crash-looping instances in the rollout controller (M238 D5, reverted there) needs its own design. Since M233/M238 broken instances no longer become `failed`, so auto-rollback (controllers/rollout.go, counts `failed` new-image instances, threshold 3) does not trigger for a crash-looping new image: the rollout stalls safely without rolling back. Problems to solve together, verified in the code:
@@ -1082,6 +1090,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M236 — Connection Changes Do Not Reach Running Instances | 236 | Bug fix (found in the M235 security audit): connection facts were not part of the agent's config hash, so a connection added or changed after an instance started never reached it. |
 | M234 — A Restart Deletes the Previous Container Log | 234 | Bug fix (found in M232): restarting an exited container deleted its log directory, so `cca logs` never showed why it exited. The previous run's log now survives a restart. |
 | M238 — Instant Exit Bypasses the Crash-Loop Back-off | 238 | Bug fix (found in the M233 review): a container that had already exited when the agent first looked at it after starting it was marked failed and replaced, instead of being restarted in place with back-off. |
+| M242 — Names the DSL Accepts Are Refused Elsewhere | 242 | Bug fix (found in the M238 reviews): names the configuration language accepts for services and jobs (dots, colons, underscores, uppercase) produced instance IDs that secret delivery and the container runtime refused; one naming rule is now enforced when a configuration is applied. |
 | M241 — Rollout Correctness | 241 | Bug fix (found in the M238 review): a rollout whose new image crash-loops rolls back again, using restart counts per image; a node loss no longer counts as an application failure; crash-looping old instances are replaced first; a rollback reverts to the image right before the rollout, not an older one. |
 | M240 — Log Reads Load Whole Files Into Memory | 240 | Bug fix (found in the M238 security audit): reading container logs loaded the whole file into memory and containerd logs had no size limit, so large logs could exhaust the agent's memory. Logs are now read from the end in bounded blocks and capped in size. |
 | M239 — Config Changes Roll Out Progressively | 239 | A change to a service's configuration (env vars, config files, secrets, connections) rolls out to its instances a few at a time within the service's `maxUnavailable`, like an image update, instead of restarting every replica at once. |
