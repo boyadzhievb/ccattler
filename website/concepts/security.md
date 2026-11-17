@@ -145,7 +145,7 @@ cca secret delete database-password
 
 ### Changing a secret value
 
-Secrets are delivered to containers as files and environment variables when they start. When `cca secret set` stores a **different** value, every running instance that uses the secret (as a grant, a connection password or an image pull secret) is restarted so it reads the new value. Setting the same value again, or rotating the encryption keys, restarts nothing. Changing a connection definition or a service's image pull secret also restarts its instances.
+Secrets are delivered to containers as files and environment variables when they start. When `cca secret set` stores a **different** value, every running instance that uses the secret (as a grant, a connection password or an image pull secret) is restarted so it reads the new value. Setting the same value again, or rotating the encryption keys, restarts nothing. Deleting a secret does not restart the instances that use it; setting it again after a delete always counts as a new value and restarts them. Changing a connection definition, where a connection is mounted, or a service's image pull secret also restarts its instances.
 
 All instances of a service currently restart at the same time, so a service with a single instance has a short outage during a rotation.
 

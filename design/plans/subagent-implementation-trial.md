@@ -53,4 +53,6 @@ Main session effort, confirmed by the user 2026-11-17: **Opus at medium** — so
 
 **Third arm (user's question: what if Opus at low effort?):** M236 implemented by the `lead-developer` subagent with `model: opus`, `effort: low` passed on the call (agent file unchanged: Sonnet, high). Same measurements; compare with M234 (same model, medium, main session) and M233 (Sonnet, medium, subagent). M236 context before: 605k (after M234's release); 632.5k (598k messages) after the trial write-up, the M236 design questions and its proposal (+27.5k).
 
+M236 implementation (Opus, effort low, subagent): 88.7k subagent tokens, 74 tool calls, 6.4 min (13:01:57 → 13:08:25); 12 files, +416/−53, 2 commits; main-session re-run all green. Reported 6 doubts itself, including one rule break (a `sed -i` on SECRETS_GRAPH.md line numbers — checked, correct). Review findings and rework: below when done.
+
 Preliminary recommendation (before the third arm): implement well-specified OpenSpec changes (tasks with failing tests named) with the `lead-developer` subagent on Sonnet at high effort; keep proposals, decisions, testbed work, diagnosis, review handling and releases in the main session; send rework back to the same subagent (SendMessage keeps its context). Debugging and investigations stay in the main session. Pending the user's decision.

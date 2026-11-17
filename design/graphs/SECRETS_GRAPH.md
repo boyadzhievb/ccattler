@@ -169,33 +169,34 @@ cca init --ca (HA secondary)           → no secret keys; Ansible copies the fi
 ```
 SecretStore.PutSecret(ctx, name, plaintext)                    [:60]
 ├── computeNextSecretGeneration(ctx, name, plaintext)          [:99, M236 D1]
-│   ├── factStore.Get("secrets/<name>")                        [missing → generation 1, guard Revision 0]
-│   ├── openStoredSecretValue → equal plaintext → write nothing
-│   └── factStore.Get("desired/secret_generation/<name>")      [missing → 1; next = current + 1]
+│   ├── readStoredSecretGeneration                             [:126]  Get("desired/secret_generation/<name>"), missing → 0
+│   ├── factStore.Get("secrets/<name>")                        [missing → stored + 1 (tombstone continues), guard Revision 0]
+│   ├── openStoredSecretValue → error → return error (never a change)
+│   └── equal plaintext → write nothing; else max(stored, 1) + 1
 ├── SealSecretValue(ctx, codec, "secrets/<name>", plaintext)
 └── factStore.Transaction(guard secrets/<name> revision,
-        put secrets/<name>, put desired/secret_generation/<name>)  [lost guard → errSecretChangedConcurrently]
+        put secrets/<name>, put desired/secret_generation/<name>)  [lost guard → ErrSecretChangedConcurrently → HTTP 409]
 
-SecretStore.GetSecret(ctx, name)                               [:140]
+SecretStore.GetSecret(ctx, name)                               [:153]
 └── GetSecretThroughStore(ctx, factStore, name)
 
-SecretStore.GetSecretThroughStore(ctx, readStore, name)        [:146, M174]
+SecretStore.GetSecretThroughStore(ctx, readStore, name)        [:159, M174]
 ├── readStore.Get("secrets/<name>")                            [e.g. store bound to service:secret-delivery]
-└── openStoredSecretValue(ctx, name, value)                    [:160]
+└── openStoredSecretValue(ctx, name, value)                    [:173]
     ├── base64.StdEncoding.DecodeString(value)
     └── codec.OpenEnvelopeForKey(ctx, "secrets/<name>", envelope)
 
-SecretStore.DeleteSecret(ctx, name)                            [:177]
+SecretStore.DeleteSecret(ctx, name)                            [:191]
 ├── factStore.Get("secrets/<name>")                            [missing → ErrKeyNotFound]
-└── factStore.Transaction(guard revision, delete secrets/<name>, delete desired/secret_generation/<name>)
+└── factStore.Transaction(guard revision, delete secrets/<name>)  [generation kept as tombstone]
 
-SecretStore.ListSecrets(ctx)                                   [:200]
+SecretStore.ListSecrets(ctx)                                   [:211]
 └── factStore.Scan("secrets/") → trim prefix → names
 
-SecretStore.IsAuthorized(ctx, serviceName, secretName)         [:216]
+SecretStore.IsAuthorized(ctx, serviceName, secretName)         [:227]
 └── factStore.Get("desired/service/{svc}/secret/{name}")       [grant check]
 
-SecretStore.GetSecretForService(ctx, svc, secret)              [:134]
+SecretStore.GetSecretForService(ctx, svc, secret)              [:238]
 ├── IsAuthorized → check grant
 ├── factStore.Get(grantKey) → mountPath
 └── GetSecret → plaintext
@@ -258,7 +259,7 @@ Server-side `lang.Diff(..., allowLocalFiles=false)`, `applyDirect` and the polic
 | Key Pattern | Where Written |
 |---|---|
 | `secrets/{name}` | SecretStore.PutSecret, keyring migration and rotation controllers |
-| `desired/secret_generation/{name}` | SecretStore.PutSecret (only on a changed value), SecretStore.DeleteSecret (M236); read by the agent's config hash |
+| `desired/secret_generation/{name}` | SecretStore.PutSecret only, on a changed value (M236); kept by DeleteSecret as a tombstone; read by the agent's config hash; hidden from /api/state, admin-only to write |
 
 ---
 
@@ -291,4 +292,4 @@ Server-side `lang.Diff(..., allowLocalFiles=false)`, `applyDirect` and the polic
 | security/key_provider.go:97 | SealEnvelope — envelope encrypt |
 | security/key_provider.go:118 | OpenEnvelope — envelope decrypt |
 | security/secrets.go:60 | SecretStore.PutSecret |
-| security/secrets.go:140 | SecretStore.GetSecret |
+| security/secrets.go:153 | SecretStore.GetSecret |
