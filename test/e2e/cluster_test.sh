@@ -1964,10 +1964,34 @@ echo "$FINAL_STATUS" | jq -r '.nodes[] | "--- \(.id) (\(.state), \(.instances) i
 echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t\(.node)"' || true
 
 log "Verifying all instances are still running after test steps..."
+# FINAL_NOT_RUNNING_FILTER selects instances that count as regressed.
 if [[ "${WARMZERO_EXCLUDE_FROM_FINAL:-false}" == "true" ]]; then
-    final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running" and .service != "nginx-warmzero")] | length')
+    FINAL_NOT_RUNNING_FILTER='[.instances[] | select(.state != "running" and .service != "nginx-warmzero")]'
 else
-    final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running")] | length')
+    FINAL_NOT_RUNNING_FILTER='[.instances[] | select(.state != "running")]'
+fi
+final_not_running=$(echo "$FINAL_STATUS" | jq "$FINAL_NOT_RUNNING_FILTER | length")
+
+# An instance whose app exited during a check (e.g. lost a dependency during
+# node-failure) is restarted by the agent after a back-off (M233, first wait
+# 10 s). Give such instances FINAL_RECOVERY_TIMEOUT to run again; a real crash
+# loop waits 20 s, 40 s… after its next exits and still fails below. Every
+# recovered instance is logged, so these exits stay visible.
+FINAL_RECOVERY_TIMEOUT=60      # seconds for crash-loop-backoff instances to run again
+FINAL_RECOVERY_POLL_SECONDS=5  # pause between status reads while waiting
+if [[ "$final_not_running" -gt 0 ]] && \
+   [[ "$(echo "$FINAL_STATUS" | jq "$FINAL_NOT_RUNNING_FILTER | map(select(.state != \"crash-loop-backoff\")) | length")" -eq 0 ]]; then
+    restarting_instances=$(echo "$FINAL_STATUS" | jq -r "$FINAL_NOT_RUNNING_FILTER | map(\"\(.id) (\(.service))\") | join(\", \")")
+    log "  waiting up to ${FINAL_RECOVERY_TIMEOUT}s for instances restarting after an exit: $restarting_instances"
+    recovery_deadline=$((SECONDS + FINAL_RECOVERY_TIMEOUT))
+    while [[ "$final_not_running" -gt 0 && $SECONDS -lt $recovery_deadline ]]; do
+        sleep "$FINAL_RECOVERY_POLL_SECONDS"
+        FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null || echo '{"instances":[]}')
+        final_not_running=$(echo "$FINAL_STATUS" | jq "$FINAL_NOT_RUNNING_FILTER | length")
+    done
+    if [[ "$final_not_running" -eq 0 ]]; then
+        log "  recovered after an exit and restart (see cca logs --instance <id> --previous): $restarting_instances"
+    fi
 fi
 if [[ "$final_not_running" -gt 0 ]]; then
     echo "$FINAL_STATUS" | jq -r '.instances[] | select(.state != "running" and .service != "nginx-warmzero") | "  REGRESSED: \(.id) (\(.service)) state=\(.state) node=\(.node) init=\(.init_phase // "-") exit=\(.exit_reason // "-")"'
