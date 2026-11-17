@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -25,11 +26,12 @@ const initContainerNamePrefix = "cca-init-"
 // of an instance's previous run.
 var ErrPreviousLogNotAvailable = errors.New("previous log not available on this runtime")
 
-// isPlainInstanceName reports whether instanceID can name a directory directly
-// under the log base: not empty, not "." or "..", no path separator.
-func isPlainInstanceName(instanceID string) bool {
-	return instanceID != "" && instanceID != "." && instanceID != ".." && filepath.Base(instanceID) == instanceID
-}
+// InstanceIDPattern matches every instance ID (generated hex IDs, test IDs such
+// as "inst-1", init step names "cca-init-N"): letters, digits, "-" and "_", not
+// starting with "-"; never ".", "/" or empty, so an ID can name a directory
+// directly under the log base. Every path built from an ID is guarded by its
+// MatchString, an anchored check CodeQL credits as a path sanitizer (M238 D7).
+var InstanceIDPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]*$`)
 
 // instanceRunLogPath is the log file of an instance's current run:
 // <base>/<id>/<id>-json.log.
@@ -58,9 +60,9 @@ func rotateInstanceRunLog(logBaseDirectory string, instanceID string) error {
 
 // openPreviousRunLog opens the log of an instance's previous run; of the
 // options only tail applies (as for the current log's static read). Following
-// is refused: a finished run does not grow. instanceID must be a plain name.
+// is refused: a finished run does not grow. instanceID must match InstanceIDPattern.
 func openPreviousRunLog(logBaseDirectory string, instanceID string, options LogsOptions) (io.ReadCloser, error) {
-	if !isPlainInstanceName(instanceID) {
+	if !InstanceIDPattern.MatchString(instanceID) {
 		return nil, fmt.Errorf("invalid instance ID %q", instanceID)
 	}
 	if options.Follow {
@@ -77,10 +79,10 @@ func openPreviousRunLog(logBaseDirectory string, instanceID string, options Logs
 }
 
 // removeInstanceLogDirectory deletes an instance's log directory (current and
-// previous run, config files). The instance ID must be a plain name, so the
-// removal cannot leave logBaseDirectory.
+// previous run, config files). The instance ID must match InstanceIDPattern,
+// so the removal cannot leave logBaseDirectory.
 func removeInstanceLogDirectory(logBaseDirectory string, instanceID string) error {
-	if !isPlainInstanceName(instanceID) {
+	if !InstanceIDPattern.MatchString(instanceID) {
 		return fmt.Errorf("refusing to remove logs for instance ID %q", instanceID)
 	}
 	return os.RemoveAll(filepath.Join(logBaseDirectory, instanceID))
@@ -88,7 +90,7 @@ func removeInstanceLogDirectory(logBaseDirectory string, instanceID string) erro
 
 // listInstanceLogDirectories returns the instance IDs that have a log
 // directory under logBaseDirectory, skipping init step directories and any
-// name that is not a plain instance name. A missing base is no directories.
+// name that does not match InstanceIDPattern. A missing base is no directories.
 func listInstanceLogDirectories(logBaseDirectory string) ([]string, error) {
 	directoryEntries, readError := os.ReadDir(logBaseDirectory)
 	if errors.Is(readError, os.ErrNotExist) {
@@ -100,7 +102,7 @@ func listInstanceLogDirectories(logBaseDirectory string) ([]string, error) {
 	var instanceIDs []string
 	for _, directoryEntry := range directoryEntries {
 		entryName := directoryEntry.Name()
-		if directoryEntry.IsDir() && isPlainInstanceName(entryName) && !strings.HasPrefix(entryName, initContainerNamePrefix) {
+		if directoryEntry.IsDir() && InstanceIDPattern.MatchString(entryName) && !strings.HasPrefix(entryName, initContainerNamePrefix) {
 			instanceIDs = append(instanceIDs, entryName)
 		}
 	}

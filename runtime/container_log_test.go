@@ -93,6 +93,37 @@ func TestContainerdLogsPreviousWithoutPreviousRun(t *testing.T) {
 	}
 }
 
+// TestInstanceIDPatternAcceptsInstanceIDsOnly checks the one anchored pattern
+// every log path is guarded with: generated hex IDs, test IDs and init step
+// names pass; anything that could leave the log base does not (M238 D7).
+func TestInstanceIDPatternAcceptsInstanceIDsOnly(t *testing.T) {
+	for _, acceptedInstanceID := range []string{"a8f31bc904", "inst-1", "cca-init-123", "web_1", "Inst1", "0"} {
+		if !InstanceIDPattern.MatchString(acceptedInstanceID) {
+			t.Errorf("instance ID %q was refused", acceptedInstanceID)
+		}
+	}
+	for _, refusedInstanceID := range []string{"", ".", "..", "../x", "a/b", "-x", "_x/", "a.b", "a b", "a\x00b", "inst-1\n"} {
+		if InstanceIDPattern.MatchString(refusedInstanceID) {
+			t.Errorf("instance ID %q was accepted", refusedInstanceID)
+		}
+	}
+}
+
+// TestContainerdLogsRefusesUnsafeInstanceID checks that ContainerdRuntime.Logs
+// refuses an instance ID that is not an instance ID before it builds a path
+// or asks containerd (no client is set: a call would panic) (M238 D7).
+func TestContainerdLogsRefusesUnsafeInstanceID(t *testing.T) {
+	containerdRuntime := &ContainerdRuntime{}
+	for _, unsafeInstanceID := range []string{"../x", "a/b", "..", ""} {
+		for _, previous := range []bool{false, true} {
+			if _, logsError := containerdRuntime.Logs(context.Background(), unsafeInstanceID, LogsOptions{Previous: previous}); logsError == nil ||
+				!strings.Contains(logsError.Error(), "invalid instance ID") {
+				t.Errorf("instance ID %q (previous %v): error %v, want invalid instance ID", unsafeInstanceID, previous, logsError)
+			}
+		}
+	}
+}
+
 // TestOpenPreviousRunLogRefusesPathOutsideBase checks that an instance ID from
 // the debug API cannot read a file outside the log directory (M234 review).
 func TestOpenPreviousRunLogRefusesPathOutsideBase(t *testing.T) {

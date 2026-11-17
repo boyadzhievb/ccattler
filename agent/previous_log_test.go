@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -20,15 +21,51 @@ type logRecordingRuntime struct {
 	*runtime.SimulatorRuntime                     // SimulatorRuntime runs the workloads.
 	mutex                     sync.Mutex          // mutex guards the recorded values.
 	lastLogsOptions           runtime.LogsOptions // lastLogsOptions are the options of the latest Logs call.
+	logsCallCount             int                 // logsCallCount is the number of Logs calls.
 	removedInstanceIDs        []string            // removedInstanceIDs lists every RemoveInstanceData call.
 }
 
-// Logs records the options and answers with a fixed line.
+// Logs records the call and its options and answers with a fixed line.
 func (recordingRuntime *logRecordingRuntime) Logs(_ context.Context, _ string, options runtime.LogsOptions) (io.ReadCloser, error) {
 	recordingRuntime.mutex.Lock()
 	recordingRuntime.lastLogsOptions = options
+	recordingRuntime.logsCallCount++
 	recordingRuntime.mutex.Unlock()
 	return io.NopCloser(strings.NewReader("previous run output\n")), nil
+}
+
+// TestDebugLogsRefusesUnsafeInstanceID checks that the debug logs endpoint
+// answers 400 for an instance parameter that is not an instance ID and never
+// asks the runtime, while real IDs still reach it (M238 D7, CodeQL path-injection).
+func TestDebugLogsRefusesUnsafeInstanceID(t *testing.T) {
+	recordingRuntime := &logRecordingRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime()}
+	baseURL, cancel := startTestDebugServer(t, recordingRuntime)
+	defer cancel()
+
+	requestLogsStatus := func(instanceParameter string) int {
+		response, requestError := http.Get(baseURL + "/debug/logs?previous=true&instance=" + url.QueryEscape(instanceParameter))
+		if requestError != nil {
+			t.Fatalf("GET /debug/logs: %v", requestError)
+		}
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	for _, unsafeInstanceID := range []string{"../x", "a/b", "..", "-x", "a.b"} {
+		if statusCode := requestLogsStatus(unsafeInstanceID); statusCode != http.StatusBadRequest {
+			t.Errorf("instance %q: status %d, want 400", unsafeInstanceID, statusCode)
+		}
+	}
+	recordingRuntime.mutex.Lock()
+	refusedCallCount := recordingRuntime.logsCallCount
+	recordingRuntime.mutex.Unlock()
+	if refusedCallCount != 0 {
+		t.Errorf("runtime Logs called %d times for refused instance IDs, want 0", refusedCallCount)
+	}
+	for _, acceptedInstanceID := range []string{"a8f31bc904", "inst-1", "cca-init-123"} {
+		if statusCode := requestLogsStatus(acceptedInstanceID); statusCode != http.StatusOK {
+			t.Errorf("instance %q: status %d, want 200", acceptedInstanceID, statusCode)
+		}
+	}
 }
 
 // RemoveInstanceData records the instance whose data the agent removes.

@@ -342,6 +342,68 @@ func TestRolloutDoesNotRollBackForFewCrashLoopRestarts(t *testing.T) {
 	}
 }
 
+// buildSingleNewInstanceRolloutFacts returns a one-at-a-time rolling "web"
+// service: two old-image instances running and a single new-image instance in
+// the given state with the given restart count.
+func buildSingleNewInstanceRolloutFacts(newInstanceState types.InstanceState, newInstanceRestarts string) []store.Fact {
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDerivedServiceRolloutState("web"), Value: []byte("rolling")},
+		{Key: types.KeyDerivedServiceRolloutImage("web"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyObservedInstanceState("new-1"), Value: []byte(newInstanceState)},
+		{Key: types.KeyObservedInstanceService("new-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("new-1"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyObservedInstanceRestarts("new-1"), Value: []byte(newInstanceRestarts)},
+	}
+	for _, oldInstanceID := range []string{"old-1", "old-2"} {
+		inputFacts = append(inputFacts,
+			store.Fact{Key: types.KeyObservedInstanceState(oldInstanceID), Value: []byte(types.InstanceRunning)},
+			store.Fact{Key: types.KeyObservedInstanceService(oldInstanceID), Value: []byte("web")},
+			store.Fact{Key: types.KeyObservedInstanceImage(oldInstanceID), Value: []byte("nginx:1.27")},
+		)
+	}
+	store.SortFacts(inputFacts)
+	return inputFacts
+}
+
+// TestRolloutRollsBackWhenSingleNewInstanceFails checks that in a one-at-a-time
+// rollout the rollback threshold is all new-image instances when fewer than 3
+// exist: one crash-looping (3 restarts) or failed new instance rolls back,
+// one with fewer restarts does not (M238 D5 amendment).
+func TestRolloutRollsBackWhenSingleNewInstanceFails(t *testing.T) {
+	testCases := []struct {
+		name             string              // name describes the case.
+		newInstanceState types.InstanceState // newInstanceState is the state of the single new-image instance.
+		restarts         string              // restarts is its observed restart count.
+		wantRollback     bool                // wantRollback is whether the desired image must be reverted.
+	}{
+		{name: "crash-looping past the restart threshold", newInstanceState: types.InstanceCrashLoopBackoff, restarts: "3", wantRollback: true},
+		{name: "crash-looping below the restart threshold", newInstanceState: types.InstanceCrashLoopBackoff, restarts: "2", wantRollback: false},
+		{name: "failed", newInstanceState: types.InstanceFailed, restarts: "0", wantRollback: true},
+		{name: "running", newInstanceState: types.InstanceRunning, restarts: "5", wantRollback: false},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			inputFacts := buildSingleNewInstanceRolloutFacts(testCase.newInstanceState, testCase.restarts)
+			proposedChanges, reconcileError := NewRolloutController().Reconcile(context.Background(), inputFacts)
+			if reconcileError != nil {
+				t.Fatalf("unexpected error: %v", reconcileError)
+			}
+			if gotRollback := hasRollbackChange(proposedChanges); gotRollback != testCase.wantRollback {
+				t.Errorf("rollback = %v, want %v; changes: %v", gotRollback, testCase.wantRollback, proposedChanges)
+			}
+		})
+	}
+}
+
+// TestRolloutDoesNotRollBackWithoutNewInstances checks that a rollout with no
+// new-image instance yet never rolls back (M238 D5 amendment).
+func TestRolloutDoesNotRollBackWithoutNewInstances(t *testing.T) {
+	if shouldTriggerRollback(0, 0, "nginx:1.27") {
+		t.Error("rollback triggered with no new-image instances")
+	}
+}
+
 // TestRolloutCountsCrashLoopingOldInstancesAsUnavailable checks that an
 // old-image instance crash-looping past the restart threshold uses up
 // max_unavailable, so no further old instance is stopped (M238 D5).

@@ -419,6 +419,11 @@ func (debugServer *DebugServer) handleDebugLogs(responseWriter http.ResponseWrit
 		writeDebugJSONError(responseWriter, "instance query parameter required", http.StatusBadRequest)
 		return
 	}
+	// The ID names the log directory: refuse anything that is not an instance ID (M238 D7).
+	if !runtime.InstanceIDPattern.MatchString(instanceID) {
+		writeDebugJSONError(responseWriter, "invalid instance query parameter", http.StatusBadRequest)
+		return
+	}
 
 	logsOptions := runtime.LogsOptions{
 		Follow:     queryParams.Get("follow") == "true",

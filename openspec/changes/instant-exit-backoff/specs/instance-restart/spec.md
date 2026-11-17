@@ -43,6 +43,17 @@ When a start fails because the workload's own process could not be started (the 
 - **THEN** it reverts the desired image to the previous one, as for failed new-image instances; fewer restarts do not
 - Test: `TestRolloutRollsBackWhenNewImageCrashLoops`, `TestRolloutDoesNotRollBackForFewCrashLoopRestarts`
 
+#### Scenario: A single failing new instance of a one-at-a-time rollout rolls back
+- **GIVEN** a rolling update with a previous image and only one new-image instance (`max_unavailable` 1, no surge)
+- **WHEN** that instance is `failed` or in `crash-loop-backoff` with at least 3 restarts
+- **THEN** the rollout controller reverts the desired image; with fewer restarts, or with no new-image instance, it does not
+- Test: `TestRolloutRollsBackWhenSingleNewInstanceFails`, `TestRolloutDoesNotRollBackWithoutNewInstances`
+
+#### Scenario: Logs of a crash-looping instance are read only for real instance IDs
+- **WHEN** the agent debug logs endpoint (used by `cca logs`, `--previous` included) gets an `instance` that is not an instance ID (`../x`, `a/b`, `..`)
+- **THEN** it answers 400 and the runtime builds no path from it; generated and test instance IDs are still served
+- Test: `TestDebugLogsRefusesUnsafeInstanceID`, `TestContainerdLogsRefusesUnsafeInstanceID`
+
 #### Scenario: Health summaries show crash-looping instances
 - **WHEN** some instances are in `crash-loop-backoff`
 - **THEN** the RUNTIME HEALTH summary of `cca status` and the e2e health check count them on their own as unhealthy, not as failed and not dropped

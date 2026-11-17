@@ -232,7 +232,8 @@ RolloutController.Reconcile(ctx, facts)                      :46
     │       restarts >= rolloutCrashLoopRestartThreshold (3) (M238 D5; also used
     │       for old-image currentUnavailable in buildOldInstanceStopChanges)
     │
-    ├── shouldTriggerRollback(newImageFailed, prevImage)      :178
+    ├── shouldTriggerRollback(newImageFailed, len(newInstances), prevImage)
+    │   │   [failed >= min(3, new-image instances); none → never (M238 D5)]
     │   └── IF rollback needed:
     │       └── buildRollbackChanges(svc, prevImage)          :185
     │           └── PUT desired/service/{svc}/image = previousImage

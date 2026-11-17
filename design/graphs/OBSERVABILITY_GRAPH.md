@@ -565,6 +565,7 @@ executeLogsCommand                                 cmd/cca/command_status.go:258
     │   └── api handleNodeDebugProxy               api/node_debug_proxy.go:55
     │       (capability workload.read, cluster scope; forwards the query)
     │       └── agent handleDebugLogs               agent/debug_api.go:409
+    │           ├── instance must match runtime.InstanceIDPattern, else 400 (M238 D7)
     │           └── runtime.Logs(ctx, id, LogsOptions{Follow,TailLines,Since,Timestamps,Previous})
     ├── non-200 → "logs error: …" + hint (crash-loop-backoff → describe / --previous), false
     └── exitUnlessLogsStreamed: any false → exit 1  :314
@@ -572,13 +573,15 @@ executeLogsCommand                                 cmd/cca/command_status.go:258
 
 ### runtime.Logs per runtime
 ```
-ContainerdRuntime.Logs                              runtime/containerd.go:1094
-├── Previous → openPreviousRunLog(base, id)         runtime/container_log.go:62
-│   ├── id must be a plain name (no "/", "..")     isPlainInstanceName
+ContainerdRuntime.Logs                              runtime/containerd.go
+├── id must match InstanceIDPattern  `^[A-Za-z0-9_][A-Za-z0-9_-]*$` (M238 D7; also
+│   openPreviousRunLog, removeInstanceLogDirectory, listInstanceLogDirectories)
+├── Previous → openPreviousRunLog(base, id)         runtime/container_log.go
+│   ├── id must match InstanceIDPattern (no ".", "/", empty)
 │   ├── Follow → error (a finished run does not grow)
 │   ├── no <id>-json.log.previous → "instance <id> has no previous run on this node"
 │   └── newStaticLogReader (tail only; since/timestamps not applied)
-└── current → LoadContainer(cca-<id>) → label ccattler.log.path (must stay under base)
+└── current → LoadContainer(cca-<id>) → label ccattler.log.path → filepath.Clean, must stay under base
     ├── Follow → newFollowingLogReader
     └── else   → newStaticLogReader (tail only)
 ContainerRuntime (nerdctl), ProcessRuntime, SimulatorRuntime

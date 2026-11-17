@@ -1144,6 +1144,9 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 // created (Phase D). Supports tail, since, follow and previous (the run before,
 // read from the node even when no container exists, M234).
 func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID string, options LogsOptions) (io.ReadCloser, error) {
+	if !InstanceIDPattern.MatchString(instanceID) {
+		return nil, fmt.Errorf("invalid instance ID %q", instanceID)
+	}
 	if options.Previous {
 		return openPreviousRunLog(ContainerdLogBaseDir, instanceID, options)
 	}
@@ -1156,25 +1159,24 @@ func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID
 	}
 
 	labels, _ := container.Labels(namespacedCtx)
-	logFilePath := labels[containerLabelLogPath]
-	if logFilePath == "" {
-		logFilePath = containerdRuntime.defaultLogPath(instanceID)
+	labeledLogPath := labels[containerLabelLogPath]
+	if labeledLogPath == "" {
+		labeledLogPath = containerdRuntime.defaultLogPath(instanceID)
 	}
 
-	cleanedLogPath := filepath.Clean(logFilePath)
+	// The label is containerd data: the cleaned path must stay under the log base.
+	cleanedLogPath := filepath.Clean(labeledLogPath)
 	if !strings.HasPrefix(cleanedLogPath, ContainerdLogBaseDir+string(filepath.Separator)) {
 		return nil, fmt.Errorf("container %s log path escapes base directory", instanceID)
 	}
-	logFilePath = cleanedLogPath
-
-	if _, statError := os.Stat(logFilePath); statError != nil {
+	if _, statError := os.Stat(cleanedLogPath); statError != nil {
 		return nil, fmt.Errorf("container %s log file not found: %w", instanceID, statError)
 	}
 
 	if options.Follow {
-		return newFollowingLogReader(ctx, logFilePath, options)
+		return newFollowingLogReader(ctx, cleanedLogPath, options)
 	}
-	return newStaticLogReader(logFilePath, options)
+	return newStaticLogReader(cleanedLogPath, options)
 }
 
 // defaultLogPath returns the conventional log file path for a container.
@@ -1185,7 +1187,7 @@ func (containerdRuntime *ContainerdRuntime) defaultLogPath(instanceID string) st
 // newStaticLogReader opens a log file and returns lines matching the filter
 // options (tail and since). It reads the entire file and returns matching lines.
 func newStaticLogReader(logFilePath string, options LogsOptions) (io.ReadCloser, error) {
-	logData, readError := os.ReadFile(logFilePath) // #nosec G304 — path from internal label, not user input
+	logData, readError := os.ReadFile(logFilePath) // #nosec G304 — callers check the ID with InstanceIDPattern and keep the path under the log base
 	if readError != nil {
 		return nil, readError
 	}

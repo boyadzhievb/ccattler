@@ -82,7 +82,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage, updatePolicies[serviceName], currentRevision)
 		changes = append(changes, trackingChanges...)
 
-		if shouldTriggerRollback(newImageFailedCount, previousImage) {
+		if shouldTriggerRollback(newImageFailedCount, len(newImageInstances), previousImage) {
 			rollbackChanges := buildRollbackChanges(serviceName, previousImage)
 			changes = append(changes, rollbackChanges...)
 			continue
@@ -187,12 +187,18 @@ func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rollout
 	return trackingChanges
 }
 
-// shouldTriggerRollback returns true when the number of failed new-image
-// instances meets or exceeds the rollback threshold (3) and a previous image
-// is available to revert to.
-func shouldTriggerRollback(newImageFailedCount int, previousImage string) bool {
-	const rollbackThreshold = 3
-	return newImageFailedCount >= rollbackThreshold && previousImage != ""
+// rolloutRollbackFailedThreshold is how many failed new-image instances
+// trigger a rollback; with fewer new-image instances, all of them must fail.
+const rolloutRollbackFailedThreshold = 3
+
+// shouldTriggerRollback returns true when a previous image exists and the
+// failed new-image instances reach the threshold, or all new-image instances
+// when fewer exist (a one-at-a-time rollout, M238 D5); never with none.
+func shouldTriggerRollback(newImageFailedCount int, newImageInstanceCount int, previousImage string) bool {
+	if newImageInstanceCount == 0 || previousImage == "" {
+		return false
+	}
+	return newImageFailedCount >= min(rolloutRollbackFailedThreshold, newImageInstanceCount)
 }
 
 // buildRollbackChanges returns changes that revert the desired service image
