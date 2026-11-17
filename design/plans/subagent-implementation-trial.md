@@ -21,7 +21,7 @@ Both milestones are bug fixes of similar size in `agent/` and `runtime/`. They a
 
 | Metric | How | M233 | M234 |
 |---|---|---|---|
-| Main-session context growth | `/context` before proposal and after release | before 378.9k (346.2k messages), after release 459.5k (425k messages): **+80.6k** — proposal, design questions, verifying the hand-backs, two testbed crash-loop checks, review handling, release, conversation (mid-point 421.2k after the first testbed check) | before: 459.5k (425k messages) |
+| Main-session context growth | `/context` before proposal and after release | before 378.9k (346.2k messages), after release 459.5k (425k messages): **+80.6k** — proposal, design questions, verifying the hand-backs, two testbed crash-loop checks, review handling, release, conversation (mid-point 421.2k after the first testbed check) | before 459.5k, after release 605k (570.5k messages): **+145.5k** — proposal, implementation, rework, three testbed runs, diagnosing a failed full run, a new graph section, conversation about graphs |
 | Implementation tokens | subagent completion notice (M233); `/cost` delta (M234) | 156.8k subagent tokens, 66 tool calls (groups 0–2: 25 files, +643/−62, 2 commits) | in the main session (counted in its context growth below); first pass 1fcacba: 13 files |
 | Wall time, "go" → ready for review | timestamps | 11.3 min (22:44 → 22:55) | about 5 min by the clock (10:59:46 → 11:04:44; continuing session, the proposal and code reading were done before) |
 | Quality of the hand-back | main session re-ran build, vet, lint, tests; read the core file | all green on re-run; 6 doubts reported, 2 were real inconsistencies in the change's own spec/design (fixed in d41a1f1), 1 a pre-existing rollout gap, 1 a testbed risk to check | |
@@ -30,6 +30,23 @@ Both milestones are bug fixes of similar size in `agent/` and `runtime/`. They a
 | Failed test/testbed runs caused by the implementation | count | 0 (crash-loop checks passed before and after rework) | 1 (testbed 2.1 failed on the CLI selection before the rework; passed after) |
 | User interventions during implementation | count | | |
 
-## Result
+## Result (2026-11-17, both released: M233 v1.89.0-beta, M234 v1.90.0-beta)
 
-(to fill in after both milestones are released)
+| | M233 — Sonnet subagent implements | M234 — Opus main session implements |
+|---|---|---|
+| Main-session context growth | +80.6k | +145.5k |
+| Implementer tokens outside the main session | 186.9k (subagent, two rounds) | — |
+| Review | 110.2k (Sonnet) | 111.0k (Sonnet) |
+| Real defects found by review | 2 | 3 |
+| Rework rounds | 1 | 1 |
+| Implementation testbed failures | 0 | 1 (CLI selection) |
+| Implementation time | 11.3 min + 4.3 min rework | about 5 min + rework |
+
+Findings:
+- **Context:** the main session grew about 1.8× more when it implemented. That growth is the expensive part: every later turn re-reads it. M234's figure also includes work the trial does not separate (a failed full run diagnosed, a new graph section, questions about graphs), so the real difference from implementation alone is smaller than 65k but clearly in the subagent's favour.
+- **Quality:** comparable. Both needed one review round; the Sonnet subagent (at medium effort) produced fewer real defects, and both implementers flagged inconsistencies in the change's own artifacts. Neither is clearly better; the review and the testbed catch what both miss.
+- **Speed:** Opus in the main session was faster to a first commit; the subagent needs no supervision while it works, so the main session can run testbed checks meanwhile.
+- **What stays in the main session regardless:** design questions with the user, testbed runs and their diagnosis, reading review findings and deciding, releases. These made up most of both milestones' main-session growth.
+- **Limits:** two different milestones, n = 1 each; the effort setting changed mid-trial (M233 implementation at medium, Sonnet agents at high afterwards).
+
+Recommendation: implement well-specified OpenSpec changes (tasks with failing tests named) with the `lead-developer` subagent on Sonnet at high effort; keep proposals, decisions, testbed work, diagnosis, review handling and releases in the main session; send rework back to the same subagent (SendMessage keeps its context). Debugging and investigations stay in the main session. Pending the user's decision.
