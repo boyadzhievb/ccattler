@@ -262,7 +262,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	}
 
 	if parsedConfig.instanceID != "" {
-		streamContainerLogs(parsedConfig.instanceID, parsedConfig)
+		exitUnlessLogsStreamed(streamContainerLogs(parsedConfig.instanceID, parsedConfig))
 		return
 	}
 
@@ -286,24 +286,34 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 
 	if len(allInstanceIDs) == 0 {
 		if len(parsedConfig.tagFilters) > 0 {
-			fmt.Fprintln(os.Stderr, "no running instances found for matching tags")
+			fmt.Fprintln(os.Stderr, "no running or restarting instances found for matching tags")
 		} else {
-			fmt.Fprintf(os.Stderr, "no running instances found for service %q\n", parsedConfig.serviceName)
+			fmt.Fprintf(os.Stderr, "no running or restarting instances found for service %q\n", parsedConfig.serviceName)
 		}
 		os.Exit(1)
 	}
 
 	if parsedConfig.follow {
-		streamContainerLogs(allInstanceIDs[0].instanceID, parsedConfig)
+		exitUnlessLogsStreamed(streamContainerLogs(allInstanceIDs[0].instanceID, parsedConfig))
 		return
 	}
 
 	nonFollowConfig := parsedConfig
 	nonFollowConfig.follow = false
+	everyInstanceStreamed := true
 	for _, entry := range allInstanceIDs {
 		fmt.Printf("==> %s-%s <==\n", entry.serviceName, entry.instanceID)
-		streamContainerLogs(entry.instanceID, nonFollowConfig)
+		everyInstanceStreamed = streamContainerLogs(entry.instanceID, nonFollowConfig) && everyInstanceStreamed
 		fmt.Println()
+	}
+	exitUnlessLogsStreamed(everyInstanceStreamed)
+}
+
+// exitUnlessLogsStreamed ends the command with exit code 1 when any requested
+// log could not be read, e.g. no previous run (spec instance-logs, M234).
+func exitUnlessLogsStreamed(logsStreamed bool) {
+	if !logsStreamed {
+		os.Exit(1)
 	}
 }
 
@@ -400,7 +410,10 @@ func findInstanceIDsForService(facts []struct {
 
 	var instanceIDs []string
 	for instanceID := range serviceMap {
-		if stateMap[instanceID] == string(types.InstanceRunning) {
+		// A crash-looping instance still has its container and logs on the
+		// node; --previous exists for exactly that case (M234).
+		instanceState := stateMap[instanceID]
+		if instanceState == string(types.InstanceRunning) || instanceState == string(types.InstanceCrashLoopBackoff) {
 			instanceIDs = append(instanceIDs, instanceID)
 		}
 	}
@@ -429,7 +442,7 @@ func lookupInstanceState(instanceID string) string {
 // streamContainerLogs fetches logs for a container instance through the API
 // server's agent debug proxy. It discovers the instance's placement and
 // streams the response to stdout.
-func streamContainerLogs(instanceID string, logsConfig logsCommandConfig) {
+func streamContainerLogs(instanceID string, logsConfig logsCommandConfig) bool {
 	placementNodeID := discoverInstancePlacement(instanceID)
 	endpointURL := nodeDebugProxyURL(placementNodeID, "logs")
 
@@ -466,15 +479,16 @@ func streamContainerLogs(instanceID string, logsConfig logsCommandConfig) {
 		if strings.Contains(string(responseBody), "not found") {
 			instanceState := lookupInstanceState(instanceID)
 			if instanceState == string(types.InstanceCrashLoopBackoff) {
-				fmt.Fprintf(os.Stderr, "hint: instance %s is waiting to restart after its container exited — see `cca describe instance %s` for the exit and the wait\n", instanceID, instanceID)
+				fmt.Fprintf(os.Stderr, "hint: instance %s is waiting to restart after its container exited — see `cca describe instance %s` for the exit and the wait, `cca logs --instance %s --previous` for the run that exited\n", instanceID, instanceID, instanceID)
 			} else if instanceState != "" && instanceState != string(types.InstanceRunning) {
 				fmt.Fprintf(os.Stderr, "hint: instance %s is in %q state — no workload container exists yet\n", instanceID, instanceState)
 			}
 		}
-		return
+		return false
 	}
 
 	_, _ = io.Copy(os.Stdout, httpResponse.Body)
+	return true
 }
 
 // executeStatusCommand queries GET /api/status?all=true of a running ccattler

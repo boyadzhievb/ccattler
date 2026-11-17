@@ -615,6 +615,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	}
 
 	nodeAgent.cleanupStaleCrashLoopBackoffs(desiredByID)
+	nodeAgent.sweepInstanceData(ctx, desiredByID, running)
 
 	// Clean up init-step backoff state for instances no longer placed on this node.
 	for backoffKey := range nodeAgent.initStepBackoffs {
@@ -1068,6 +1069,36 @@ func (nodeAgent *Agent) removeInstanceDataIfSupported(ctx context.Context, insta
 	}
 	if removeError := dataRemover.RemoveInstanceData(ctx, instanceID); removeError != nil {
 		logging.Default().Error("failed to remove instance data", "instance", instanceID, "error", removeError.Error())
+	}
+}
+
+// sweepInstanceData removes runtime data (logs) of instances that are neither
+// placed on this node nor known to the runtime, exited containers included:
+// left behind by a graceful agent stop (StopAll) or a removal while the agent
+// was down. Mirrors sweepSecretMaterial (M234 review).
+func (nodeAgent *Agent) sweepInstanceData(ctx context.Context, desiredByID map[string]bool, runtimeStatuses []runtime.Status) {
+	dataRemover, keepsInstanceData := nodeAgent.runtime.(runtime.InstanceDataRemover)
+	if !keepsInstanceData {
+		return
+	}
+	knownToRuntime := make(map[string]bool, len(runtimeStatuses))
+	for _, runtimeStatus := range runtimeStatuses {
+		knownToRuntime[runtimeStatus.ID] = true
+	}
+	instanceIDs, listError := dataRemover.ListInstanceDataIDs(ctx)
+	if listError != nil {
+		logging.Default().Warn("cannot list instance data", "agent", nodeAgent.nodeID, "error", listError.Error())
+		return
+	}
+	for _, instanceID := range instanceIDs {
+		if desiredByID[instanceID] || knownToRuntime[instanceID] {
+			continue
+		}
+		if removeError := dataRemover.RemoveInstanceData(ctx, instanceID); removeError != nil {
+			logging.Default().Error("failed to remove orphaned instance data", "instance", instanceID, "error", removeError.Error())
+			continue
+		}
+		logging.Default().Info("removed orphaned instance data", "agent", nodeAgent.nodeID, "instance", instanceID)
 	}
 }
 

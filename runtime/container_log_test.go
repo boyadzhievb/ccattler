@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -88,6 +90,68 @@ func TestContainerdLogsPreviousWithoutPreviousRun(t *testing.T) {
 
 	if _, followError := openPreviousRunLog(logBaseDirectory, instanceID, LogsOptions{Previous: true, Follow: true}); followError == nil {
 		t.Error("following a previous log must be refused: a finished run does not grow")
+	}
+}
+
+// TestOpenPreviousRunLogRefusesPathOutsideBase checks that an instance ID from
+// the debug API cannot read a file outside the log directory (M234 review).
+func TestOpenPreviousRunLogRefusesPathOutsideBase(t *testing.T) {
+	logBaseDirectory := t.TempDir()
+	for _, unsafeInstanceID := range []string{"../x", "a/b", "..", ""} {
+		if _, openError := openPreviousRunLog(logBaseDirectory, unsafeInstanceID, LogsOptions{Previous: true}); openError == nil ||
+			strings.Contains(openError.Error(), "no previous run") {
+			t.Errorf("instance ID %q: error %v, want it refused as not a plain name", unsafeInstanceID, openError)
+		}
+	}
+}
+
+// TestRotateKeepsPreviousLogWhenCurrentIsEmpty checks that a start that left
+// an empty log (it failed after the task was created) does not replace the
+// real previous run (M234 review).
+func TestRotateKeepsPreviousLogWhenCurrentIsEmpty(t *testing.T) {
+	logBaseDirectory := t.TempDir()
+	const instanceID = "inst-4"
+	writeRunLog(t, logBaseDirectory, instanceID, "the run that exited\n")
+	if rotateError := rotateInstanceRunLog(logBaseDirectory, instanceID); rotateError != nil {
+		t.Fatalf("rotate: %v", rotateError)
+	}
+	writeRunLog(t, logBaseDirectory, instanceID, "") // failed start: empty log
+	if rotateError := rotateInstanceRunLog(logBaseDirectory, instanceID); rotateError != nil {
+		t.Fatalf("rotate: %v", rotateError)
+	}
+	if previousLog := readLogFile(t, instanceRunLogPath(logBaseDirectory, instanceID)+previousRunLogSuffix); previousLog != "the run that exited\n" {
+		t.Errorf("previous log = %q, want the run that exited", previousLog)
+	}
+}
+
+// TestOtherRuntimesRefusePreviousLog checks the runtimes without previous
+// logs say so (spec instance-logs).
+func TestOtherRuntimesRefusePreviousLog(t *testing.T) {
+	for runtimeName, runtimeAdapter := range map[string]Runtime{
+		"simulator": NewSimulatorRuntime(),
+		"process":   &ProcessRuntime{},
+		"nerdctl":   &ContainerRuntime{},
+	} {
+		if _, logsError := runtimeAdapter.Logs(context.Background(), "inst-5", LogsOptions{Previous: true}); !errors.Is(logsError, ErrPreviousLogNotAvailable) {
+			t.Errorf("%s: error %v, want ErrPreviousLogNotAvailable", runtimeName, logsError)
+		}
+	}
+}
+
+// TestListInstanceDataNamesSkipsInitDirectories checks the sweep only sees
+// instance directories, never a running init step's directory.
+func TestListInstanceDataNamesSkipsInitDirectories(t *testing.T) {
+	logBaseDirectory := t.TempDir()
+	writeRunLog(t, logBaseDirectory, "inst-6", "run\n")
+	if mkdirError := os.MkdirAll(filepath.Join(logBaseDirectory, initContainerNamePrefix+"123"), 0o750); mkdirError != nil {
+		t.Fatalf("mkdir: %v", mkdirError)
+	}
+	instanceIDs, listError := listInstanceLogDirectories(logBaseDirectory)
+	if listError != nil {
+		t.Fatalf("list: %v", listError)
+	}
+	if len(instanceIDs) != 1 || instanceIDs[0] != "inst-6" {
+		t.Errorf("listed %v, want only inst-6", instanceIDs)
 	}
 }
 

@@ -875,6 +875,16 @@ func (containerdRuntime *ContainerdRuntime) RemoveInstanceData(_ context.Context
 	return removeInstanceLogDirectory(ContainerdLogBaseDir, instanceID)
 }
 
+// ListInstanceDataIDs returns the instances that have a log directory on the
+// node, for the agent's sweep of data left by instances it no longer knows.
+func (containerdRuntime *ContainerdRuntime) ListInstanceDataIDs(_ context.Context) ([]string, error) {
+	return listInstanceLogDirectories(ContainerdLogBaseDir)
+}
+
+// ContainerdRuntime keeps logs beyond its containers; the agent finds that
+// through this optional interface, so a signature drift must fail to compile.
+var _ InstanceDataRemover = (*ContainerdRuntime)(nil)
+
 // --- Runtime interface: Phase E (exec & logs) ---
 
 // Exec runs a command inside a running container via the containerd exec API.
@@ -1027,7 +1037,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	if _, mountError := sortedSecretMountBindings(execSpec.SecretMounts); mountError != nil {
 		return mountError
 	}
-	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
+	initContainerName := fmt.Sprintf("%s%d", initContainerNamePrefix, time.Now().UnixNano())
 	// Image config first: the options after it override its args and add to its env.
 	ociOptions := append([]oci.SpecOpts{oci.WithImageConfig(image)},
 		containerdRuntime.buildInitContainerSpecOptions(execSpec, initContainerName)...)

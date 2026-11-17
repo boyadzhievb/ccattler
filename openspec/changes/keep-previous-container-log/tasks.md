@@ -16,5 +16,13 @@ Implemented in the main session on Opus, as the second half of the subagent tria
 ## 2. Testbed and close
 
 - [ ] 2.1 By hand on the deploy testbed (`deploy-run:previous-log`): crash-looping MariaDB, `cca logs crashloop --previous` shows the missing-password error; current log does not contain the previous run
-- [ ] 2.2 Independent review: `code-reviewer`; record every finding as fixed or rejected with one line here
+- [x] 2.2 Independent review: `code-reviewer`; record every finding as fixed or rejected with one line here — 2026-11-17 on 1fa4ea5..1fcacba, `code-reviewer` (Sonnet, effort high): request changes, 3 real. Rework round 1 by the main session (the implementer), each failing test first:
+  - fixed (medium, new) — log directories leaked on every graceful agent stop (`StopAll` no longer deleted them, nothing found them later) and on removal while the agent was down: agent `sweepInstanceData` every cycle removes directories of instances neither desired nor known to `runtime.List` (`InstanceDataRemover.ListInstanceDataIDs`, skips `cca-init-*`). `TestAgentSweepsDataOfInstancesItNoLongerKnows`, `TestListInstanceDataNamesSkipsInitDirectories`
+  - fixed (low) — path traversal on the new read path: `openPreviousRunLog` took the debug API's `instance` unvalidated (`../../x` → any `*-json.log.previous`): shared `isPlainInstanceName` for read and removal. `TestOpenPreviousRunLogRefusesPathOutsideBase`
+  - fixed (headline, also found by the testbed run) — `cca logs <service> --previous` selected only `running` instances, so a crash-looping one answered "no running instances": selection includes `crash-loop-backoff`. `TestLogsSelectsCrashLoopingInstances`
+  - fixed (low) — CLI exited 0 when the logs request failed (spec: error): `streamContainerLogs` returns success, `exitUnlessLogsStreamed`
+  - fixed (low) — an empty current log (start failed after creating the task) replaced the real previous run: rotation skips empty files. `TestRotateKeepsPreviousLogWhenCurrentIsEmpty`
+  - fixed (low) — docs/comments claimed since/timestamps apply to the previous log: only tail does (static reader, pre-existing); `handleDebugLogs` comment lists `previous`; compile-time `var _ InstanceDataRemover = (*ContainerdRuntime)(nil)`; `TestOtherRuntimesRefusePreviousLog` covers nerdctl, process, simulator
+  - noted — `cleanupStoppedStaleInstance` has no own test (same call as the tested path); the containerd Start/Logs wiring is proven by the testbed, not unit tests; `executeReconciliationCycle` is 113 lines (116 before M233, pre-existing over the 80-line rule)
+  - process — a graph would have shown both misses: new "Container Logs" section in design/graphs/OBSERVABILITY_GRAPH.md (read path with the states the CLI selects, every runtime, every create/rotate/stop/remove path of the log files)
 - [ ] 2.3 Trial numbers for M234; closing full Deploy Testbed run

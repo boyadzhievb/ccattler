@@ -405,7 +405,8 @@ func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWrit
 }
 
 // handleDebugLogs streams container logs for a single instance. Query
-// parameters: instance (required), tail, since, timestamps, follow.
+// parameters: instance (required), tail, since, timestamps, follow, previous
+// (the run before the current one, M234).
 func (debugServer *DebugServer) handleDebugLogs(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)

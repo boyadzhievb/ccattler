@@ -129,9 +129,11 @@ type LogsOptions struct {
 
 // InstanceDataRemover is implemented by runtimes that keep data for an
 // instance beyond its container, such as the logs of its current and previous
-// run. The agent calls it when the instance leaves the node (M234).
+// run. The agent removes it when the instance leaves the node, and sweeps data
+// of instances it no longer knows (left while the agent was down) (M234).
 type InstanceDataRemover interface {
 	RemoveInstanceData(ctx context.Context, instanceID string) error
+	ListInstanceDataIDs(ctx context.Context) ([]string, error)
 }
 
 // ResourceStats describes the observed resource usage of a running workload.

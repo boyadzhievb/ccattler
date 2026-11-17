@@ -39,6 +39,20 @@ func (recordingRuntime *logRecordingRuntime) RemoveInstanceData(_ context.Contex
 	return nil
 }
 
+// ListInstanceDataIDs reports the instances the runtime keeps data for: the
+// test's leftover names plus every workload the simulator runs.
+func (recordingRuntime *logRecordingRuntime) ListInstanceDataIDs(ctx context.Context) ([]string, error) {
+	instanceIDs := []string{"orphan-left-while-agent-was-down"}
+	runningWorkloads, listError := recordingRuntime.List(ctx)
+	if listError != nil {
+		return nil, listError
+	}
+	for _, workloadStatus := range runningWorkloads {
+		instanceIDs = append(instanceIDs, workloadStatus.ID)
+	}
+	return instanceIDs, nil
+}
+
 // wasRemoved reports whether RemoveInstanceData was called for instanceID.
 func (recordingRuntime *logRecordingRuntime) wasRemoved(instanceID string) bool {
 	recordingRuntime.mutex.Lock()
@@ -70,6 +84,37 @@ func TestDebugLogsPassesPreviousOption(t *testing.T) {
 	defer recordingRuntime.mutex.Unlock()
 	if !recordingRuntime.lastLogsOptions.Previous {
 		t.Error("runtime was not asked for the previous log")
+	}
+}
+
+// TestAgentSweepsDataOfInstancesItNoLongerKnows checks that log directories
+// left behind while the agent was down (graceful shutdown, removal meanwhile)
+// are removed, and that a desired instance's data is kept (M234 review).
+func TestAgentSweepsDataOfInstancesItNoLongerKnows(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	recordingRuntime := &logRecordingRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime()}
+	nodeAgent := New("node-1", factStore, recordingRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "kept1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "kept1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 3*time.Second, "orphaned instance data swept", func() bool {
+		return recordingRuntime.wasRemoved("orphan-left-while-agent-was-down")
+	})
+	waitFor(t, 3*time.Second, "kept1 running", func() bool {
+		observedStatus, statusError := recordingRuntime.Status(ctx, "kept1")
+		return statusError == nil && observedStatus.Running
+	})
+	if recordingRuntime.wasRemoved("kept1") {
+		t.Error("the data of a desired, running instance was removed")
 	}
 }
 

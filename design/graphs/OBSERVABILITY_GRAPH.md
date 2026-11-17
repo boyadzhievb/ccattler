@@ -540,7 +540,85 @@ EventProjector.Run(ctx)                              (controllers/event_projecto
 
 ---
 
-## API Endpoints (api/server.go)
+## Container Logs (cmd/cca, api, agent/debug_api.go, runtime) — M234
+
+Workload stdout/stderr as the user reads it (not the agent's own logs, see
+Structured Logging). Two halves: the read path, and the log files' lifecycle.
+Check both when changing either: every state the CLI selects, every path that
+stops, restarts or removes a container.
+
+### Read path: `cca logs <service> [--previous] [--instance id] [--tag k=v] [-f]`
+```
+executeLogsCommand                                 cmd/cca/command_status.go:258
+├── --instance id → streamContainerLogs(id)        (no state filter)
+├── resolveServiceNamesForLogs (--tag → services)
+├── fetchObservedInstanceFacts → GET /api/state?prefix=observed/instance/
+├── findInstanceIDsForService                      :390
+│   └── SELECTS state ∈ {running, crash-loop-backoff}
+│       (crash-loop: exited container and its logs still on the node)
+│       none → "no running or restarting instances found", exit 1
+├── -f → first instance only
+└── streamContainerLogs(id, config) → bool        :445
+    ├── discoverInstancePlacement(id) → node
+    ├── GET /api/node/debug/{node}/logs?instance=&tail=&since=&timestamps=&follow=&previous=
+    │   (nodeDebugProxyURL, cmd/cca/command_node_inspect.go:116)
+    │   └── api handleNodeDebugProxy               api/node_debug_proxy.go:55
+    │       (capability workload.read, cluster scope; forwards the query)
+    │       └── agent handleDebugLogs               agent/debug_api.go:409
+    │           └── runtime.Logs(ctx, id, LogsOptions{Follow,TailLines,Since,Timestamps,Previous})
+    ├── non-200 → "logs error: …" + hint (crash-loop-backoff → describe / --previous), false
+    └── exitUnlessLogsStreamed: any false → exit 1  :314
+```
+
+### runtime.Logs per runtime
+```
+ContainerdRuntime.Logs                              runtime/containerd.go:1094
+├── Previous → openPreviousRunLog(base, id)         runtime/container_log.go:62
+│   ├── id must be a plain name (no "/", "..")     isPlainInstanceName
+│   ├── Follow → error (a finished run does not grow)
+│   ├── no <id>-json.log.previous → "instance <id> has no previous run on this node"
+│   └── newStaticLogReader (tail only; since/timestamps not applied)
+└── current → LoadContainer(cca-<id>) → label ccattler.log.path (must stay under base)
+    ├── Follow → newFollowingLogReader
+    └── else   → newStaticLogReader (tail only)
+ContainerRuntime (nerdctl), ProcessRuntime, SimulatorRuntime
+└── Previous → ErrPreviousLogNotAvailable; current as before
+```
+
+### Log file lifecycle (containerd): /var/lib/ccattler/logs/<id>/
+```
+<id>-json.log            current run (shim opens O_APPEND via cio.LogFile)
+<id>-json.log.previous   run before (one kept)
+config/                  hosts, resolv.conf, config files (rewritten each start)
+
+CREATE / ROTATE
+└── ContainerdRuntime.Start                         :353
+    ├── tracked + running → return (no rotation)
+    ├── tracked + exited  → Stop (old container + snapshot; directory KEPT)
+    ├── MkdirAll(<id>/)
+    └── rotateInstanceRunLog                       :386 → container_log.go:44
+        └── current exists and non-empty → rename to .previous (empty: kept, so a
+            failed start never replaces the run that exited)
+
+STOP — directory KEPT (removeContainerResources :863 forgets tracking only)
+├── Stop / StopWithGracePeriod                      :771 / :807
+│   callers: Start (restart in place, Flow 33), detectConfigChange agent.go:1333,
+│   resize restart, cleanup paths below
+└── StopAll                                         :1423
+    callers: cca agent shutdown (command_agent.go:562), cca run-container (command_run.go:220)
+
+REMOVE — directory DELETED (RemoveInstanceData :874 → removeInstanceLogDirectory container_log.go:82)
+├── agent cleanupUndesiredInstance                  agent.go:1109  (placed elsewhere / removed, running)
+├── agent cleanupStoppedStaleInstance               agent.go:1033  (same, container exited)
+│   both → removeInstanceDataIfSupported            agent.go:1065
+└── agent sweepInstanceData, every reconcile cycle  agent.go:1079 (called :618)
+    ListInstanceDataIDs :880 → listInstanceLogDirectories container_log.go:92
+    (skips cca-init-* dirs of running init steps); removes every ID neither
+    desired on the node nor known to runtime.List (exited included)
+    → catches StopAll on agent shutdown + removal while the agent was down
+
+INIT STEPS: ExecInit :1029 uses logs/cca-init-<n>/ (config only), removed by defer
+```
 
 ### handleMetrics → Prometheus scrape
 ```

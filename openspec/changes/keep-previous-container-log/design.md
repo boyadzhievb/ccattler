@@ -23,7 +23,7 @@
 `removeContainerResources` keeps forgetting tracking state but no longer deletes the log directory. A new runtime method `RemoveInstanceData(ctx, instanceID)` deletes it; the agent calls it in `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` after the stop. Other runtimes implement it as a no-op (nerdctl removes its own container logs; process and simulator keep none).
 
 ### D3. `LogsOptions.Previous`
-`runtime.LogsOptions` gets `Previous bool`. `ContainerdRuntime.Logs` reads `<id>-json.log.previous` when set (tail, since and timestamps apply; follow is refused with Previous: a finished run does not grow). No previous file → error "instance <id> has no previous run". Other runtimes return "previous log not available on this runtime". `handleDebugLogs` maps the query parameter `previous=true`.
+`runtime.LogsOptions` gets `Previous bool`. `ContainerdRuntime.Logs` reads `<id>-json.log.previous` when set (tail applies — the static reader ignores since and timestamps, for the current log too, pre-existing; follow is refused with Previous: a finished run does not grow; the instance ID must be a plain name). No previous file → error "instance <id> has no previous run". Other runtimes return "previous log not available on this runtime". `handleDebugLogs` maps the query parameter `previous=true`.
 
 ### D4. `cca logs --previous` means the previous run
 The CLI sends `previous=true` for the selected instance (same instance selection as without the flag) instead of looking up an earlier instance ID; `findPreviousInstance` goes if nothing else uses it.
@@ -31,7 +31,7 @@ The CLI sends `previous=true` for the selected instance (same instance selection
 ## Risks / Trade-offs
 
 Failure cases and what happens:
-- **Agent crash between a container's removal and `RemoveInstanceData`**: the log directory stays behind. Same leak class as today's config directory leak after a crash; an agent-start sweep of directories for instances not placed on the node is a possible follow-up, not in scope.
+- **Directories left behind** — a graceful agent stop (`StopAll` deletes containers but no longer the logs), a removal while the agent is down, an agent crash between removal and `RemoveInstanceData`: the agent's `sweepInstanceData` runs every reconcile cycle and removes every log directory whose instance is neither desired on the node nor known to the runtime (added after the review found the `StopAll` leak; skips `cca-init-*` directories of running init steps).
 - **Disk use**: up to two runs of output per instance instead of one, each unbounded as today.
 - **Rename fails** (permissions, disk full): logged, start continues, previous log missing for that restart.
 - **Instance moved to another node**: its previous log stays on the old node until cleanup there; the new node has none (same as Kubernetes after rescheduling).
