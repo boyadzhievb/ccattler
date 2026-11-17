@@ -263,9 +263,9 @@ reconcileDesiredInstance(instanceInfo)                        :733
     ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1288
     ├── publishInstanceHostPorts(ctx, id, ...)
     ├── runtime.Status(id) → get IP, running state
-    ├── observeInstanceState(status) → state decision
+    ├── observeInstanceState(status) → state decision; failed → starting (instant exit, M238)
     ├── publishInstanceStateToStore(ctx, id, state, ip, node)
-    │   ├── PUT observed/instance/{id}/state    = "running"|"starting"|"failed"
+    │   ├── PUT observed/instance/{id}/state    = "running"|"starting"
     │   ├── PUT observed/instance/{id}/ip       = containerIP
     │   ├── PUT observed/instance/{id}/node     = nodeID
     │   └── PUT observed/instance/{id}/image    = image
@@ -282,7 +282,7 @@ reconcileDesiredInstance(instanceInfo)                        :733
 | nil | false | 0 (non-empty error) | `InstanceFailed` |
 | nil | false | 0 (empty error) | `InstanceStarting` |
 
-In later reconcile cycles an exited container is not observed this way: the agent publishes `InstanceCrashLoopBackoff` instead (section 12b). Known limit (pre-existing, not changed by M233): a container that has already exited non-zero when `observeInstanceState` runs right after `Start` is published `failed` and replaced by the failure controller (with its own back-off, section 5), bypassing Flow 33.
+In later reconcile cycles an exited container is not observed this way: the agent publishes `InstanceCrashLoopBackoff` instead (section 12b). Right after `Start` (`startInstanceAndPublishState`) a `failed` result is published as `starting` and no exit reason is written (M238 D1): the next cycle finds the exited container and records the exit through Flow 33 (in place, back-off, `crash-loop-backoff`), so an instant exit is never replaced by the failure controller.
 
 ---
 

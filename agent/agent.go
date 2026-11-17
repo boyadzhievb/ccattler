@@ -965,11 +965,10 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 	}
 }
 
-// startInstanceAndPublishState starts an instance from runtimeSpec, records its
-// resources and host ports, and writes its observed state, image and
-// configHashBeforeBuild (taken before the spec was built, Flow 16) to the store.
-// On failure, cleans up secrets and publishes a failed state. Returns true when
-// the runtime started the container.
+// startInstanceAndPublishState starts an instance, records its resources and host
+// ports, and writes its observed state, image and configHashBeforeBuild (Flow 16).
+// A start error revokes secrets and publishes failed; an instant exit publishes
+// starting (Flow 33). Returns true when the runtime started the container.
 func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, configHashBeforeBuild string, runtimeSpec runtime.Spec) bool {
 	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
 		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
@@ -1002,9 +1001,13 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		runtimeIP = runtimeStatus.IP
 	}
 
-	observedState, exitReason := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+	// A container that has already exited is left to the next cycle, which
+	// records the exit and backs off in place (Flow 33, M238): never failed here.
+	observedState, _ := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+	if observedState == types.InstanceFailed {
+		observedState = types.InstanceStarting
+	}
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeIP)
-	nodeAgent.publishExitReasonIfFailed(ctx, instanceInfo.id, observedState, exitReason)
 	if observedState == types.InstanceRunning {
 		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "running")
 	}

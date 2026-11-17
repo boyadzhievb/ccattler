@@ -43,6 +43,7 @@ type crashingRuntime struct {
 	startTimes                map[string][]time.Time // startTimes lists the start times per instance ID.
 	crashPending              map[string]bool        // crashPending marks instances to kill on the next List.
 	stableFromStartNumber     int                    // stableFromStartNumber is the start from which workloads no longer crash; 0 means never.
+	exitBeforeFirstLook       bool                   // exitBeforeFirstLook makes a crashing workload exit inside Start, before the agent's first Status.
 }
 
 // newCrashingRuntime creates a crashingRuntime whose workloads crash on every start.
@@ -54,7 +55,8 @@ func newCrashingRuntime() *crashingRuntime {
 	}
 }
 
-// Start records the start, starts the workload and schedules its crash.
+// Start records the start, starts the workload and schedules its crash, or
+// crashes it at once when exitBeforeFirstLook is set.
 func (crashRuntime *crashingRuntime) Start(ctx context.Context, spec runtime.Spec) error {
 	if startError := crashRuntime.SimulatorRuntime.Start(ctx, spec); startError != nil {
 		return startError
@@ -63,6 +65,10 @@ func (crashRuntime *crashingRuntime) Start(ctx context.Context, spec runtime.Spe
 	defer crashRuntime.mutex.Unlock()
 	crashRuntime.startTimes[spec.ID] = append(crashRuntime.startTimes[spec.ID], time.Now())
 	stableNow := crashRuntime.stableFromStartNumber > 0 && len(crashRuntime.startTimes[spec.ID]) >= crashRuntime.stableFromStartNumber
+	if crashRuntime.exitBeforeFirstLook && !stableNow {
+		crashRuntime.KillWorkload(spec.ID, 1, "")
+		return nil
+	}
 	crashRuntime.crashPending[spec.ID] = !stableNow
 	return nil
 }
@@ -95,6 +101,13 @@ func startCrashLoopTestAgent(t *testing.T, instanceID string, baseDelay time.Dur
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { factStore.Close() })
+	return startCrashLoopTestAgentOnStore(t, factStore, instanceID, baseDelay, crashRuntime)
+}
+
+// startCrashLoopTestAgentOnStore is startCrashLoopTestAgent on a store the
+// caller created, so a test can observe the agent's writes from the first one.
+func startCrashLoopTestAgentOnStore(t *testing.T, factStore store.StateStore, instanceID string, baseDelay time.Duration, crashRuntime *crashingRuntime) (*Agent, store.StateStore, context.Context) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
