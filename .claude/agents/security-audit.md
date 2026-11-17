@@ -1,7 +1,7 @@
 ---
 name: security-audit
 description: Audit CCattler security — mTLS, secrets, auth, zero-trust enforcement
-model: sonnet
+model: opus
 effort: high
 tools:
   - Bash

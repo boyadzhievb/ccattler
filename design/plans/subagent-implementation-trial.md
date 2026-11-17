@@ -57,6 +57,10 @@ M236 implementation (Opus, effort low, subagent): 88.7k subagent tokens, 74 tool
 
 M236 review: `code-reviewer` 89.7k tokens / 3.5 min, `security-audit` 78.6k / 2.6 min. Real defects: 3 — 1 high in the implementation (restart reused stale secret material for non-running instances), 2 from the main session's own design (generation reset on delete + recreate; generation keys visible cross-team through the state API) — plus 5 low/hardening items. Rework round 1 by the same subagent (resumed, still Opus low): all 7 items fixed failing-first, 6.2 min, about 59k more tokens (148.0k total, 79 tool calls); main-session re-run green. One process slip: its docs commit swept in an unrelated uncommitted file (reported by the subagent; harmless).
 
+### Decision (user, 2026-11-17)
+
+`lead-developer` on **Opus, effort medium** implements milestones; `code-reviewer` and `security-audit` on **Opus, effort high**; everything else stays in the main session as before. Written into CLAUDE.md (Independent Review) and the three agent files. The other Sonnet agents keep `effort: high`.
+
 ### Three-way result (2026-11-17, M236 released as v1.91.0-beta)
 
 | | M233 | M234 | M236 |
