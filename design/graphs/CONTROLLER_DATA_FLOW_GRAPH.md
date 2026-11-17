@@ -219,7 +219,7 @@ RolloutController.Reconcile(ctx, facts)                      :46
 ├── extractUpdatePolicies(facts)                             :280
 │   └── reads desired/service/{svc}/update/{strategy,maxSurge,maxUnavailable}
 ├── extractInstancesByService(facts)                         :313
-│   └── reads observed/instance/{id}/{state,image,service,restarts}
+│   └── reads observed/instance/{id}/{state,image,service}
 ├── extractRolloutDisruptionBudgets(facts)                   :340
 ├── extractDesiredInstanceCounts(facts)                      :373
 ├── extractRolloutState(facts)                               :402
@@ -227,13 +227,9 @@ RolloutController.Reconcile(ctx, facts)                      :46
 │
 └── FOR EACH service with image mismatch:
     ├── classifyInstancesByImage(instances, desiredImage)     :113
-    │   → old-image instances, new-image instances, new-image failed count
-    │   └── isInstanceFailedForRollout: failed, or crash-loop-backoff with
-    │       restarts >= rolloutCrashLoopRestartThreshold (3) (M238 D5; also used
-    │       for old-image currentUnavailable in buildOldInstanceStopChanges)
+    │   → old-image instances, new-image instances
     │
-    ├── shouldTriggerRollback(newImageFailed, len(newInstances), prevImage)
-    │   │   [failed >= min(3, new-image instances); none → never (M238 D5)]
+    ├── shouldTriggerRollback(newImageFailed, prevImage)      :178
     │   └── IF rollback needed:
     │       └── buildRollbackChanges(svc, prevImage)          :185
     │           └── PUT desired/service/{svc}/image = previousImage

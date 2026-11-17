@@ -26,12 +26,12 @@ const initContainerNamePrefix = "cca-init-"
 // of an instance's previous run.
 var ErrPreviousLogNotAvailable = errors.New("previous log not available on this runtime")
 
-// InstanceIDPattern matches every instance ID (generated hex IDs, test IDs such
-// as "inst-1", init step names "cca-init-N"): letters, digits, "-" and "_", not
-// starting with "-"; never ".", "/" or empty, so an ID can name a directory
-// directly under the log base. Every path built from an ID is guarded by its
-// MatchString, an anchored check CodeQL credits as a path sanitizer (M238 D7).
-var InstanceIDPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]*$`)
+// InstanceIDPattern matches every instance ID: hex IDs, "<name>-<N>" stateful
+// and job IDs from DSL names (Unicode letters, digits, "_", "-", ".", ":"),
+// "cca-init-N". It starts with a letter, digit or "_", so "." and ".." cannot
+// match, and has no "/", whitespace or control characters. Paths from an ID are
+// guarded by its MatchString, a sanitizer CodeQL credits (M238 D7, B4).
+var InstanceIDPattern = regexp.MustCompile(`^[\p{L}\p{N}_][\p{L}\p{N}_.:-]*$`)
 
 // instanceRunLogPath is the log file of an instance's current run:
 // <base>/<id>/<id>-json.log.

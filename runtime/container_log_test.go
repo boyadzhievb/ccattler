@@ -94,15 +94,23 @@ func TestContainerdLogsPreviousWithoutPreviousRun(t *testing.T) {
 }
 
 // TestInstanceIDPatternAcceptsInstanceIDsOnly checks the one anchored pattern
-// every log path is guarded with: generated hex IDs, test IDs and init step
-// names pass; anything that could leave the log base does not (M238 D7).
+// every log path is guarded with: generated hex IDs, stateful and job IDs from
+// DSL names (letters incl. Unicode, digits, "_", "-", ".", ":"), test IDs and
+// init step names pass; anything that could leave the log base does not (M238 D7, B4).
 func TestInstanceIDPatternAcceptsInstanceIDsOnly(t *testing.T) {
-	for _, acceptedInstanceID := range []string{"a8f31bc904", "inst-1", "cca-init-123", "web_1", "Inst1", "0"} {
+	acceptedInstanceIDs := []string{
+		"a8f31bc904", "inst-1", "cca-init-123", "web_1", "Inst1", "0",
+		"db.migrate-0", "web.api-1", "ns:svc-0", "_internal-2", "café-0", "сервис.api-3",
+	}
+	for _, acceptedInstanceID := range acceptedInstanceIDs {
 		if !InstanceIDPattern.MatchString(acceptedInstanceID) {
 			t.Errorf("instance ID %q was refused", acceptedInstanceID)
 		}
 	}
-	for _, refusedInstanceID := range []string{"", ".", "..", "../x", "a/b", "-x", "_x/", "a.b", "a b", "a\x00b", "inst-1\n"} {
+	refusedInstanceIDs := []string{
+		"", ".", "..", "../x", "a/b", "-x", ".x", ":x", "_x/", " x", "a b", "x\n", "a\x00b", "a\tb", `a\b`,
+	}
+	for _, refusedInstanceID := range refusedInstanceIDs {
 		if InstanceIDPattern.MatchString(refusedInstanceID) {
 			t.Errorf("instance ID %q was accepted", refusedInstanceID)
 		}
@@ -174,6 +182,7 @@ func TestOtherRuntimesRefusePreviousLog(t *testing.T) {
 func TestListInstanceDataNamesSkipsInitDirectories(t *testing.T) {
 	logBaseDirectory := t.TempDir()
 	writeRunLog(t, logBaseDirectory, "inst-6", "run\n")
+	writeRunLog(t, logBaseDirectory, "db.migrate-0", "run\n") // stateful/job ID from a dotted DSL name (B4)
 	if mkdirError := os.MkdirAll(filepath.Join(logBaseDirectory, initContainerNamePrefix+"123"), 0o750); mkdirError != nil {
 		t.Fatalf("mkdir: %v", mkdirError)
 	}
@@ -181,8 +190,8 @@ func TestListInstanceDataNamesSkipsInitDirectories(t *testing.T) {
 	if listError != nil {
 		t.Fatalf("list: %v", listError)
 	}
-	if len(instanceIDs) != 1 || instanceIDs[0] != "inst-6" {
-		t.Errorf("listed %v, want only inst-6", instanceIDs)
+	if strings.Join(instanceIDs, ",") != "db.migrate-0,inst-6" {
+		t.Errorf("listed %v, want db.migrate-0 and inst-6", instanceIDs)
 	}
 }
 
@@ -196,6 +205,13 @@ func TestRemoveInstanceLogDirectoryStaysUnderBase(t *testing.T) {
 	}
 	if _, statError := os.Stat(filepath.Join(logBaseDirectory, "inst-3")); !os.IsNotExist(statError) {
 		t.Errorf("log directory still exists (stat error %v)", statError)
+	}
+	writeRunLog(t, logBaseDirectory, "web.api-1", "run\n") // stateful ID from a dotted DSL name (B4)
+	if removeError := removeInstanceLogDirectory(logBaseDirectory, "web.api-1"); removeError != nil {
+		t.Fatalf("remove web.api-1: %v", removeError)
+	}
+	if _, statError := os.Stat(filepath.Join(logBaseDirectory, "web.api-1")); !os.IsNotExist(statError) {
+		t.Errorf("log directory of web.api-1 still exists (stat error %v)", statError)
 	}
 	for _, unsafeInstanceID := range []string{"", ".", "..", "../other", "a/b"} {
 		if removeError := removeInstanceLogDirectory(logBaseDirectory, unsafeInstanceID); removeError == nil {

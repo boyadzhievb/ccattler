@@ -37,17 +37,11 @@ When a start fails because the workload's own process could not be started (the 
 - **THEN** it does not publish `failed`; the next cycle restarts it in place with back-off
 - Test: `TestAgentRunningPathRaceDoesNotPublishFailed`
 
-#### Scenario: A crash-looping new image rolls back
-- **GIVEN** a rolling update with a previous image whose new-image instances are in `crash-loop-backoff` with at least 3 restarts each, at least 3 of them
+#### Scenario: A crash-looping new image stalls the rollout (interim, until M241)
+- **GIVEN** a rolling update with a previous image whose new-image instance is in `crash-loop-backoff`
 - **WHEN** the rollout controller reconciles
-- **THEN** it reverts the desired image to the previous one, as for failed new-image instances; fewer restarts do not
-- Test: `TestRolloutRollsBackWhenNewImageCrashLoops`, `TestRolloutDoesNotRollBackForFewCrashLoopRestarts`
-
-#### Scenario: A single failing new instance of a one-at-a-time rollout rolls back
-- **GIVEN** a rolling update with a previous image and only one new-image instance (`max_unavailable` 1, no surge)
-- **WHEN** that instance is `failed` or in `crash-loop-backoff` with at least 3 restarts
-- **THEN** the rollout controller reverts the desired image; with fewer restarts, or with no new-image instance, it does not
-- Test: `TestRolloutRollsBackWhenSingleNewInstanceFails`, `TestRolloutDoesNotRollBackWithoutNewInstances`
+- **THEN** it neither reverts the desired image nor stops another old-image instance
+- Test: `TestRolloutStallsWithoutRollbackWhenNewImageCrashLoops`
 
 #### Scenario: Logs of a crash-looping instance are read only for real instance IDs
 - **WHEN** the agent debug logs endpoint (used by `cca logs`, `--previous` included) gets an `instance` that is not an instance ID (`../x`, `a/b`, `..`)

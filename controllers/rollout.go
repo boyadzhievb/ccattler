@@ -82,7 +82,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage, updatePolicies[serviceName], currentRevision)
 		changes = append(changes, trackingChanges...)
 
-		if shouldTriggerRollback(newImageFailedCount, len(newImageInstances), previousImage) {
+		if shouldTriggerRollback(newImageFailedCount, previousImage) {
 			rollbackChanges := buildRollbackChanges(serviceName, previousImage)
 			changes = append(changes, rollbackChanges...)
 			continue
@@ -106,25 +106,10 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 	return changes, nil
 }
 
-// rolloutCrashLoopRestartThreshold is the restart count from which an instance
-// in crash-loop-backoff counts as failed for rollout decisions (M238 D5): the
-// agent restarts exited containers in place and never publishes failed for them.
-const rolloutCrashLoopRestartThreshold = 3
-
-// isInstanceFailedForRollout reports whether an instance counts as failed for
-// the rollback threshold and max_unavailable: failed, or crash-looping with at
-// least rolloutCrashLoopRestartThreshold restarts.
-func isInstanceFailedForRollout(instanceInfo rolloutInstanceInfo) bool {
-	if instanceInfo.state == types.InstanceFailed {
-		return true
-	}
-	return instanceInfo.state == types.InstanceCrashLoopBackoff && instanceInfo.restarts >= rolloutCrashLoopRestartThreshold
-}
-
 // classifyInstancesByImage partitions a service's instances into those running
 // the old image and those running the new (desired) image, skipping stopped
-// instances. It also returns the count of new-image instances that count as
-// failed (isInstanceFailedForRollout), used for rollback threshold checks.
+// instances. It also returns the count of new-image instances in the failed
+// state, which is used for rollback threshold checks.
 func classifyInstancesByImage(
 	instances []rolloutInstanceInfo,
 	desiredImage string,
@@ -137,7 +122,7 @@ func classifyInstancesByImage(
 		}
 		if instanceInfo.image == "" || instanceInfo.image == desiredImage {
 			newImageInstances = append(newImageInstances, instanceInfo)
-			if isInstanceFailedForRollout(instanceInfo) {
+			if instanceInfo.state == types.InstanceFailed {
 				newImageFailedCount++
 			}
 		} else {
@@ -187,18 +172,12 @@ func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rollout
 	return trackingChanges
 }
 
-// rolloutRollbackFailedThreshold is how many failed new-image instances
-// trigger a rollback; with fewer new-image instances, all of them must fail.
-const rolloutRollbackFailedThreshold = 3
-
-// shouldTriggerRollback returns true when a previous image exists and the
-// failed new-image instances reach the threshold, or all new-image instances
-// when fewer exist (a one-at-a-time rollout, M238 D5); never with none.
-func shouldTriggerRollback(newImageFailedCount int, newImageInstanceCount int, previousImage string) bool {
-	if newImageInstanceCount == 0 || previousImage == "" {
-		return false
-	}
-	return newImageFailedCount >= min(rolloutRollbackFailedThreshold, newImageInstanceCount)
+// shouldTriggerRollback returns true when the number of failed new-image
+// instances meets or exceeds the rollback threshold (3) and a previous image
+// is available to revert to.
+func shouldTriggerRollback(newImageFailedCount int, previousImage string) bool {
+	const rollbackThreshold = 3
+	return newImageFailedCount >= rollbackThreshold && previousImage != ""
 }
 
 // buildRollbackChanges returns changes that revert the desired service image
@@ -246,7 +225,7 @@ func buildOldInstanceStopChanges(
 
 	currentUnavailable := 0
 	for _, instanceInfo := range oldImageInstances {
-		if isInstanceFailedForRollout(instanceInfo) {
+		if instanceInfo.state == types.InstanceFailed {
 			currentUnavailable++
 		}
 	}
@@ -280,11 +259,10 @@ func buildOldInstanceStopChanges(
 
 // rolloutInstanceInfo holds instance details needed for rolling update decisions.
 type rolloutInstanceInfo struct {
-	id       string              // id is the instance ID.
-	service  string              // service is the owning service.
-	state    types.InstanceState // state is the effective instance state.
-	image    string              // image is the observed image the instance was started from.
-	restarts int                 // restarts is observed/instance/{id}/restarts, 0 when missing or corrupt.
+	id      string
+	service string
+	state   types.InstanceState
+	image   string
 }
 
 // extractDesiredImages returns a map of service name to desired container image.
@@ -340,13 +318,11 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 		if serviceName == "" {
 			continue
 		}
-		restartCount, _ := strconv.Atoi(fields["restarts"]) // missing or corrupt counts as 0
 		result[serviceName] = append(result[serviceName], rolloutInstanceInfo{
-			id:       instanceID,
-			service:  serviceName,
-			state:    effectiveInstanceState(fields),
-			image:    fields["image"],
-			restarts: restartCount,
+			id:      instanceID,
+			service: serviceName,
+			state:   effectiveInstanceState(fields),
+			image:   fields["image"],
 		})
 	}
 	return result

@@ -1220,7 +1220,7 @@ func parseTailLines(tailValue string) int {
 // newFollowingLogReader opens a log file and tails it, polling for new data
 // until the context is cancelled.
 func newFollowingLogReader(ctx context.Context, logFilePath string, options LogsOptions) (io.ReadCloser, error) {
-	logFile, openError := os.Open(logFilePath) // #nosec G304 — path from internal label, not user input
+	logFile, openError := os.Open(logFilePath) // #nosec G304 — callers check the ID with InstanceIDPattern and keep the path under the log base
 	if openError != nil {
 		return nil, openError
 	}

@@ -574,10 +574,10 @@ executeLogsCommand                                 cmd/cca/command_status.go:258
 ### runtime.Logs per runtime
 ```
 ContainerdRuntime.Logs                              runtime/containerd.go
-├── id must match InstanceIDPattern  `^[A-Za-z0-9_][A-Za-z0-9_-]*$` (M238 D7; also
+├── id must match InstanceIDPattern  `^[\p{L}\p{N}_][\p{L}\p{N}_.:-]*$` (M238 D7, B4; also
 │   openPreviousRunLog, removeInstanceLogDirectory, listInstanceLogDirectories)
 ├── Previous → openPreviousRunLog(base, id)         runtime/container_log.go
-│   ├── id must match InstanceIDPattern (no ".", "/", empty)
+│   ├── id must match InstanceIDPattern (no leading ".", "-", no "/", whitespace, empty)
 │   ├── Follow → error (a finished run does not grow)
 │   ├── no <id>-json.log.previous → "instance <id> has no previous run on this node"
 │   └── newStaticLogReader (tail only; since/timestamps not applied)

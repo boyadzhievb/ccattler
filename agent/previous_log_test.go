@@ -50,7 +50,7 @@ func TestDebugLogsRefusesUnsafeInstanceID(t *testing.T) {
 		_ = response.Body.Close()
 		return response.StatusCode
 	}
-	for _, unsafeInstanceID := range []string{"../x", "a/b", "..", "-x", "a.b"} {
+	for _, unsafeInstanceID := range []string{"../x", "a/b", "..", ".", "-x", " x", "x\n"} {
 		if statusCode := requestLogsStatus(unsafeInstanceID); statusCode != http.StatusBadRequest {
 			t.Errorf("instance %q: status %d, want 400", unsafeInstanceID, statusCode)
 		}
@@ -61,7 +61,7 @@ func TestDebugLogsRefusesUnsafeInstanceID(t *testing.T) {
 	if refusedCallCount != 0 {
 		t.Errorf("runtime Logs called %d times for refused instance IDs, want 0", refusedCallCount)
 	}
-	for _, acceptedInstanceID := range []string{"a8f31bc904", "inst-1", "cca-init-123"} {
+	for _, acceptedInstanceID := range []string{"a8f31bc904", "inst-1", "cca-init-123", "db.migrate-0", "web.api-1", "ns:svc-0"} {
 		if statusCode := requestLogsStatus(acceptedInstanceID); statusCode != http.StatusOK {
 			t.Errorf("instance %q: status %d, want 200", acceptedInstanceID, statusCode)
 		}
