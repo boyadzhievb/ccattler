@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.90.0-beta <Badge type="tip" text="latest" /> {#v1-90-0-beta}
+## v1.91.0-beta <Badge type="tip" text="latest" /> {#v1-91-0-beta}
+
+**2026-11-17** — Connection Changes Do Not Reach Running Instances.
+
+- **Connection Changes Do Not Reach Running Instances** (M236) — Bug fix (found in the M235 security audit): connection facts were not part of the agent's config hash, so a connection added or changed after an instance started never reached it.
+
+---
+
+## v1.90.0-beta {#v1-90-0-beta}
 
 **2026-11-17** — A Restart Deletes the Previous Container Log.
 
