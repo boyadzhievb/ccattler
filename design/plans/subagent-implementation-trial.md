@@ -49,4 +49,8 @@ Findings:
 - **What stays in the main session regardless:** design questions with the user, testbed runs and their diagnosis, reading review findings and deciding, releases. These made up most of both milestones' main-session growth.
 - **Limits:** two different milestones, n = 1 each; the effort setting changed mid-trial (M233 implementation at medium, Sonnet agents at high afterwards).
 
-Recommendation: implement well-specified OpenSpec changes (tasks with failing tests named) with the `lead-developer` subagent on Sonnet at high effort; keep proposals, decisions, testbed work, diagnosis, review handling and releases in the main session; send rework back to the same subagent (SendMessage keeps its context). Debugging and investigations stay in the main session. Pending the user's decision.
+Main session effort, confirmed by the user 2026-11-17: **Opus at medium** — so M234 was "Opus, medium, main session".
+
+**Third arm (user's question: what if Opus at low effort?):** M236 implemented by the `lead-developer` subagent with `model: opus`, `effort: low` passed on the call (agent file unchanged: Sonnet, high). Same measurements; compare with M234 (same model, medium, main session) and M233 (Sonnet, medium, subagent).
+
+Preliminary recommendation (before the third arm): implement well-specified OpenSpec changes (tasks with failing tests named) with the `lead-developer` subagent on Sonnet at high effort; keep proposals, decisions, testbed work, diagnosis, review handling and releases in the main session; send rework back to the same subagent (SendMessage keeps its context). Debugging and investigations stay in the main session. Pending the user's decision.
