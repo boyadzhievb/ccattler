@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M236 — Connection Changes Do Not Reach Running Instances (v1.91.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M238 — Instant Exit Bypasses the Crash-Loop Back-off (v1.92.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

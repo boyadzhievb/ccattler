@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.91.0-beta <Badge type="tip" text="latest" /> {#v1-91-0-beta}
+## v1.92.0-beta <Badge type="tip" text="latest" /> {#v1-92-0-beta}
+
+**2026-11-17** — Instant Exit Bypasses the Crash-Loop Back-off.
+
+- **Instant Exit Bypasses the Crash-Loop Back-off** (M238) — Bug fix (found in the M233 review): a container that exits at once, or whose process cannot start (missing or non-executable entrypoint), is now restarted in place with back-off and shown as `crash-loop-backoff` with a readable reason, instead of being marked failed and replaced over and over; only infrastructure start failures (image, network) still mark an instance failed. `cca status` and the deploy health check count crash-looping instances. Log reads validate instance IDs (closes code-scanning alerts #14 and #28). Known gap until M241: a rollout whose new image crash-loops stalls without rolling back.
+
+---
+
+## v1.91.0-beta {#v1-91-0-beta}
 
 **2026-11-17** — Connection Changes Do Not Reach Running Instances.
 
