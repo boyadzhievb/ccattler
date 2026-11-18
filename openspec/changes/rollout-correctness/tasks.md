@@ -323,6 +323,16 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
     exit 0 (20 packages ok, 0 failures)
     ```
 
+## 2d. Rework after review round 2 (design D14, added 2026-11-18)
+
+- [ ] 2d.0 Failing tests first, with the instance controller in the loop (controller + instance controller + fake agent/placement, as the reviewer's probes did): `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`, `TestRolloutRollbackWithDefaultPacingCompletes`, `TestRolloutSurgeEndsWithLastOldInstance`, plus an 8-node per-node rollout that completes (not rolled back by the deadline). Record the red run.
+- [ ] 2d.1 H2/H3: pacing defaults by kind (stateful, per-node: 1/0, never surge; explicit `max_extra` ignored with an apply warning); `ResolveRolloutPacing` gets the kind; the instance controller adds no surge for these kinds.
+- [ ] 2d.2 H1: in `rollback`/`stalled` the effective max_unavailable is at least 1 and no surge is used.
+- [ ] 2d.3 M1: surge only while old-image instances remain; `surge_allowance` deleted when the last old instance is stopped.
+- [ ] 2d.4 L1 remove dead `stopWritten`; L5 budget-reason and describe wording; L6 retarget after revert uses the current target as known good; L3 k8s-to-cca keeps explicit zeros (percentages stay as they are, pre-existing, note it); L2 document in dsl-reference.md; L4 graphs (OBSERVABILITY_GRAPH.md `stopAndReplace`, INSTANCE_LIFECYCLE_GRAPH.md calls, `ReadValueOrEmpty`, `readOptionalIntegerFact`, `describePacingDefaultNote`); L7 move the agent test assertions into `waitFor`.
+- [ ] 2d.5 Docs: D14 in Flow 34, CONTROLLER_DATA_FLOW_GRAPH.md, dsl-reference.md defaults table by kind.
+- [ ] 2d.6 Checks as in 3.1; paste results.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
@@ -348,6 +358,12 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
     - 2b.1 `started_at` put separate from state put — accepted as is: low risk, a failed put is retried with the next start.
     - Integration test sets `min_healthy_time 0s` — accepted: D10 covered by unit tests and testbed 4.1.
     - L1 → 2c.8; L2 per-cycle cap ordering — rejected: converges next cycle, no wrong state; L3, L4 → 2c.8; L5 `executeReconciliationCycle` 114 lines — pre-existing, not in this milestone's scope.
+  - Round 2, 2026-11-18, on `9a60a15..3762eee` (REQUEST CHANGES). All round-1 findings confirmed fixed with tests. New findings, verified by the main session in the code (instance controller adds surge to every kind, `ResolveRolloutPacing` ignores kind, `rollBackToPreviousImage` removes surge):
+    - H1 rollback with default pacing deadlocks (budget 0, no surge) — real → D14, 2d.2.
+    - H2 per-node services cannot place the surge; rollout never completes — real → D14 (DaemonSet defaults 1/0), 2d.1.
+    - H3 stateful 1-instance service surges an extra ordinal — real → D14 (StatefulSet defaults), 2d.1.
+    - M1 surplus new instance at the end, then a scale-down — real (reviewer probe) → D14, 2d.3.
+    - L1 dead `stopWritten`, L3 k8s-to-cca explicit zeros, L4 graphs, L5 wording, L7 assertions outside `waitFor` → 2d.4. L2 removed field keeps stored value → documented (2d.4). L6 retarget after revert may pick the bad image → fixed (2d.4); b→c→b older instances ignored by D13 — accepted, the deadline covers it.
 - [ ] 4.3 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 
 ## 5. Release

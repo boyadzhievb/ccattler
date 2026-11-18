@@ -26,6 +26,24 @@ When a service's desired image differs from the image of some of its instances, 
 - **THEN** a surge of one instance is allowed and the old instance is not stopped; once the new instance is healthy the old one is stopped
 - Test: `TestRolloutDefaultsSurgeSingleInstanceService`
 
+#### Scenario: Stateful and per-node services do not surge
+- **GIVEN** a 1-instance stateful service and a per-node service on 3 nodes, both with no `update` block, whose desired image changes
+- **WHEN** the instance and rollout controllers reconcile until the rollout ends
+- **THEN** no extra ordinal or extra instance is created, instances are replaced one at a time, and both rollouts reach `complete`
+- Test: `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`
+
+#### Scenario: A rollback can always move
+- **GIVEN** a 3-instance service with default pacing, two instances on the new image running, which rolls back
+- **WHEN** the instance and rollout controllers reconcile
+- **THEN** the rollback replaces the new-image instances and reaches `rolled-back`
+- Test: `TestRolloutRollbackWithDefaultPacingCompletes`
+
+#### Scenario: No surplus instance at the end
+- **GIVEN** a 1-instance stateless service with default pacing whose rollout has stopped its last old instance
+- **WHEN** the instance and rollout controllers reconcile until the rollout ends
+- **THEN** no further new instance is created and no instance is scaled down after the rollout completes
+- Test: `TestRolloutSurgeEndsWithLastOldInstance`
+
 #### Scenario: Unavailable instances use up the budget
 - **GIVEN** a rollout with `max_unavailable 2` where one instance of the new image is in `crash-loop-backoff` and a healthy new-image instance is running
 - **WHEN** the rollout controller reconciles
