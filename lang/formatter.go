@@ -737,6 +737,9 @@ func formatServiceUpdateFields(builder *strings.Builder, serviceDecl ServiceDecl
 	if serviceDecl.Update.ProgressDeadline != "" {
 		fmt.Fprintf(builder, "%sprogress_deadline %s\n", indent2, serviceDecl.Update.ProgressDeadline)
 	}
+	if serviceDecl.Update.MinHealthyTime != "" {
+		fmt.Fprintf(builder, "%smin_healthy_time %s\n", indent2, serviceDecl.Update.MinHealthyTime)
+	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }
 

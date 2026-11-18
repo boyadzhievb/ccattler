@@ -477,9 +477,12 @@ service web {
     update {
         max_unavailable 1
         max_extra 1
+        min_healthy_time 0s
     }
 }
 `
+	// min_healthy_time 0s: this test checks the pacing, not the 10s default
+	// window a new instance waits before it counts (M241 D10).
 	if err := lang.Apply(ctx, factStore, input); err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}

@@ -41,7 +41,7 @@
       "name": "keyword.control.cca"
     },
     "field-keyword": {
-      "match": "\\b(image|instances|expose|cpu|memory|size|persistent|min|max|target|event|days|start|end|minimum|architecture|zone|spread|max_unavailable|max_extra|progress_deadline|max_instances|min_available|http|tcp|exec|every|timeout|retry|file|env|from|allow|deny|scope|member|process|share|when|weight|port|external|idle_timeout|activation_timeout|cpu_min|cpu_max|memory_min|memory_max|failure_threshold|success_threshold|initial_delay|scale_up|scale_down|require|prefer|accept|provider|region|credentials|instance_type|project_id|resource_group|vpc_network|route_table|oidc_issuer|credential_ttl|refresh_before|deliver|stateful)\\b",
+      "match": "\\b(image|instances|expose|cpu|memory|size|persistent|min|max|target|event|days|start|end|minimum|architecture|zone|spread|max_unavailable|max_extra|progress_deadline|min_healthy_time|max_instances|min_available|http|tcp|exec|every|timeout|retry|file|env|from|allow|deny|scope|member|process|share|when|weight|port|external|idle_timeout|activation_timeout|cpu_min|cpu_max|memory_min|memory_max|failure_threshold|success_threshold|initial_delay|scale_up|scale_down|require|prefer|accept|provider|region|credentials|instance_type|project_id|resource_group|vpc_network|route_table|oidc_issuer|credential_ttl|refresh_before|deliver|stateful)\\b",
       "name": "support.function.cca"
     },
     "constant": {

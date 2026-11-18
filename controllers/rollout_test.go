@@ -298,10 +298,18 @@ type rolloutTestInstance struct {
 	restarts     string              // restarts is the observed restart count; "" for none.
 	nodeFailure  bool                // nodeFailure marks the instance as on a lost node.
 	statusReason string              // statusReason is the observed status reason.
+	startedAgo   time.Duration       // startedAgo is how long before the test clock it started; 0 means rolloutTestSettledAge.
+	noStartedAt  bool                // noStartedAt leaves out started_at, as an agent older than M241 D10 does.
+	readiness    string              // readiness is the observed readiness probe state; "" for none.
 }
 
+// rolloutTestSettledAge is the default age of a running test instance's
+// started_at: well past the default min_healthy_time, so it counts at once.
+const rolloutTestSettledAge = time.Minute
+
 // buildRolloutTestFacts returns sorted facts for service "web" with the given
-// desired image, extra facts (key → value) and instances.
+// desired image, extra facts (key → value) and instances. A running instance
+// gets a started_at (rolloutTestSettledAge ago unless set), as the agent writes.
 func buildRolloutTestFacts(desiredImage string, extraFacts map[string]string, instances ...rolloutTestInstance) []store.Fact {
 	inputFacts := []store.Fact{{Key: types.KeyDesiredServiceImage("web"), Value: []byte(desiredImage)}}
 	for factKey, factValue := range extraFacts {
@@ -324,9 +332,27 @@ func buildRolloutTestFacts(desiredImage string, extraFacts map[string]string, in
 		if instance.statusReason != "" {
 			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceStatusReason(instance.instanceID), Value: []byte(instance.statusReason)})
 		}
+		if instance.readiness != "" {
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceProbeState(instance.instanceID, types.ProbeReadiness), Value: []byte(instance.readiness)})
+		}
+		inputFacts = append(inputFacts, buildStartedAtTestFacts(instance)...)
 	}
 	store.SortFacts(inputFacts)
 	return inputFacts
+}
+
+// buildStartedAtTestFacts returns the started_at fact of a running test
+// instance, none for other states or when noStartedAt is set.
+func buildStartedAtTestFacts(instance rolloutTestInstance) []store.Fact {
+	if instance.state != types.InstanceRunning || instance.noStartedAt {
+		return nil
+	}
+	startedAgo := instance.startedAgo
+	if startedAgo == 0 {
+		startedAgo = rolloutTestSettledAge
+	}
+	startedAt := rolloutTestNow.Add(-startedAgo).Format(time.RFC3339Nano)
+	return []store.Fact{{Key: types.KeyObservedInstanceStartedAt(instance.instanceID), Value: []byte(startedAt)}}
 }
 
 // rollingFacts returns the rollout facts of a "web" rollout from previousImage
@@ -354,8 +380,15 @@ func mergeFactMaps(factMaps ...map[string]string) map[string]string {
 // returns its changes and the last change per key.
 func reconcileRolloutTestFacts(t *testing.T, inputFacts []store.Fact) ([]Change, map[string]Change) {
 	t.Helper()
+	return reconcileRolloutTestFactsAt(t, inputFacts, rolloutTestNow)
+}
+
+// reconcileRolloutTestFactsAt runs a rollout controller whose clock reads
+// passNow and returns its changes and the last change per key.
+func reconcileRolloutTestFactsAt(t *testing.T, inputFacts []store.Fact, passNow time.Time) ([]Change, map[string]Change) {
+	t.Helper()
 	rolloutController := NewRolloutController()
-	rolloutController.Now = func() time.Time { return rolloutTestNow }
+	rolloutController.Now = func() time.Time { return passNow }
 	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)

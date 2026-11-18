@@ -25,6 +25,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/update/max_unavailable
 │   ├── service/{name}/update/max_extra
 │   ├── service/{name}/update/progress_deadline  # Go duration; no progress this long → rollback (default 10m, M241)
+│   ├── service/{name}/update/min_healthy_time   # Go duration ≥ 0; a new instance counts for a rollout once it ran this long since its last start (and is ready, when probed; default 10s, M241 D10)
 │   ├── service/{name}/rollout/paused         # "true" pauses the stops of a rollout
 │   ├── secret_generation/{name}    # secret value generation (decimal): 1 on create, +1 only when `cca secret set` stores a different value; read by agents into the config hash (M236, Flow 16)
 │   ├── volume/{name}               # volume definition
@@ -52,6 +53,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}/ip             # assigned overlay IP
 │   ├── instance/{instance-id}/health         # healthy | unhealthy | unknown
 │   ├── instance/{instance-id}/created-at     # RFC3339 timestamp (write-once)
+│   ├── instance/{instance-id}/started_at     # RFC 3339 (with fractions) of the last container start, rewritten at every start incl. in-place restarts, before the state; rollout min_healthy_time runs from it (M241 D10)
 │   ├── instance/{instance-id}/hostport       # legacy single host port
 │   ├── instance/{instance-id}/hostport/{port}  # per-container-port host port mapping
 │   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"

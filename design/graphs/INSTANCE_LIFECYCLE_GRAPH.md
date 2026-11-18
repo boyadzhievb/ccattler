@@ -283,10 +283,13 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   │       └── return false
     │   └── START OK: continue
     │
-    ├── retryBridgeAttachmentIfNeeded(ctx)                   :426
-    ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1288
+    ├── retryBridgeAttachmentIfNeeded(ctx)                   :438
+    ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1441
     ├── publishInstanceHostPorts(ctx, id, ...)
     ├── runtime.Status(id) → get IP
+    ├── publishInstanceStartedAt(id)                 :1050
+    │   └── PUT observed/instance/{id}/started_at = now (RFC 3339, fractions)
+    │       [every start, in-place restarts included, before the state; rollout min_healthy_time, M241 D10]
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
     ├── publishInstanceStateToStore(ctx, id, state, ip, node)
     │   ├── PUT observed/instance/{id}/state    = "running"|"starting"
@@ -736,6 +739,7 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `ensureCrashLoopBackoffEntry` | recordInstanceStarted, recordInstanceStartFailure |
 | `handleInstanceStartError` | startInstanceAndPublishState |
 | `publishInstanceConfigHash` | startInstanceAndPublishState, handleInstanceStartError (ProcessFailed) |
+| `publishInstanceStartedAt` | startInstanceAndPublishState (start OK, M241 D10) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |

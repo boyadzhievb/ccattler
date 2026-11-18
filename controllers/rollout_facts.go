@@ -23,6 +23,10 @@ type rolloutInstanceInfo struct {
 	nodeFailure  bool                // nodeFailure is true when the instance is on a lost node.
 	statusReason string              // statusReason is observed/instance/{id}/status-reason.
 	exitReason   string              // exitReason is observed/instance/{id}/exit-reason.
+	startedAt    time.Time           // startedAt is observed/instance/{id}/started_at; zero when absent or unreadable.
+	readiness    string              // readiness is observed/instance/{id}/probe/readiness; "" when absent.
+	healthy      bool                // healthy is set by classification: running long enough, and ready when probed (D10).
+	healthWait   string              // healthWait says what a running, not yet healthy instance waits for ("8s", "readiness not-ready").
 }
 
 // rolloutField names one rollout bookkeeping fact under
@@ -40,7 +44,7 @@ const (
 	rolloutFieldReason          rolloutField = "reason"            // what a rollout in progress waits for
 	rolloutFieldRollbackReason  rolloutField = "rollback_reason"   // why the last rollback happened
 	rolloutFieldProgressAt      rolloutField = "progress_at"       // RFC 3339 time of the last progress
-	rolloutFieldRunningNew      rolloutField = "running_new"       // running target-image instances last seen
+	rolloutFieldRunningNew      rolloutField = "running_new"       // healthy target-image instances last seen (D10)
 	rolloutFieldRolledBackImage rolloutField = "rolled_back_image" // the image the last rollback moved away from
 	rolloutFieldRolledBackAt    rolloutField = "rolled_back_at"    // RFC 3339 time of the last rollback
 )
@@ -128,6 +132,7 @@ type rolloutServiceInput struct {
 	expectedInstanceCount int                             // expectedInstanceCount is how many must run for completion.
 	paused                bool                            // paused is desired/service/{svc}/rollout/paused.
 	progressDeadline      time.Duration                   // progressDeadline is the time without progress before rollback.
+	healthRule            rolloutHealthRule               // healthRule decides when a running instance counts as healthy (D10).
 	unplacedInstances     map[string]*unplacedDemandEntry // unplacedInstances holds the scheduler's unplaced reasons by instance ID.
 	now                   time.Time                       // now is the controller clock for this pass.
 }
@@ -142,6 +147,7 @@ type rolloutClusterFacts struct {
 	desiredCounts      map[string]int                     // desiredCounts maps service to desired instance count.
 	effectiveCounts    map[string]int                     // effectiveCounts maps service to effective instance count.
 	pausedServices     map[string]bool                    // pausedServices holds services with a paused rollout.
+	readinessProbed    map[string]bool                    // readinessProbed holds services that declare a readiness probe.
 	unplacedInstances  map[string]*unplacedDemandEntry    // unplacedInstances maps instance ID to the scheduler's unplaced reason.
 }
 
@@ -156,6 +162,7 @@ func extractRolloutClusterFacts(facts []store.Fact) rolloutClusterFacts {
 		desiredCounts:      extractDesiredInstanceCounts(facts),
 		effectiveCounts:    collectIntValuesBySuffix(facts, types.ScanEffectiveServices, "instances"),
 		pausedServices:     extractRolloutPausedServices(facts),
+		readinessProbed:    extractReadinessProbedServices(facts),
 		unplacedInstances:  extractUnplacedDemand(facts),
 	}
 }
@@ -163,7 +170,10 @@ func extractRolloutClusterFacts(facts []store.Fact) rolloutClusterFacts {
 // buildServiceInput assembles one service's rollout input. The completion
 // count is the effective instance count, else the desired one.
 func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, now time.Time) rolloutServiceInput {
-	updatePolicy := clusterFacts.updatePolicies[serviceName]
+	updatePolicy, hasPolicy := clusterFacts.updatePolicies[serviceName]
+	if !hasPolicy {
+		updatePolicy = newDefaultUpdatePolicy()
+	}
 	effectivePolicy := applyDisruptionBudgetToUpdatePolicy(updatePolicy,
 		clusterFacts.disruptionBudgets[serviceName], clusterFacts.desiredCounts[serviceName])
 	maxUnavailable := effectivePolicy.maxUnavailable
@@ -174,8 +184,10 @@ func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, no
 	if !hasEffectiveCount {
 		expectedCount = clusterFacts.desiredCounts[serviceName]
 	}
-	if updatePolicy.progressDeadline <= 0 {
-		updatePolicy.progressDeadline = rolloutDefaultProgressDeadline
+	healthRule := rolloutHealthRule{
+		minHealthyTime:   updatePolicy.minHealthyTime,
+		requireReadiness: clusterFacts.readinessProbed[serviceName],
+		now:              now,
 	}
 	storedFields := clusterFacts.rolloutFields[serviceName]
 	if storedFields == nil {
@@ -192,6 +204,7 @@ func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, no
 		expectedInstanceCount: expectedCount,
 		paused:                clusterFacts.pausedServices[serviceName],
 		progressDeadline:      updatePolicy.progressDeadline,
+		healthRule:            healthRule,
 		unplacedInstances:     clusterFacts.unplacedInstances,
 		now:                   now,
 	}
@@ -207,10 +220,18 @@ type extractedUpdatePolicy struct {
 	maxUnavailable   int           // maxUnavailable is update { max_unavailable }, 0 when unset.
 	maxExtra         int           // maxExtra is update { max_extra }, 0 when unset.
 	progressDeadline time.Duration // progressDeadline is update { progress_deadline }, the default when unset.
+	minHealthyTime   time.Duration // minHealthyTime is update { min_healthy_time }, the default when unset; 0 is valid.
+}
+
+// newDefaultUpdatePolicy returns the update policy of a service that sets no
+// update fields: default progress deadline and min healthy time.
+func newDefaultUpdatePolicy() extractedUpdatePolicy {
+	return extractedUpdatePolicy{progressDeadline: rolloutDefaultProgressDeadline, minHealthyTime: rolloutDefaultMinHealthyTime}
 }
 
 // extractUpdatePolicies returns update policies for each service. A corrupt or
-// non-positive progress deadline is logged and the default is used.
+// non-positive progress deadline, or a corrupt or negative min healthy time, is
+// logged and the default is used.
 func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy {
 	policies := make(map[string]extractedUpdatePolicy)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
@@ -220,7 +241,7 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 		}
 		policy, hasPolicy := policies[serviceName]
 		if !hasPolicy {
-			policy.progressDeadline = rolloutDefaultProgressDeadline
+			policy = newDefaultUpdatePolicy()
 		}
 		switch suffix {
 		case "update/max_unavailable":
@@ -234,6 +255,13 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 				continue
 			}
 			policy.progressDeadline = parsedDeadline
+		case "update/min_healthy_time":
+			parsedMinHealthyTime, parseError := time.ParseDuration(string(fact.Value))
+			if parseError != nil || parsedMinHealthyTime < 0 {
+				logging.Default().Warn("corrupt rollout min_healthy_time, using the default", "service", serviceName, "value", string(fact.Value))
+				continue
+			}
+			policy.minHealthyTime = parsedMinHealthyTime
 		}
 		policies[serviceName] = policy
 	}
@@ -274,9 +302,40 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 			nodeFailure:  fields["node_failure"] == "true",
 			statusReason: fields["status-reason"],
 			exitReason:   fields["exit-reason"],
+			startedAt:    parseInstanceStartedAt(instanceID, fields["started_at"]),
+			readiness:    fields["probe/"+string(types.ProbeReadiness)],
 		})
 	}
 	return result
+}
+
+// parseInstanceStartedAt parses an instance's started_at (RFC 3339, fractions
+// allowed). A missing value is the zero time; so is a corrupt one, which is
+// logged: the instance then counts as healthy while running, as before D10.
+func parseInstanceStartedAt(instanceID string, startedAtText string) time.Time {
+	if startedAtText == "" {
+		return time.Time{}
+	}
+	startedAt, parseError := time.Parse(time.RFC3339, startedAtText)
+	if parseError != nil {
+		logging.Default().Warn("corrupt instance started_at, ignoring it", "instance", instanceID, "value", startedAtText)
+		return time.Time{}
+	}
+	return startedAt
+}
+
+// extractReadinessProbedServices returns the services that declare a readiness
+// probe (any desired/service/{svc}/probe/readiness/* fact, M241 D10).
+func extractReadinessProbedServices(facts []store.Fact) map[string]bool {
+	readinessProbePrefix := "probe/" + string(types.ProbeReadiness) + "/"
+	probedServices := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if hasSuffix && strings.HasPrefix(suffix, readinessProbePrefix) {
+			probedServices[serviceName] = true
+		}
+	}
+	return probedServices
 }
 
 // rolloutDisruptionBudget holds parsed disruption budget fields for a service

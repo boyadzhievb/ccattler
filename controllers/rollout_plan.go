@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/boyadzhievb/ccattler/types"
@@ -20,31 +21,65 @@ const rolloutReasonMaxLength = 300
 // note in a status reason ("exited with code 1; restarting in 40s").
 const rolloutStatusReasonRetrySeparator = "; "
 
+// rolloutHealthRule decides when a running instance counts as healthy for a
+// rollout: it has run for min_healthy_time since its last start, and its
+// readiness probe passes when the service has one (M241 D10).
+type rolloutHealthRule struct {
+	minHealthyTime   time.Duration // minHealthyTime is update { min_healthy_time }, rolloutDefaultMinHealthyTime when unset.
+	requireReadiness bool          // requireReadiness is true when the service declares a readiness probe.
+	now              time.Time     // now is the controller clock of the pass.
+}
+
+// evaluate returns whether the instance is healthy and, for a running instance
+// that is not yet, what it waits for: the time left ("8s") or its readiness. An
+// instance without started_at counts from any time (agents older than D10).
+func (healthRule rolloutHealthRule) evaluate(instanceInfo rolloutInstanceInfo) (bool, string) {
+	if instanceInfo.state != types.InstanceRunning {
+		return false, ""
+	}
+	if !instanceInfo.startedAt.IsZero() {
+		if remaining := instanceInfo.startedAt.Add(healthRule.minHealthyTime).Sub(healthRule.now); remaining > 0 {
+			// Rounded up, so a wait under a second never reads "0s".
+			return false, types.FormatCompactDuration((remaining + time.Second - 1).Truncate(time.Second))
+		}
+	}
+	if healthRule.requireReadiness && instanceInfo.readiness != string(types.ReadinessProbeReady) {
+		readinessState := instanceInfo.readiness
+		if readinessState == "" {
+			readinessState = string(types.ReadinessProbeUnknown)
+		}
+		return false, "readiness " + readinessState
+	}
+	return true, ""
+}
+
 // rolloutClassification is one service's instances split by image (D3, D4).
 type rolloutClassification struct {
 	oldInstances      []rolloutInstanceInfo // oldInstances run another image than the desired one, sorted by ID.
 	newInstances      []rolloutInstanceInfo // newInstances run (or will run) the desired image, sorted by ID.
-	runningNewCount   int                   // runningNewCount counts new instances that are running.
+	healthyNewCount   int                   // healthyNewCount counts new instances that are healthy (D10).
 	failureCount      int                   // failureCount is restarts plus failed new instances, lost nodes excluded.
 	unavailableNewIDs []string              // unavailableNewIDs lists new instances that use up max_unavailable.
 }
 
 // classifyRolloutInstances splits the active instances (sorted by ID) into old
-// and new image and counts running new instances, new-image failures (D3) and
-// unavailable new instances (D4). An instance without an image yet is new.
-func classifyRolloutInstances(instances []rolloutInstanceInfo, desiredImage string) rolloutClassification {
+// and new image, marks each healthy or not (D10) and counts healthy new
+// instances, new-image failures (D3) and unavailable new instances (D4). An
+// instance without an image yet is new.
+func classifyRolloutInstances(instances []rolloutInstanceInfo, desiredImage string, healthRule rolloutHealthRule) rolloutClassification {
 	var classification rolloutClassification
 	for _, instanceInfo := range instances {
 		if instanceInfo.state == types.InstanceStopped {
 			continue
 		}
+		instanceInfo.healthy, instanceInfo.healthWait = healthRule.evaluate(instanceInfo)
 		if instanceInfo.image != "" && instanceInfo.image != desiredImage {
 			classification.oldInstances = append(classification.oldInstances, instanceInfo)
 			continue
 		}
 		classification.newInstances = append(classification.newInstances, instanceInfo)
-		if instanceInfo.state == types.InstanceRunning {
-			classification.runningNewCount++
+		if instanceInfo.healthy {
+			classification.healthyNewCount++
 		}
 		if isUnavailableForRollout(instanceInfo) {
 			classification.unavailableNewIDs = append(classification.unavailableNewIDs, instanceInfo.id)
@@ -61,25 +96,25 @@ func classifyRolloutInstances(instances []rolloutInstanceInfo, desiredImage stri
 }
 
 // isFinished reports whether the rollout reached its image: no old instance is
-// left, every new instance runs, and at least expectedCount of them do, so a
-// replacement that has not been created or started yet keeps it going.
+// left, every new instance is healthy (D10), and at least expectedCount are, so
+// a replacement that is not created, started or settled yet keeps it going.
 func (classification rolloutClassification) isFinished(expectedCount int) bool {
-	if len(classification.oldInstances) > 0 || classification.runningNewCount < expectedCount {
+	if len(classification.oldInstances) > 0 || classification.healthyNewCount < expectedCount {
 		return false
 	}
-	return classification.runningNewCount == len(classification.newInstances)
+	return classification.healthyNewCount == len(classification.newInstances)
 }
 
-// countRunningOldOnImage counts old instances running the given image, the
-// running instances of the target a rollback goes back to.
-func (classification rolloutClassification) countRunningOldOnImage(image string) int {
-	var runningCount int
+// countHealthyOldOnImage counts healthy old instances on the given image, the
+// healthy instances of the target a rollback goes back to.
+func (classification rolloutClassification) countHealthyOldOnImage(image string) int {
+	var healthyCount int
 	for _, instanceInfo := range classification.oldInstances {
-		if instanceInfo.image == image && instanceInfo.state == types.InstanceRunning {
-			runningCount++
+		if instanceInfo.image == image && instanceInfo.healthy {
+			healthyCount++
 		}
 	}
-	return runningCount
+	return healthyCount
 }
 
 // isUnavailableForRollout reports whether an instance of any image is down for
@@ -106,8 +141,8 @@ type rolloutStopPlan struct {
 
 // planOldInstanceStops stops every unavailable old instance without budget,
 // then healthy old instances up to max_unavailable minus the unavailable new
-// instances (D4). Healthy ones are stopped only while a new instance runs, or
-// none exists yet and no unhealthy one is being replaced this pass.
+// instances (D4). Healthy ones are stopped only while a new instance is healthy
+// (D10), or none exists yet and no unhealthy one is being replaced this pass.
 func planOldInstanceStops(classification rolloutClassification, maxUnavailable int) rolloutStopPlan {
 	plan := rolloutStopPlan{maxUnavailable: maxUnavailable}
 	var healthyOldIDs []string
@@ -119,7 +154,7 @@ func planOldInstanceStops(classification rolloutClassification, maxUnavailable i
 		}
 	}
 	replacementsPending := len(classification.newInstances) > 0 || len(plan.stoppedIDs) > 0
-	if classification.runningNewCount == 0 && replacementsPending {
+	if classification.healthyNewCount == 0 && replacementsPending {
 		return plan
 	}
 	stopBudget := maxUnavailable - len(classification.unavailableNewIDs)
@@ -132,8 +167,9 @@ func planOldInstanceStops(classification rolloutClassification, maxUnavailable i
 }
 
 // buildRolloutReason returns what the rollout waits for, the first match of:
-// paused; a rollback whose image also fails; a new instance not running yet
-// (its state, status reason or scheduler reason); max_unavailable used up.
+// paused; a rollback whose image also fails; the lowest-ID new instance not
+// healthy yet (its state, status or scheduler reason, or what a running one
+// still waits for, D10); max_unavailable used up.
 // Otherwise it says how many old instances are left to replace (D7).
 func buildRolloutReason(serviceInput rolloutServiceInput, classification rolloutClassification, stopPlan rolloutStopPlan, currentState types.RolloutState) string {
 	if serviceInput.paused {
@@ -144,9 +180,13 @@ func buildRolloutReason(serviceInput rolloutServiceInput, classification rollout
 			classification.failureCount, serviceInput.desiredImage)
 	}
 	for _, instanceInfo := range classification.newInstances {
-		if instanceInfo.state != types.InstanceRunning && !instanceInfo.nodeFailure {
-			return "waiting for " + describeWaitingInstance(instanceInfo, serviceInput.unplacedInstances[instanceInfo.id])
+		if instanceInfo.healthy || instanceInfo.nodeFailure {
+			continue
 		}
+		if instanceInfo.state == types.InstanceRunning {
+			return fmt.Sprintf("waiting for %s to stay healthy (%s)", instanceInfo.id, instanceInfo.healthWait)
+		}
+		return "waiting for " + describeWaitingInstance(instanceInfo, serviceInput.unplacedInstances[instanceInfo.id])
 	}
 	if stopPlan.budgetUsedUp {
 		return fmt.Sprintf("max_unavailable %d used up by %s", stopPlan.maxUnavailable, strings.Join(classification.unavailableNewIDs, ", "))

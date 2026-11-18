@@ -928,7 +928,7 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 }
 
 // parseUpdateBlock parses an update { max_unavailable N, max_extra M,
-// progress_deadline D } block.
+// progress_deadline D, min_healthy_time T } block.
 func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 	if err := parser.expectToken(TokenLBrace); err != nil {
 		return nil, err
@@ -949,6 +949,8 @@ func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 			updateDecl.MaxExtra, err = parser.expectInteger()
 		case "progress_deadline":
 			updateDecl.ProgressDeadline, err = parser.expectPositiveDuration(key)
+		case "min_healthy_time":
+			updateDecl.MinHealthyTime, err = parser.expectNonNegativeDuration(key)
 		default:
 			return nil, parser.parserErrorf("unknown update field %q", key)
 		}
@@ -1386,13 +1388,27 @@ func (parser *Parser) expectInteger() (int, error) {
 // field and returns its text. A value that is not a duration or is not
 // positive is refused, so it is never read as 0.
 func (parser *Parser) expectPositiveDuration(fieldName string) (string, error) {
+	return parser.expectDurationText(fieldName, false, "a positive duration such as 10m")
+}
+
+// expectNonNegativeDuration consumes a Go duration (30s, 0s) for the named
+// field and returns its text. 0 is allowed; a negative value or one that is
+// not a duration is refused.
+func (parser *Parser) expectNonNegativeDuration(fieldName string) (string, error) {
+	return parser.expectDurationText(fieldName, true, "a duration of 0 or more such as 30s")
+}
+
+// expectDurationText consumes a Go duration for the named field and returns
+// its text. Negative values are refused, and so is 0 unless allowZero is set;
+// requirement describes the accepted values in the error.
+func (parser *Parser) expectDurationText(fieldName string, allowZero bool, requirement string) (string, error) {
 	token := parser.currentToken()
 	if token.Type != TokenNumber && token.Type != TokenIdent {
 		return "", parser.parserErrorf("expected duration for %s, got %s", fieldName, token.Type)
 	}
 	parsedDuration, parseError := time.ParseDuration(token.Value)
-	if parseError != nil || parsedDuration <= 0 {
-		return "", parser.parserErrorf("%s must be a positive duration such as 10m, got %q", fieldName, token.Value)
+	if parseError != nil || parsedDuration < 0 || (parsedDuration == 0 && !allowZero) {
+		return "", parser.parserErrorf("%s must be %s, got %q", fieldName, requirement, token.Value)
 	}
 	parser.advanceToken()
 	return token.Value, nil

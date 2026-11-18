@@ -203,7 +203,7 @@ func extractServiceNameAndField(relativePath string) (string, string) {
 		"/resources/cpu", "/resources/memory",
 		"/scale/horizontal/", "/scale/vertical/",
 		"/placement/architecture", "/placement/zone",
-		"/update/max_unavailable", "/update/max_extra", "/update/progress_deadline",
+		"/update/max_unavailable", "/update/max_extra", "/update/progress_deadline", "/update/min_healthy_time",
 		"/health/method", "/health/path", "/health/interval",
 		"/config/env/", "/config/file/",
 		"/secret/", "/volume/", "/expose/",

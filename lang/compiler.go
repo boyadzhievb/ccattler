@@ -679,8 +679,8 @@ func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDe
 }
 
 // compileServiceUpdateFacts produces rolling update strategy facts (max unavailable
-// and max extra instance counts, and the progress deadline when set). Returns nil
-// if no update strategy is declared.
+// and max extra instance counts, and the progress deadline and min healthy time
+// when set). Returns nil if no update strategy is declared.
 func compileServiceUpdateFacts(serviceName string, updateDecl *UpdateDecl) []Fact {
 	if updateDecl == nil {
 		return nil
@@ -691,6 +691,9 @@ func compileServiceUpdateFacts(serviceName string, updateDecl *UpdateDecl) []Fac
 	}
 	if updateDecl.ProgressDeadline != "" {
 		updateFacts = append(updateFacts, Fact{Key: types.KeyDesiredServiceUpdateProgressDeadline(serviceName), Value: updateDecl.ProgressDeadline})
+	}
+	if updateDecl.MinHealthyTime != "" {
+		updateFacts = append(updateFacts, Fact{Key: types.KeyDesiredServiceUpdateMinHealthyTime(serviceName), Value: updateDecl.MinHealthyTime})
 	}
 	return updateFacts
 }

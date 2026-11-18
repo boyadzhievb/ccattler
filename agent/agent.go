@@ -994,6 +994,9 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		runtimeIP = runtimeStatus.IP
 	}
 
+	// started_at goes before the state, so a controller that sees running also
+	// sees when this start happened (M241 D10).
+	nodeAgent.publishInstanceStartedAt(ctx, instanceInfo.id)
 	// A container that has already exited is observed as starting and left to
 	// the next cycle, which records the exit and backs off in place (Flow 33, M238).
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
@@ -1038,6 +1041,16 @@ func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceIn
 func (nodeAgent *Agent) publishInstanceConfigHash(ctx context.Context, instanceID string, configHash string) {
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceID), []byte(configHash)); putError != nil {
 		logging.Default().Error("failed to write config hash", "instance", instanceID, "error", putError.Error())
+	}
+}
+
+// publishInstanceStartedAt writes observed/instance/{id}/started_at, the time
+// of this container start (RFC 3339 with fractions), at every start including
+// in-place restarts. The rollout's min_healthy_time runs from it (M241 D10).
+func (nodeAgent *Agent) publishInstanceStartedAt(ctx context.Context, instanceID string) {
+	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceStartedAt(instanceID), []byte(startedAt)); putError != nil {
+		logging.Default().Error("failed to write instance started_at", "instance", instanceID, "error", putError.Error())
 	}
 }
 

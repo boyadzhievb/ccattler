@@ -19,6 +19,13 @@ import (
 // Kubernetes' default progressDeadlineSeconds (M241 D7).
 const rolloutDefaultProgressDeadline = 10 * time.Minute
 
+// rolloutDefaultMinHealthyTime is how long a new instance must stay running
+// (and ready, when probed) before a rollout counts it, unless the service sets
+// update { min_healthy_time }. Nomad's default min_healthy_time (M241 D10).
+// No fact changes when the window ends; the runner's periodic resync gives
+// the pass that counts the instance.
+const rolloutDefaultMinHealthyTime = 10 * time.Second
+
 // rolloutMinimumFailureThreshold is the lowest number of new-image failures that
 // rolls a rollout back, whatever the service size (ECS circuit breaker, M241 D3).
 const rolloutMinimumFailureThreshold = 3
@@ -41,7 +48,7 @@ const rolloutDefaultMaxUnavailable = 1
 // the new image, rolls back on new-image failures or a missed progress deadline,
 // and publishes the rollout state and the reason it waits (Flow 34, M241).
 type RolloutController struct {
-	// Now returns the current time for the progress deadline; tests set it.
+	// Now returns the current time for the progress deadline and min_healthy_time; tests set it.
 	Now func() time.Time
 }
 
@@ -88,7 +95,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 // one service: start or retarget tracking, finish, roll back on failures, stop
 // old instances, and track progress, the deadline and the reason (D7).
 func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
-	classification := classifyRolloutInstances(serviceInput.instances, serviceInput.desiredImage)
+	classification := classifyRolloutInstances(serviceInput.instances, serviceInput.desiredImage, serviceInput.healthRule)
 	writer := serviceInput.writer
 	currentState := types.RolloutState(writer.value(rolloutFieldState))
 	switch {
@@ -136,7 +143,7 @@ func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClas
 		stopPlan = planOldInstanceStops(classification, serviceInput.maxUnavailable)
 	}
 	storedRunningNew, _ := strconv.Atoi(writer.value(rolloutFieldRunningNew))
-	progressed := len(stopPlan.stoppedIDs) > 0 || classification.runningNewCount > storedRunningNew
+	progressed := len(stopPlan.stoppedIDs) > 0 || classification.healthyNewCount > storedRunningNew
 	waitingReason := buildRolloutReason(serviceInput, classification, stopPlan, currentState)
 
 	if !serviceInput.paused && !progressed && isProgressDeadlineExceeded(writer.value(rolloutFieldProgressAt), serviceInput) {
@@ -154,7 +161,7 @@ func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClas
 		logging.Default().Info("stalled rollback progresses again", "service", serviceInput.serviceName)
 		writer.put(rolloutFieldState, string(types.RolloutRollback))
 	}
-	recordRolloutProgress(serviceInput, classification.runningNewCount, progressed)
+	recordRolloutProgress(serviceInput, classification.healthyNewCount, progressed)
 	writer.put(rolloutFieldReason, truncateRolloutReason(waitingReason))
 	return append(writer.changes, buildInstanceStopChanges(stopPlan.stoppedIDs)...)
 }
@@ -162,7 +169,7 @@ func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClas
 // recordRolloutProgress keeps rollout/progress_at and rollout/running_new: a
 // paused rollout has no progress_at (it does not time out, and resuming starts
 // the deadline anew); otherwise progress or a missing value sets it to now.
-func recordRolloutProgress(serviceInput rolloutServiceInput, runningNewCount int, progressed bool) {
+func recordRolloutProgress(serviceInput rolloutServiceInput, healthyNewCount int, progressed bool) {
 	writer := serviceInput.writer
 	switch {
 	case serviceInput.paused:
@@ -170,7 +177,7 @@ func recordRolloutProgress(serviceInput rolloutServiceInput, runningNewCount int
 	case progressed || writer.value(rolloutFieldProgressAt) == "":
 		writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
 	}
-	writer.put(rolloutFieldRunningNew, strconv.Itoa(runningNewCount))
+	writer.put(rolloutFieldRunningNew, strconv.Itoa(healthyNewCount))
 }
 
 // isProgressDeadlineExceeded reports whether more than the progress deadline
@@ -212,7 +219,7 @@ func beginRolloutTowardDesiredImage(serviceInput rolloutServiceInput, classifica
 		writer.remove(staleField)
 	}
 	writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
-	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.runningNewCount))
+	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.healthyNewCount))
 	logging.Default().Info("rollout started", "service", serviceInput.serviceName,
 		"from", knownGoodImage, "to", serviceInput.desiredImage, "revision", strconv.Itoa(nextRevision))
 }
@@ -231,7 +238,7 @@ func rollBackToPreviousImage(serviceInput rolloutServiceInput, classification ro
 	writer.put(rolloutFieldRolledBackImage, serviceInput.desiredImage)
 	writer.put(rolloutFieldRolledBackAt, serviceInput.now.UTC().Format(time.RFC3339))
 	writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
-	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.countRunningOldOnImage(previousImage)))
+	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.countHealthyOldOnImage(previousImage)))
 	writer.put(rolloutFieldReason, truncateRolloutReason("rolling back to "+previousImage))
 	logging.Default().Warn("rollout rolled back", "service", serviceInput.serviceName,
 		"from", serviceInput.desiredImage, "to", previousImage, "reason", rollbackReason)

@@ -327,6 +327,14 @@ func KeyObservedInstanceCreatedAt(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/created-at", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstanceStartedAt returns the store path for when the agent last
+// started the instance's container (RFC 3339), rewritten at every start, in-place
+// restarts included. The rollout controller's min_healthy_time runs from it (M241 D10).
+// Path: observed/instance/{instanceID}/started_at
+func KeyObservedInstanceStartedAt(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/started_at", PrefixObserved, instanceID)
+}
+
 // KeyObservedInstanceImage returns the store path for the container image an instance is running.
 // Path: observed/instance/{instanceID}/image
 func KeyObservedInstanceImage(instanceID string) string {
@@ -842,6 +850,14 @@ func KeyDesiredServiceUpdateMaxExtra(name string) string {
 // Path: desired/service/{name}/update/progress_deadline
 func KeyDesiredServiceUpdateProgressDeadline(name string) string {
 	return fmt.Sprintf("%s/service/%s/update/progress_deadline", PrefixDesired, name)
+}
+
+// KeyDesiredServiceUpdateMinHealthyTime returns the store path for how long a
+// new instance must stay running (and ready, when probed) before a rollout
+// counts it (Go duration text, DSL update { min_healthy_time }, M241 D10).
+// Path: desired/service/{name}/update/min_healthy_time
+func KeyDesiredServiceUpdateMinHealthyTime(name string) string {
+	return fmt.Sprintf("%s/service/%s/update/min_healthy_time", PrefixDesired, name)
 }
 
 // KeyDesiredServiceStateful returns the store path for a service's stateful

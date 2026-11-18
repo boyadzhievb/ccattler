@@ -157,6 +157,7 @@ reconcileDesiredInstance(instanceInfo)
     ├── executeLifecycleHook(post_start)
     ├── HostPortsForInstance → publishInstanceHostPorts
     ├── runtime.Status → get IP
+    ├── publishInstanceStartedAt                 [observed/instance/{id}/started_at, M241 D10]
     ├── publishInstanceStateToStore(running)
     └── store.Put(observed/instance/{id}/image)
 ```
@@ -232,6 +233,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/instance/{id}/node` | publishInstanceStateToStore |
 | `observed/instance/{id}/created-at` | publishInstanceStateToStore (write-once) |
 | `observed/instance/{id}/image` | publishInstanceImage (startInstanceAndPublishState, handleInstanceStartError) |
+| `observed/instance/{id}/started_at` | publishInstanceStartedAt (startInstanceAndPublishState, every start; read by the rollout controller, M241 D10) |
 | `observed/instance/{id}/exit-reason` | publishExitReason (recordInstanceExit via publishExitReasonFromStatus, recordInstanceStartFailure); deleted by deleteExitReason |
 | `observed/instance/{id}/status_reason` | publishStatusReason |
 | `observed/instance/{id}/pull_status` | recordImagePullFailure |

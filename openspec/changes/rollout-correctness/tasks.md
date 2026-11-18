@@ -159,12 +159,57 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
 
 ## 2b. A new instance counts once it stays healthy (design D10, added 2026-11-18 after testbed 4.1)
 
-- [ ] 2b.0 Failing tests first: `TestRolloutDoesNotStopOldBeforeMinHealthyTime`, `TestRolloutDoesNotFinishBeforeMinHealthyTime`, `TestRolloutRequiresReadinessWhenProbed`, `TestRolloutCountsInstanceWithoutStartedAtAsHealthy` (controllers), `TestAgentRecordsStartedAtOnEveryStart` (agent), `TestCompileUpdateMinHealthyTime` (lang). Existing rollout tests that expect a new instance to count at once get a `started_at` older than the window. Record the red run here.
-- [ ] 2b.1 Agent: `types.KeyObservedInstanceStartedAt(id)` → `observed/instance/{id}/started_at` (RFC 3339), written at every container start, in-place restarts included, with the `running` state. instance-gc already deletes `observed/instance/{id}/*`; verify it.
-- [ ] 2b.2 Rollout controller: healthy rule (running, `started_at` + `min_healthy_time` ≤ now, readiness `ready` when the service has a readiness probe, missing `started_at` = healthy). Use it in the stop rule, progress (`running_new` counts healthy instances) and `isFinished`. Reason `waiting for <id> to stay healthy (<remaining>)`. Constant `rolloutDefaultMinHealthyTime` = 10 s. Make sure a pass runs after the window ends without a new fact. Keep functions under 80 lines.
-- [ ] 2b.3 DSL: `update { min_healthy_time <duration> }` → `desired/service/{svc}/update/min_healthy_time`; parser refuses invalid or negative values (0 allowed); formatter; tenant/fair_scheduler.go known suffixes; VS Code grammar; design/dsl-reference.md.
-- [ ] 2b.4 Docs: Flow 34 (healthy rule), CONTROLLER_DATA_FLOW_GRAPH.md and INSTANCE_LIFECYCLE_GRAPH.md (new key, functions, line numbers), design/etcd-schema.md (`started_at`, `update/min_healthy_time`).
-- [ ] 2b.5 Checks as in 3.1 (gofmt, golangci-lint, build, vet, tests incl. `-race` on touched agent and controller tests, `openspec validate rollout-correctness --strict`). Paste the results here.
+- [x] 2b.0 Failing tests first: `TestRolloutDoesNotStopOldBeforeMinHealthyTime`, `TestRolloutDoesNotFinishBeforeMinHealthyTime`, `TestRolloutRequiresReadinessWhenProbed`, `TestRolloutCountsInstanceWithoutStartedAtAsHealthy` (controllers), `TestAgentRecordsStartedAtOnEveryStart` (agent), `TestCompileUpdateMinHealthyTime` (lang). Existing rollout tests that expect a new instance to count at once get a `started_at` older than the window. Record the red run here.
+  - Red run, 2026-11-18, before any implementation (only `types.KeyObservedInstanceStartedAt` and `types.KeyDesiredServiceUpdateMinHealthyTime` were added so the tests compile):
+    ```
+    $ go test ./controllers/ -run 'TestRollout' -count=1
+    --- FAIL: TestRolloutDoesNotStopOldBeforeMinHealthyTime   rollout_min_healthy_test.go:34: stopped [old-1] while the new instance has run only 2s, want none
+                                                              rollout_min_healthy_test.go:38: rollout/reason "replacing 1 old-image instances" does not contain "waiting for new-1 to stay healthy"
+    --- FAIL: TestRolloutDoesNotFinishBeforeMinHealthyTime    rollout_min_healthy_test.go:53: rollout/state = "complete", want the rollout to stay rolling
+    --- FAIL: TestRolloutRequiresReadinessWhenProbed/not_ready  rollout_min_healthy_test.go:86: stopped [old-1] with readiness not-ready, want 0
+    $ go test ./agent/ -run TestAgentRecordsStartedAtOnEveryStart -count=1
+    --- FAIL: TestAgentRecordsStartedAtOnEveryStart           started_at_test.go:34: timed out waiting for: first start recorded, instance waiting in crash-loop-backoff
+    $ go test ./lang/ -run MinHealthyTime -count=1
+    --- FAIL: TestCompileUpdateMinHealthyTime                 min_healthy_time_test.go:27: 6:26: unknown update field "min_healthy_time"
+    ```
+    `TestRolloutCountsInstanceWithoutStartedAtAsHealthy` passed already: before D10 every running instance counted at once, which is the behaviour it pins for agents without `started_at`. The ready case of `TestRolloutRequiresReadinessWhenProbed` passed for the same reason. Existing rollout tests: `buildRolloutTestFacts` now gives every running test instance a `started_at` one minute before the test clock (`rolloutTestSettledAge`), as the agent writes it, so they still count at once; `startedAgo` / `noStartedAt` / `readiness` set the new cases. The older raw-fact tests at the top of rollout_test.go keep no `started_at` (counted at once, the old-agent rule). `integration/phase10_test.go` `TestRollingUpdateGraduallyReplacesInstances` (real simulator agents, 10 s wait) timed out under load in the full run once D10 was in; its configuration now sets `min_healthy_time 0s`, since it checks pacing, not the window.
+- [x] 2b.1 Agent: `types.KeyObservedInstanceStartedAt(id)` → `observed/instance/{id}/started_at` (RFC 3339), written at every container start, in-place restarts included, with the `running` state. instance-gc already deletes `observed/instance/{id}/*`; verify it.
+  - `publishInstanceStartedAt` (agent/agent.go) runs in `startInstanceAndPublishState` after a successful `runtime.Start`, before `publishInstanceStateToStore`. A controller that sees `running` then also sees the `started_at` of that start. Every start, in-place restarts included, goes through this function. The value is RFC 3339 with fractional seconds (`time.RFC3339Nano`), which `time.Parse(time.RFC3339, …)` reads, so two starts within one second still differ. Instance GC: `buildInstanceDeletionChanges` (controllers/instance_gc.go) deletes every key under `observed/instance/{id}/`, `started_at` included. Verified in the code.
+- [x] 2b.2 Rollout controller: healthy rule (running, `started_at` + `min_healthy_time` ≤ now, readiness `ready` when the service has a readiness probe, missing `started_at` = healthy). Use it in the stop rule, progress (`running_new` counts healthy instances) and `isFinished`. Reason `waiting for <id> to stay healthy (<remaining>)`. Constant `rolloutDefaultMinHealthyTime` = 10 s. Make sure a pass runs after the window ends without a new fact. Keep functions under 80 lines.
+  - `rolloutHealthRule.evaluate` (rollout_plan.go) applies the rule. `classifyRolloutInstances` marks every instance (`healthy`, `healthWait`) and counts `healthyNewCount`, which replaces `runningNewCount` in `planOldInstanceStops`, progress and `running_new`, and `isFinished`. `countHealthyOldOnImage` (was `countRunningOldOnImage`) sets `running_new` when a rollback starts, so the next pass compares like with like. The reason is `waiting for <id> to stay healthy (8s)`, with the time left rounded up to the second. When only readiness is missing it is `(readiness not-ready)`, or `(readiness unknown)` before the first probe result. A corrupt `started_at` is logged and treated as missing. A corrupt or negative `update/min_healthy_time` fact is logged and the default is used, as with `progress_deadline`. `newDefaultUpdatePolicy` gives a service without update facts the defaults: 0 is a valid `min_healthy_time`, so a zero value cannot mean "unset". Periodic pass: no fact changes when the window ends. The runner's resync (`defaultControllerResyncInterval` = 30 s, controllers/runner.go, never overridden in production) runs every controller's full Reconcile, just as the progress deadline relies on. So a pass comes at most 30 s after the window ends, and no change was needed. A rollout step can therefore take up to min_healthy_time + 30 s longer than before when no other fact changes.
+- [x] 2b.3 DSL: `update { min_healthy_time <duration> }` → `desired/service/{svc}/update/min_healthy_time`; parser refuses invalid or negative values (0 allowed); formatter; tenant/fair_scheduler.go known suffixes; VS Code grammar; design/dsl-reference.md.
+  - `expectNonNegativeDuration` and `expectPositiveDuration` (lang/parser.go) now share `expectDurationText`. `UpdateDecl.MinHealthyTime`, the compiler, the formatter, `tenant/fair_scheduler.go` (`/update/min_healthy_time`), the VS Code grammar and dsl-reference.md (example and Rolling Updates paragraph) are updated. `-1s`, `soon` and `10` are refused, with the field named in the error.
+- [x] 2b.4 Docs: Flow 34 (healthy rule), CONTROLLER_DATA_FLOW_GRAPH.md and INSTANCE_LIFECYCLE_GRAPH.md (new key, functions, line numbers), design/etcd-schema.md (`started_at`, `update/min_healthy_time`).
+  - Flow 34: invariant, agent `started_at`, healthy rule, finish/stop/progress on healthy, the new reason, and a bullet on the resync pass. CONTROLLER_DATA_FLOW_GRAPH.md § rollout: rewritten with new functions and line numbers, plus a note on the resync pass. INSTANCE_LIFECYCLE_GRAPH.md: `publishInstanceStartedAt` in the start chain and the reverse index, with two stale line numbers in that block corrected. CALL_GRAPH.md: start chain and store-key table. etcd-schema.md: `update/min_healthy_time`, `observed/instance/{id}/started_at`.
+- [x] 2b.5 Checks as in 3.1 (gofmt, golangci-lint, build, vet, tests incl. `-race` on touched agent and controller tests, `openspec validate rollout-correctness --strict`). Paste the results here.
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./controllers/... ./agent/... ./types/... ./api/... ./lang/... ./cmd/... ./tenant/... ./integration/...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ -count=1
+    ok  	github.com/boyadzhievb/ccattler/controllers	5.210s
+    ok  	github.com/boyadzhievb/ccattler/agent	27.858s
+    ok  	github.com/boyadzhievb/ccattler/types	0.033s
+    ok  	github.com/boyadzhievb/ccattler/api	8.852s
+    ok  	github.com/boyadzhievb/ccattler/integration	9.393s
+    ok  	github.com/boyadzhievb/ccattler/lang	0.039s
+    ok  	github.com/boyadzhievb/ccattler/tenant	0.037s
+    ok  	github.com/boyadzhievb/ccattler/cmd/cca	6.973s
+    $ go test ./agent/ -race -count=3 -run "TestAgentRecordsStartedAtOnEveryStart|TestAgentRestartsInstanceWithItsOwnImage|TestAgentStartsInstanceWithRecordedImage|TestAgentBacksOff|TestAgentCountsRestarts"
+    ok  	github.com/boyadzhievb/ccattler/agent	7.790s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.149s
+    $ go test ./integration/ -race -count=3 -run TestRollingUpdateGraduallyReplacesInstances
+    ok  	github.com/boyadzhievb/ccattler/integration	1.375s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    exit 0 (20 packages ok, 0 failures)
+    ```
 
 ## 4. Testbed and review (main session)
 

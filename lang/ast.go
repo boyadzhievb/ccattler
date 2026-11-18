@@ -200,6 +200,7 @@ type UpdateDecl struct {
 	MaxUnavailable   int    // maximum instances that can be unavailable during update
 	MaxExtra         int    // maximum extra instances allowed during surge
 	ProgressDeadline string // time without progress before the rollout is rolled back (Go duration, "" = 10m default, M241)
+	MinHealthyTime   string // time a new instance must stay running (and ready) before it counts (Go duration, "" = 10s default, M241 D10)
 }
 
 // DisruptionDecl holds the disruption budget for a service. During node drains
