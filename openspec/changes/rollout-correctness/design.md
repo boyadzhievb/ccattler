@@ -92,7 +92,7 @@ Following D12's intent (Kubernetes' defaults), which differ by kind:
 - **Surge only while old instances remain** (like a Deployment, whose new ReplicaSet never exceeds the replica count): the instance controller adds the surge allowance only while old-image instances exist, so the rollout no longer creates one surplus new instance at the end and then scales a random one down. The rollout deletes `surge_allowance` when the last old instance is stopped.
 - The budget reason says when the budget is 0 by configuration (`max_unavailable 0: waiting for an extra instance to become healthy`) instead of "0 of N not healthy ()"; describe says when max_unavailable was forced to 1.
 - A retarget after a revert (no `previous_image`) uses the current target as the known-good image, never `mostCommonImage`, which could be the bad one.
-- Removing a field from `update {}` restores its default only on the next apply of the service's facts; facts stored by an older server keep their values (documented in dsl-reference.md).
+- Removing a field from `update {}` does not restore its default: `cca apply` never deletes a stored service fact (only gate facts), so the stored value stays until the service is deleted and applied again, as do the implicit 1/1 values older servers compiled for every `update` block. Pre-existing for every field; split to M244 (apply never removes fields deleted from a configuration). Documented in dsl-reference.md.
 
 ### D6 — Determinism
 Services are processed in sorted name order, and instances are sorted by ID before classification. The proposed changes are then the same for the same facts (CLAUDE.md: deterministic iteration).
