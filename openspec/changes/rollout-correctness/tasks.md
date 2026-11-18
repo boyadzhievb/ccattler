@@ -466,6 +466,15 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
     ok  	github.com/boyadzhievb/ccattler/controllers	5.218s
     ```
 
+## 2e. Rework after testbed 4.1 (stateful, per-node) and review round 3 (added 2026-11-18)
+
+- [ ] 2e.0 Failing tests first (loop tests where possible; the loop harness must model the agent seeing a stop only on a later pass, and "running but not yet healthy"). Record the red run.
+- [ ] 2e.1 Testbed T1 (stateful never rolled out): 1-instance stateful `m241db` whoami → `mariadb:11` logged `rollout started` 16:00:11.995 and `rollout finished state=complete` 16:00:12.972. The rollout stopped `m241db-0` and the instance controller recreated it under the same ID with the new recorded image before the agent saw the stop (no stop in the agent log), so the whoami container kept running (0 restarts) while describe shows `mariadb:11`; the recreation deleted `started_at`, and a missing `started_at` counts as healthy. Fix so that (a) the agent ensures the container of an instance runs its recorded image and replaces it when not (idempotent `ensure`, architectural rule 3), and (b) a recreated instance never counts as healthy before the agent has started it (e.g. a `started_at` older than the incarnation, or missing after a recreation, is not healthy; keep the older-agent fallback only where it is genuinely an older agent).
+- [ ] 2e.2 Testbed T2 (per-node replacement never placed): per-node `m241pn` on 3 nodes, whoami → `nginx:1.27`: old `233eb1b1f3` on worker-1 stopped at 16:00:12, new `6272b78d8a` created with no node and no events, still `pending` after 3.5 min; no rollout reason, no unplaced fact logged. Find why per-node placement does not place it (stopped instance still counted on the node? per-node placement owned by the intent controller?), fix it, and make the rollout reason name the waiting instance in this case too (D7: a waiting rollout always says why).
+- [ ] 2e.3 Review round 3 M1 remainder: the instance controller adds `min(surge, active old-image instances)` instead of the full surge (instance.go `hasOldImageInstances` → count). Loop tests: 5 instances on defaults, and 3 instances with `max_extra 2`: exactly N created, none scaled down.
+- [ ] 2e.4 Round 3 lows: INSTANCE_LIFECYCLE_GRAPH.md call order (surge after the instance maps); `t *testing.T` field renamed; use `PlacementModePerNode` for the literal `"per-node"` (instance.go, intent.go); one loop over stateful and placement keys in rollout_facts.go; describe reads the effective placement mode like the controllers; per-node case in the max_extra warning test.
+- [ ] 2e.5 Docs and graphs for 2e.1–2e.3; checks as in 3.1, paste results.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
@@ -496,7 +505,8 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
     - H2 per-node services cannot place the surge; rollout never completes — real → D14 (DaemonSet defaults 1/0), 2d.1.
     - H3 stateful 1-instance service surges an extra ordinal — real → D14 (StatefulSet defaults), 2d.1.
     - M1 surplus new instance at the end, then a scale-down — real (reviewer probe) → D14, 2d.3.
-    - L1 dead `stopWritten`, L3 k8s-to-cca explicit zeros, L4 graphs, L5 wording, L7 assertions outside `waitFor` → 2d.4. L2 removed field keeps stored value → documented (2d.4). L6 retarget after revert may pick the bad image → fixed (2d.4); b→c→b older instances ignored by D13 — accepted, the deadline covers it.
+    - L1 dead `stopWritten`, L3 k8s-to-cca explicit zeros, L4 graphs, L5 wording, L7 assertions outside `waitFor` → 2d.4.
+  - Round 3, 2026-11-18, on `3762eee..bbf3694` (REQUEST CHANGES): H1, H2, H3, L1, L3–L7 fixed. M1 fixed only for surge 1 — real (reviewer probe, instance.go adds the full surge while any old instance remains) → 2e.3. Lows (graph call order, field name, `PlacementModePerNode` literal, duplicate loop, describe placement source, per-node warning test) → 2e.4. The loop harness never models a late stop or the not-yet-healthy window, which is why testbed T1 was missed → 2e.0. L2 removed field keeps stored value → documented (2d.4). L6 retarget after revert may pick the bad image → fixed (2d.4); b→c→b older instances ignored by D13 — accepted, the deadline covers it.
 - [ ] 4.3 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 
 ## 5. Release
