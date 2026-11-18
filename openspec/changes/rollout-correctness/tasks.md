@@ -693,6 +693,15 @@ Testbed rerun after 2f (push run 44373404786 on `25c5088`, green): stateful ngin
     20 packages ok, 0 failures
     ```
 
+## 2h. Rework after review round 5 (added 2026-11-18)
+
+Round 5 (on `25c5088..c843115`, APPROVE) found that 2g.1 frees a stopped instance's CPU and memory as soon as `stopped` is written, while the container may still run (pre_stop + grace); a decision review (code-reviewer, Opus high) and the user agreed: accept it in M241 as a deliberate accounting trade-off, never described as freed resources; releasing only on an agent observation that the container is gone is follow-up milestone M246 ("a stop request is not proof of termination"). Verified bound: pre_stop ≤ 30 s (`lifecycleHookTimeout`), then SIGTERM, the service's `termination_grace_period` (no upper limit), SIGKILL, ≤ 10 s wait (runtime/containerd.go `StopWithGracePeriod`, which never returns an error); only a process that survives SIGKILL outlives it.
+
+- [ ] 2h.1 Spread: `countServiceInstancesPerNode` (scheduler/scheduler.go ~:1172) skips stopped instances like the load count, so a replacement is not pushed off its predecessor's node (otherwise one node ends with two replicas and one with none until GC); fix its comment; test.
+- [ ] 2h.2 Document the trade-off in Flow 34 and the service-rollout spec (replace "a stopped instance uses none of the node's CPU or memory" with what is true): marking an instance stopped releases its requests in the scheduler before the container is gone; during pre_stop and the grace period the node's real usage can exceed its accounted requests; the bound above (incl. that `termination_grace_period` is user-set and uncapped, and a process surviving SIGKILL); every stop path opens it (rollouts, `cca stop`, `cca restart`, which marks every replica at once: up to 2x a node's requests); per-node start-new-first opens it on every node, and overlapping rollouts of several services add up per node. Link M246.
+- [ ] 2h.3 Tests: keep the 2g.1 no-deadlock regression tests; add a scheduler test that makes the discrepancy visible (a stopped-but-not-gone instance's requests are not counted, so another instance is placed beside it), named in the spec scenario.
+- [ ] 2h.4 Doc comment of `TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance` to ≤ 4 lines; checks as in 3.1, paste results.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
