@@ -6,7 +6,7 @@ States how a change of a service's image reaches its instances: paced within `ma
 ## ADDED Requirements
 
 ### Requirement: Old instances are replaced within max_unavailable
-When a service's desired image differs from the image of some of its instances, the rollout controller SHALL stop old-image instances so that the instances unavailable for any reason never exceed `max_unavailable` (1 when unset, capped by the disruption budget). It SHALL stop healthy old instances only while at least one new-image instance is running, or while none has been created yet, and SHALL pick them in instance-ID order.
+When a service's desired image differs from the image of some of its instances, the rollout controller SHALL stop old-image instances so that the instances unavailable for any reason never exceed `max_unavailable` (1 when unset, capped by the disruption budget). It SHALL stop healthy old instances only while at least one new-image instance is healthy (see "A new instance counts only once it stays healthy"), or while none has been created yet, and SHALL pick them in instance-ID order.
 
 #### Scenario: Paced and deterministic
 - **GIVEN** a service with 4 running instances on image `a`, `max_unavailable 1`, whose desired image changes to `b`
@@ -65,8 +65,45 @@ When new-image failures reach half the service's desired instance count (rounded
 - **THEN** within a few minutes `cca describe service` shows state `rolled-back`, its instances run `a` again, and the old instances that were running `a` are still running or have been replaced by `a` instances
 - Check: `deploy-run:rollout-rollback` (by hand)
 
+### Requirement: A new instance counts only once it stays healthy
+For stopping old instances, progress and finishing, a new-image instance SHALL count as healthy only when it is `running`, has run since its last start (`started_at`, written by the agent at every start) for at least `min_healthy_time` (default 10 seconds), and is ready if the service has a readiness probe. Without `started_at` a running instance SHALL count as healthy.
+
+#### Scenario: Image that exits after a moment does not replace the old instance
+- **GIVEN** a 1-instance service rolling out from `a` to `b`, whose `b` instance is `running` with `started_at` 2 seconds ago and the default `min_healthy_time`
+- **WHEN** the rollout controller reconciles
+- **THEN** it stops no old instance, the state stays `rolling`, and the reason says it waits for the `b` instance to stay healthy
+- Test: `TestRolloutDoesNotStopOldBeforeMinHealthyTime`
+
+#### Scenario: Rollout does not finish before the window
+- **GIVEN** a rollout whose only old instance is gone and whose new instance started 5 seconds ago, `min_healthy_time 10s`
+- **WHEN** the rollout controller reconciles, and again 6 seconds later
+- **THEN** the first pass leaves the state `rolling`; the second sets it to `complete`
+- Test: `TestRolloutDoesNotFinishBeforeMinHealthyTime`
+
+#### Scenario: Readiness probe must pass
+- **GIVEN** a service with a readiness probe whose new instance has run for longer than `min_healthy_time` but is `not-ready`
+- **WHEN** the rollout controller reconciles
+- **THEN** it counts the instance as not healthy and stops no healthy old instance
+- Test: `TestRolloutRequiresReadinessWhenProbed`
+
+#### Scenario: Instance from an older agent
+- **GIVEN** a running new instance with no `started_at`
+- **WHEN** the rollout controller reconciles
+- **THEN** it counts the instance as healthy
+- Test: `TestRolloutCountsInstanceWithoutStartedAtAsHealthy`
+
+#### Scenario: Agent records every start
+- **WHEN** the agent starts an instance, and later restarts it in place
+- **THEN** `observed/instance/{id}/started_at` is set at each start and the second value is later than the first
+- Test: `TestAgentRecordsStartedAtOnEveryStart`
+
+#### Scenario: DSL
+- **WHEN** a service declares `update { min_healthy_time 30s }`
+- **THEN** it compiles to `desired/service/{svc}/update/min_healthy_time` = `30s`; `min_healthy_time -1s` or `min_healthy_time soon` is refused by the parser
+- Test: `TestCompileUpdateMinHealthyTime`
+
 ### Requirement: Rollout state ends and is reset
-When no instance runs another image than the desired one, the rollout controller SHALL set the state to `complete` after a rollout and to `rolled-back` after a rollback (also from `stalled`), and SHALL delete `rollout/previous_image`, `rollout/failures`, `rollout/reason` and the surge allowance. `rollout/rollback_reason` SHALL stay until the next rollout starts. The next image change SHALL record its own previous image, next revision and history entry.
+When no old-image instance is left and the new-image instances are healthy (at least the expected count), the rollout controller SHALL set the state to `complete` after a rollout and to `rolled-back` after a rollback (also from `stalled`), and SHALL delete `previous_image`, `failures`, `reason` and the surge allowance; `rollback_reason` stays until the next rollout. The next image change SHALL record its own previous image, revision and history entry.
 
 #### Scenario: Second rollout is tracked
 - **GIVEN** a service that completed a rollout from `a` to `b`

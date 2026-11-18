@@ -31,7 +31,7 @@ New-image instances are the active instances whose observed image equals the des
 ### D4 — Unavailability and stop order
 `unavailable(instance)` is true when the state is `failed`, `crash-loop-backoff` or `image-pull-backoff`, or `node_failure` is set, for an instance of any image. Each pass works like this:
 1. Every unavailable old instance is stopped. This uses no budget.
-2. `canStop = maxUnavailable − unavailable instances of the new image`. Old instances stopped in step 1 are not counted: they are being replaced. Healthy old instances are stopped up to `canStop`, sorted by instance ID. As today, nothing is stopped when new-image instances exist and none is running.
+2. `canStop = maxUnavailable − unavailable instances of the new image`. Old instances stopped in step 1 are not counted: they are being replaced. Healthy old instances are stopped up to `canStop`, sorted by instance ID. Nothing is stopped when new-image instances exist and none is healthy (D10); before D10 this said "running".
 `pending`, `pulling`, `starting` and `waiting-for-secrets` are not counted as unavailable, which keeps today's pacing. Counting them as Kubernetes does would change surge behaviour (Flow 18) and is out of scope.
 
 ### D5 — Rollout bookkeeping
@@ -46,6 +46,7 @@ New key `derived/service/{svc}/rollout/target_image`. A state machine per servic
 | `rollback` | finished (below) | `rolled-back`, delete `previous_image`, `failures`, surge |
 
 **Finished** (amended 2026-11-18 during implementation, task 2.3): no old instance is left, every new instance is running, and at least the expected count is running (`effective/service/{svc}/instances`, else `desired`). The literal rule "no instance runs a different image" ended a one-instance rollout as soon as its old instance was stopped, before the crash loop could be counted. It would also have ended a rollback with its replacement still unplaced, so the rollback could never become `stalled`.
+Amended again 2026-11-18 (D10, testbed task 4.1): "running" here means healthy, so finishing needs every new instance healthy and at least the expected count healthy.
 
 Tracking starts from the state, not from an empty `previous_image`, so a stale `previous_image` left by an older server is simply overwritten at the next rollout. No migration is needed. The rollback writes `desired/service/{svc}/image`, like Nomad's `auto_revert`. Applying the configuration again starts a new rollout, which is the user's explicit intent.
 
@@ -64,6 +65,16 @@ The status API's service entries (api/status.go) gain `rollout_state`, `rollout_
 ### D9 — Applying a rolled-back image warns (user, 2026-11-18)
 Every rollback group also writes `rollout/rolled_back_image` (the bad target image) and `rollout/rolled_back_at` (RFC 3339, from the controller clock). They are deleted with `rollback_reason` when the next rollout starts. The apply handler (api/server.go, both apply paths, next to the M217 instance-count warnings) compares each compiled `desired/service/{svc}/image` with the stored `rolled_back_image` and appends a warning to the existing `applyResponse.Warnings`. `cca apply` already prints those warnings. It only warns, because a fixed image may reuse the tag. This keeps a scheduled CI apply from rolling a broken image out and back silently: each attempt says why the last one was rolled back.
 
+### D10 — A new instance counts once it stays healthy (user, 2026-11-18)
+Found by testbed task 4.1: rolling `m241roll` from whoami to `mariadb:11` (exits with code 1 about 1–2 s after start, no password set) logged `rollout started` at 10:15:29 and `rollout finished state=complete` at 10:15:52. The new instance reported `running` once, the old instance was stopped (D4), `isFinished` held (controllers/rollout.go, checked before the failure count), and the instance then crash-looped 41 times under a `complete` rollout.
+- New key `observed/instance/{id}/started_at` (RFC 3339), written by the agent each time it starts the container, in-place restarts included, in the same write that publishes `running`.
+- **Healthy** new instance: state `running`, `now − started_at ≥ min_healthy_time`, and, when the service has a readiness probe (`desired/service/{svc}/probe/readiness/*`), `observed/instance/{id}/probe/readiness` = `ready`. A restart sets a new `started_at`, so the window starts again.
+- "Running" in D4 (healthy old instances are stopped only while a new one is healthy), D5 Finished, and D7 progress (`rollout/running_new` counts healthy new instances) all become "healthy". Failure counting (D3) is unchanged.
+- `min_healthy_time`: `desired/service/{svc}/update/min_healthy_time` (DSL `update { min_healthy_time 30s }`), default `rolloutDefaultMinHealthyTime` = 10 s; the parser refuses an invalid or negative value (0 is allowed and means "running is enough"). The rollout controller needs a pass after the window passes even without a new fact, which the periodic pass used by the progress deadline already gives; the reason says `waiting for <id> to stay healthy (<remaining>)`.
+- Missing `started_at` (agent older than the server): a running instance counts as healthy, today's behaviour, so a mixed-version upgrade does not block rollouts.
+- Clocks: the agent stamps and the controller compares, as with Kubernetes' `minReadySeconds` (kubelet condition time vs controller-manager). Skew of a few seconds only shifts the window; the cluster already relies on NTP for leases.
+- Compared with others: Nomad `min_healthy_time` default 10 s (the model), Kubernetes `minReadySeconds` default 0 (same gap as before D10 unless a readiness probe is set), ECS needs health checks with its circuit breaker.
+
 ### D6 — Determinism
 Services are processed in sorted name order, and instances are sorted by ID before classification. The proposed changes are then the same for the same facts (CLAUDE.md: deterministic iteration).
 
@@ -78,6 +89,8 @@ Services are processed in sorted name order, and instances are sorted by ID befo
 | Case | What happens |
 |---|---|
 | New image crash-loops (1 instance, max_unavailable 1) | The new instance restarts. Failures reach 3 after the third restart, which takes about 70 s with back-off. Desired reverts to the previous image, the bad instance becomes "old" and unavailable and is stopped first, a replacement starts on the previous image, and the state becomes `rolled-back`. |
+| New image runs ~2 s, then exits (1 instance) | The new instance is never healthy (D10), so the old instance keeps running. Restarts reach 3, the rollout rolls back, the bad instance is stopped. No outage. |
+| Agent older than the server (no `started_at`) | A running new instance counts as healthy at once, as before D10. |
 | New image crash-loops (10 instances) | One old instance is stopped and one new instance created. It crash-loops, so no healthy new instance exists and no further old instance is stopped. Its restarts reach 5, then the rollout rolls back. |
 | Node lost during a rollout | Instances on it are unavailable (budget) and are not failures, so no rollback. The node-failure controller replaces them. |
 | Old instance crash-loops during a rollout | It stays on its old image (D1), is stopped first without budget (D4), and is replaced by a new-image instance. |

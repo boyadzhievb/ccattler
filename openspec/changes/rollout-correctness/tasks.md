@@ -157,9 +157,22 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
     exit 0 (20 packages ok, no failures)
     ```
 
+## 2b. A new instance counts once it stays healthy (design D10, added 2026-11-18 after testbed 4.1)
+
+- [ ] 2b.0 Failing tests first: `TestRolloutDoesNotStopOldBeforeMinHealthyTime`, `TestRolloutDoesNotFinishBeforeMinHealthyTime`, `TestRolloutRequiresReadinessWhenProbed`, `TestRolloutCountsInstanceWithoutStartedAtAsHealthy` (controllers), `TestAgentRecordsStartedAtOnEveryStart` (agent), `TestCompileUpdateMinHealthyTime` (lang). Existing rollout tests that expect a new instance to count at once get a `started_at` older than the window. Record the red run here.
+- [ ] 2b.1 Agent: `types.KeyObservedInstanceStartedAt(id)` → `observed/instance/{id}/started_at` (RFC 3339), written at every container start, in-place restarts included, with the `running` state. instance-gc already deletes `observed/instance/{id}/*`; verify it.
+- [ ] 2b.2 Rollout controller: healthy rule (running, `started_at` + `min_healthy_time` ≤ now, readiness `ready` when the service has a readiness probe, missing `started_at` = healthy). Use it in the stop rule, progress (`running_new` counts healthy instances) and `isFinished`. Reason `waiting for <id> to stay healthy (<remaining>)`. Constant `rolloutDefaultMinHealthyTime` = 10 s. Make sure a pass runs after the window ends without a new fact. Keep functions under 80 lines.
+- [ ] 2b.3 DSL: `update { min_healthy_time <duration> }` → `desired/service/{svc}/update/min_healthy_time`; parser refuses invalid or negative values (0 allowed); formatter; tenant/fair_scheduler.go known suffixes; VS Code grammar; design/dsl-reference.md.
+- [ ] 2b.4 Docs: Flow 34 (healthy rule), CONTROLLER_DATA_FLOW_GRAPH.md and INSTANCE_LIFECYCLE_GRAPH.md (new key, functions, line numbers), design/etcd-schema.md (`started_at`, `update/min_healthy_time`).
+- [ ] 2b.5 Checks as in 3.1 (gofmt, golangci-lint, build, vet, tests incl. `-race` on touched agent and controller tests, `openspec validate rollout-correctness --strict`). Paste the results here.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
+  - First attempt 2026-11-18 on `abe4d19` (deploy cluster, service `m241roll`, `max_unavailable 1`, `progress_deadline 2m`):
+    - Crash-looping image (whoami → `mariadb:11`, no password): **FAILED** — `rollout started … revision=1` 10:15:29, `rollout finished state=complete image=…/mariadb:11` 10:15:52; the instance then crash-looped (41 restarts) under a `complete` rollout. Cause: a new instance that reports `running` for 1–2 s counted as done. Fixed by D10 (group 2b); rerun after it.
+    - Image tag that does not exist (`whoami:nosuchtag`): **PASSED** — at t+30 s `rolling`, reason `waiting for 66dbc0be92 image-pull-backoff: pulling image …:nosuchtag (attempt 2): … not found`; at t+150 s `rolled-back`, rollback reason `no progress for 2m: waiting for 66dbc0be92 image-pull-backoff: … not found`, whoami running again.
+    - Capacity (`cpu 8`, then `memory 64Gi`): **BLOCKED by M243** — both placed on nodes with 2 CPU / 3 GiB because the scheduler reads unit-suffixed requests as 0 (milestones.md Phase 243). Checked after M243.
 - [ ] 4.2 Independent review: `code-reviewer` (Opus, effort high) on the milestone diff against this design and the specs. Record each finding as fixed or rejected, with one line of reasoning.
 - [ ] 4.3 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 
