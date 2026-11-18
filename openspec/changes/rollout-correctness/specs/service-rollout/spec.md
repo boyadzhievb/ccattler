@@ -15,9 +15,9 @@ When a service's desired image differs from the image of some of its instances, 
 - Test: `TestRolloutStopsOldInstancesInIDOrder`
 
 #### Scenario: Stopped and not-yet-healthy instances count against the budget
-- **GIVEN** a service with 4 expected instances, `max_unavailable 1`, two old instances already stopped and two new instances pending
+- **GIVEN** a service with 4 expected instances, `max_unavailable 1`, two running old instances, one healthy new instance and one pending new instance
 - **WHEN** the rollout controller reconciles
-- **THEN** it stops no further old instance
+- **THEN** it stops no old instance, because one of the 4 is already not healthy
 - Test: `TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable`
 
 #### Scenario: Defaults surge a one-instance service
