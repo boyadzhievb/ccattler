@@ -80,10 +80,10 @@ When a start fails because the workload's own process could not be started (the 
 - Test: `TestAgentRunningPathRaceDoesNotPublishFailed`
 
 #### Scenario: A crash-looping new image stalls the rollout (interim, until M241)
-- **GIVEN** a rolling update with a previous image whose new-image instance is in `crash-loop-backoff`
-- **WHEN** the rollout controller reconciles
-- **THEN** it neither reverts the desired image nor stops another old-image instance
-- Test: `TestRolloutStallsWithoutRollbackWhenNewImageCrashLoops`
+- **GIVEN** a rolling update whose new-image instance is in `crash-loop-backoff`
+- **WHEN** its restarts reach the rollback threshold
+- **THEN** the rollout no longer stalls: it rolls back as `service-rollout` requires (M241 ended the interim)
+- Test: `TestRolloutRollsBackSmallServiceOnRestarts`
 
 #### Scenario: Logs of a crash-looping instance are read only for real instance IDs
 - **WHEN** the agent debug logs endpoint (used by `cca logs`, `--previous` included) gets an `instance` that is not an instance ID (`../x`, `a/b`, `..`)
@@ -94,3 +94,27 @@ When a start fails because the workload's own process could not be started (the 
 - **WHEN** some instances are in `crash-loop-backoff`
 - **THEN** the RUNTIME HEALTH summary of `cca status` and the e2e health check count them on their own as unhealthy, not as failed and not dropped
 - Test: `TestStatusTextCountsCrashLoopBackoffInRuntimeHealth`
+
+### Requirement: An in-place restart keeps the instance's image
+An instance SHALL be started, and restarted in place, with the image recorded for it when it was created, not with the service's current desired image. Only replacing the instance moves it to another image. An instance created before images were recorded SHALL use the service's desired image.
+
+#### Scenario: Old instance crashes during a rollout
+- **GIVEN** an instance created with image `a`, whose service's desired image has since changed to `b`
+- **WHEN** its container exits and the agent restarts it in place
+- **THEN** it runs `a` again and `observed/instance/{id}/image` stays `a`
+- Test: `TestAgentRestartsInstanceWithItsOwnImage`
+
+#### Scenario: New instance gets the desired image
+- **GIVEN** a service whose desired image is `b`
+- **WHEN** the instance controller creates an instance for it
+- **THEN** the instance's recorded image is `b` and the agent starts it with `b`
+- Test: `TestInstanceControllerRecordsImageOnCreate`, `TestAgentStartsInstanceWithRecordedImage`
+
+### Requirement: A created instance starts with no restarts
+When the instance controller creates an instance, including a stateful ordinal recreated under an earlier instance ID, the instance's restart count SHALL start at zero.
+
+#### Scenario: Stateful ordinal recreated
+- **GIVEN** a stateful instance `db-0` with `observed/instance/db-0/restarts` 7 that was stopped
+- **WHEN** the instance controller creates `db-0` again
+- **THEN** `observed/instance/db-0/restarts` is gone
+- Test: `TestInstanceControllerClearsRestartsOnRecreate`

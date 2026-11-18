@@ -594,7 +594,7 @@ Split from M238 (user decision 2026-11-17) after its rework review found that co
 - the rollback threshold for small services (a one-at-a-time rollout has one new instance; the absolute 3 never triggers)
 - old instances to stop are picked in map order (not deterministic)
 
-OpenSpec change: [`rollout-correctness`](openspec/changes/rollout-correctness/). Decided 2026-11-18 (all recommendations): instances keep the image they were created with (B5, found while proposing), restart count cleared on create, ECS-style rollback threshold over restarts + failed, node loss not a failure, unhealthy old instances first, state machine with `target_image`, `complete`/`rolled-back` cleanup.
+OpenSpec change: [`rollout-correctness`](openspec/changes/archive/2026-11-18-rollout-correctness/) (archived; spec [service-rollout](openspec/specs/service-rollout/spec.md)). Decided 2026-11-18 (all recommendations): instances keep the image they were created with (B5, found while proposing), restart count cleared on create, ECS-style rollback threshold over restarts + failed, node loss not a failure, unhealthy old instances first, state machine with `target_image`, `complete`/`rolled-back` cleanup.
 
 ### Phase 240 — Log Reads Load Whole Files Into Memory (M240, bug)
 
