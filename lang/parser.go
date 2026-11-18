@@ -6,6 +6,7 @@ package lang
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -926,7 +927,8 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 	return placementDecl, nil
 }
 
-// parseUpdateBlock parses an update { max_unavailable N, max_extra M } block.
+// parseUpdateBlock parses an update { max_unavailable N, max_extra M,
+// progress_deadline D } block.
 func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 	if err := parser.expectToken(TokenLBrace); err != nil {
 		return nil, err
@@ -945,6 +947,8 @@ func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 			updateDecl.MaxUnavailable, err = parser.expectInteger()
 		case "max_extra":
 			updateDecl.MaxExtra, err = parser.expectInteger()
+		case "progress_deadline":
+			updateDecl.ProgressDeadline, err = parser.expectPositiveDuration(key)
 		default:
 			return nil, parser.parserErrorf("unknown update field %q", key)
 		}
@@ -1376,6 +1380,22 @@ func (parser *Parser) expectInteger() (int, error) {
 		return 0, parser.parserErrorf("invalid integer %q", token.Value)
 	}
 	return parsedValue, nil
+}
+
+// expectPositiveDuration consumes a Go duration (15m, 1h30m) for the named
+// field and returns its text. A value that is not a duration or is not
+// positive is refused, so it is never read as 0.
+func (parser *Parser) expectPositiveDuration(fieldName string) (string, error) {
+	token := parser.currentToken()
+	if token.Type != TokenNumber && token.Type != TokenIdent {
+		return "", parser.parserErrorf("expected duration for %s, got %s", fieldName, token.Type)
+	}
+	parsedDuration, parseError := time.ParseDuration(token.Value)
+	if parseError != nil || parsedDuration <= 0 {
+		return "", parser.parserErrorf("%s must be a positive duration such as 10m, got %q", fieldName, token.Value)
+	}
+	parser.advanceToken()
+	return token.Value, nil
 }
 
 // skipNewlineTokens advances past any consecutive newline tokens.

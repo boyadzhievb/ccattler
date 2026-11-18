@@ -947,6 +947,12 @@ func printServiceDescribeScalingAndRollout(serviceDetail api.ServiceDescribe) {
 		if serviceDetail.Rollout.Failures != "" {
 			fmt.Printf("  Failures:        %s\n", serviceDetail.Rollout.Failures)
 		}
+		if serviceDetail.Rollout.Reason != "" {
+			fmt.Printf("  Reason:          %s\n", serviceDetail.Rollout.Reason)
+		}
+		if serviceDetail.Rollout.RollbackReason != "" {
+			fmt.Printf("  Rollback reason: %s\n", serviceDetail.Rollout.RollbackReason)
+		}
 	}
 }
 

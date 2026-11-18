@@ -734,6 +734,9 @@ func formatServiceUpdateFields(builder *strings.Builder, serviceDecl ServiceDecl
 	if serviceDecl.Update.MaxExtra != 0 {
 		fmt.Fprintf(builder, "%smax_extra %d\n", indent2, serviceDecl.Update.MaxExtra)
 	}
+	if serviceDecl.Update.ProgressDeadline != "" {
+		fmt.Fprintf(builder, "%sprogress_deadline %s\n", indent2, serviceDecl.Update.ProgressDeadline)
+	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }
 

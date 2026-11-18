@@ -42,6 +42,10 @@ type ServiceStatus struct {
 	Tags           map[string]string `json:"tags,omitempty"`
 	CrashLoopCount int               `json:"crash_loop_count,omitempty"`
 	CircuitBroken  bool              `json:"circuit_broken,omitempty"`
+
+	RolloutState          string `json:"rollout_state,omitempty"`           // RolloutState is derived/service/{svc}/rollout/state (M241 D8).
+	RolloutReason         string `json:"rollout_reason,omitempty"`          // RolloutReason says what a rollout in progress waits for.
+	RolloutRollbackReason string `json:"rollout_rollback_reason,omitempty"` // RolloutRollbackReason says why the last rollback happened.
 }
 
 // InstanceStatus represents one instance in the cluster status.
@@ -298,7 +302,10 @@ func collectServiceStatus(snapshot *statusFactSnapshot, sortedServiceNames []str
 		serviceStatus := ServiceStatus{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
 			RunningCount: runningCountByService[serviceName], ExposedPorts: service.Ports,
-			Tags: collectServiceTags(snapshot, serviceName),
+			Tags:                  collectServiceTags(snapshot, serviceName),
+			RolloutState:          snapshot.valueOrEmpty(types.KeyDerivedServiceRolloutState(serviceName)),
+			RolloutReason:         snapshot.valueOrEmpty(types.KeyDerivedServiceRolloutReason(serviceName)),
+			RolloutRollbackReason: snapshot.valueOrEmpty(types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
 		}
 		if counter, hasCounter := crashLoopCounters[serviceName]; hasCounter {
 			serviceStatus.CrashLoopCount = counter.count

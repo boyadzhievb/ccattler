@@ -155,9 +155,11 @@ type DescribeUpdateStrategy struct {
 
 // DescribeRollout shows the current rollout state for a service.
 type DescribeRollout struct {
-	State         string `json:"state"`
-	PreviousImage string `json:"previous_image,omitempty"`
-	Failures      string `json:"failures,omitempty"`
+	State          string `json:"state"`                     // State is rolling, complete, rollback, rolled-back or stalled.
+	PreviousImage  string `json:"previous_image,omitempty"`  // PreviousImage is the image a rollback goes back to.
+	Failures       string `json:"failures,omitempty"`        // Failures counts restarts and failed instances of the new image.
+	Reason         string `json:"reason,omitempty"`          // Reason says what a rollout in progress waits for (M241).
+	RollbackReason string `json:"rollback_reason,omitempty"` // RollbackReason says why the last rollback happened (M241).
 }
 
 // DescribeServiceNetwork shows networking info for a service.
@@ -510,20 +512,27 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 	return strategy
 }
 
-// buildServiceRollout reads the current rollout state.
+// buildServiceRollout reads the current rollout state, previous image, failure
+// count, the reason it waits and the reason of the last rollback (M241).
 func buildServiceRollout(ctx context.Context, factStore store.StateStore, serviceName string) *DescribeRollout {
 	stateFact, stateErr := factStore.Get(ctx, types.KeyDerivedServiceRolloutState(serviceName))
 	if stateErr != nil {
 		return nil
 	}
-	rollout := &DescribeRollout{State: string(stateFact.Value)}
-	if imageFact, imageErr := factStore.Get(ctx, types.KeyDerivedServiceRolloutImage(serviceName)); imageErr == nil {
-		rollout.PreviousImage = string(imageFact.Value)
+	readRolloutFact := func(factKey string) string {
+		fact, getError := factStore.Get(ctx, factKey)
+		if getError != nil {
+			return ""
+		}
+		return string(fact.Value)
 	}
-	if failFact, failErr := factStore.Get(ctx, types.KeyDerivedServiceRolloutFailures(serviceName)); failErr == nil {
-		rollout.Failures = string(failFact.Value)
+	return &DescribeRollout{
+		State:          string(stateFact.Value),
+		PreviousImage:  readRolloutFact(types.KeyDerivedServiceRolloutImage(serviceName)),
+		Failures:       readRolloutFact(types.KeyDerivedServiceRolloutFailures(serviceName)),
+		Reason:         readRolloutFact(types.KeyDerivedServiceRolloutReason(serviceName)),
+		RollbackReason: readRolloutFact(types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
 	}
-	return rollout
 }
 
 // buildServiceNetworking reads VIP, port, and DNS for a service.

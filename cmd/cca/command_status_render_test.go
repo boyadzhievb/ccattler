@@ -65,14 +65,10 @@ func TestStatusTextCountsCrashLoopBackoffInRuntimeHealth(t *testing.T) {
 	}
 }
 
-// TestStatusTextThroughAPIMatchesInProcessText checks that rendering the
-// /api/status?all=true JSON gives the same text the in-process builder
-// printed before `cca status` moved to the API (task 3.2: same layout).
-func TestStatusTextThroughAPIMatchesInProcessText(t *testing.T) {
-	factStore := store.NewMemoryStore()
-	defer factStore.Close()
-	putStatusFixtureFacts(t, factStore)
-
+// renderStatusTextThroughAPI renders the status text from the
+// /api/status?all=true JSON of a server over factStore, as `cca status` does.
+func renderStatusTextThroughAPI(t *testing.T, factStore store.StateStore) string {
+	t.Helper()
 	apiServer := api.NewServer(factStore)
 	apiServer.SetAuthenticatorChain(security.NewAuthenticatorChain(&noGrantsTestAuthenticator{}))
 	apiServer.SetRequirePrincipal(true)
@@ -105,7 +101,18 @@ func TestStatusTextThroughAPIMatchesInProcessText(t *testing.T) {
 	}
 	statusData.Instances = activeInstances
 
-	throughAPI := renderStatusText(statusData, instanceStates)
+	return renderStatusText(statusData, instanceStates)
+}
+
+// TestStatusTextThroughAPIMatchesInProcessText checks that rendering the
+// /api/status?all=true JSON gives the same text the in-process builder
+// printed before `cca status` moved to the API (task 3.2: same layout).
+func TestStatusTextThroughAPIMatchesInProcessText(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	putStatusFixtureFacts(t, factStore)
+
+	throughAPI := renderStatusTextThroughAPI(t, factStore)
 	inProcess := buildStatusTextOutput(context.Background(), factStore)
 	for _, wantFragment := range []string{"INSTANCES (2 active)", "1 stopped", "web-aaaa", "10.100.1.5", "NODES (1)"} {
 		if !strings.Contains(inProcess, wantFragment) {
@@ -114,5 +121,38 @@ func TestStatusTextThroughAPIMatchesInProcessText(t *testing.T) {
 	}
 	if throughAPI != inProcess {
 		t.Errorf("text through the API differs from the in-process text\n--- through API ---\n%s\n--- in process ---\n%s", throughAPI, inProcess)
+	}
+}
+
+// TestStatusTextListsStalledAndRolledBackServices: spec service-rollout,
+// "Status lists them", through the API and in process.
+func TestStatusTextListsStalledAndRolledBackServices(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	putStatusFixtureFacts(t, factStore)
+	rolloutFacts := map[string]string{
+		types.KeyDerivedServiceRolloutState("web"):             string(types.RolloutStalled),
+		types.KeyDerivedServiceRolloutReason("web"):            "web-3 unplaced: insufficient_capacity",
+		types.KeyDerivedServiceRolloutState("worker"):          string(types.RolloutRolledBack),
+		types.KeyDerivedServiceRolloutRollbackReason("worker"): "3 failures ≥ 3 on app:v2: exited with code 1",
+	}
+	for factKey, factValue := range rolloutFacts {
+		if _, putError := factStore.Put(context.Background(), factKey, []byte(factValue)); putError != nil {
+			t.Fatal(putError)
+		}
+	}
+	wantLines := []string{
+		"Rollouts:    web stalled: web-3 unplaced: insufficient_capacity",
+		"Rollouts:    worker rolled-back: 3 failures ≥ 3 on app:v2: exited with code 1",
+	}
+	for renderPath, statusText := range map[string]string{
+		"through API": renderStatusTextThroughAPI(t, factStore),
+		"in process":  buildStatusTextOutput(context.Background(), factStore),
+	} {
+		for _, wantLine := range wantLines {
+			if !strings.Contains(statusText, wantLine) {
+				t.Errorf("%s: RUNTIME HEALTH lacks %q:\n%s", renderPath, wantLine, statusText)
+			}
+		}
 	}
 }

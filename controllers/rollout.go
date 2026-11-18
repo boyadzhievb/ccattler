@@ -5,431 +5,279 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// RolloutController manages rolling updates when a service's desired image
-// changes. It gradually stops old-image instances at a rate controlled by
-// max_unavailable, allowing the InstanceController to create replacements
-// with the new image. If new-image instances fail beyond a threshold, it
-// triggers a rollback by reverting the desired image.
-type RolloutController struct{}
+// rolloutDefaultProgressDeadline is how long a rollout may go without progress
+// before it is rolled back, unless the service sets update { progress_deadline }.
+// Kubernetes' default progressDeadlineSeconds (M241 D7).
+const rolloutDefaultProgressDeadline = 10 * time.Minute
 
-// NewRolloutController returns a new RolloutController.
+// rolloutMinimumFailureThreshold is the lowest number of new-image failures that
+// rolls a rollout back, whatever the service size (ECS circuit breaker, M241 D3).
+const rolloutMinimumFailureThreshold = 3
+
+// rolloutMaximumFailureThreshold is the highest number of new-image failures a
+// rollout waits for before it rolls back (ECS circuit breaker, M241 D3).
+const rolloutMaximumFailureThreshold = 200
+
+// rolloutFailureThresholdDivisor divides the desired instance count (rounded
+// up) into the failure threshold: half the service (M241 D3).
+const rolloutFailureThresholdDivisor = 2
+
+// rolloutDefaultMaxUnavailable is the number of instances a rollout may take
+// down at once when the service sets no update { max_unavailable }.
+const rolloutDefaultMaxUnavailable = 1
+
+// RolloutController manages rolling updates when a service's desired image
+// changes. It stops old-image instances (unhealthy ones first, healthy ones
+// within max_unavailable), lets the InstanceController create replacements with
+// the new image, rolls back on new-image failures or a missed progress deadline,
+// and publishes the rollout state and the reason it waits (Flow 34, M241).
+type RolloutController struct {
+	// Now returns the current time for the progress deadline; tests set it.
+	Now func() time.Time
+}
+
+// NewRolloutController returns a new RolloutController using the wall clock.
 func NewRolloutController() *RolloutController {
-	return &RolloutController{}
+	return &RolloutController{Now: time.Now}
 }
 
 // Name returns "rollout", identifying this controller in logs.
 func (rolloutController *RolloutController) Name() string { return "rollout" }
 
-// Watch returns the fact prefixes that drive rolling updates.
+// Watch returns the fact prefixes that drive rolling updates, including the
+// effective instance counts (completion) and the scheduler's unplaced reasons
+// (the rollout reason, M241 D7).
 func (rolloutController *RolloutController) Watch() []string {
 	return []string{
 		types.ScanDesiredServices,
+		types.ScanEffectiveServices,
 		types.ScanObservedInstances,
 		types.ScanDerivedInstances,
 		types.ScanDerivedServices,
+		types.ScanDerivedSchedulerUnplaced,
 		types.ScanPlacements,
 	}
 }
 
-// Reconcile detects image mismatches between the desired service image and
-// running instances, then manages the rolling update by stopping old-image
-// instances at a controlled rate. If too many new-image instances fail,
-// it reverts the desired image for rollback.
+// Reconcile runs the rollout state machine of every service in sorted name
+// order and returns the bookkeeping changes, image reverts and instance stops.
+// The same facts and clock always give the same changes (M241 D6).
 func (rolloutController *RolloutController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	desiredImages := extractDesiredImages(facts)
-	updatePolicies := extractUpdatePolicies(facts)
-	instancesByService := extractInstancesByService(facts)
-	rolloutState := extractRolloutState(facts)
-	rolloutDisruptionBudgets := extractRolloutDisruptionBudgets(facts)
-	desiredInstancesByService := extractDesiredInstanceCounts(facts)
-	pausedServices := extractRolloutPausedServices(facts)
-
+	clusterFacts := extractRolloutClusterFacts(facts)
+	now := rolloutController.Now()
 	var changes []Change
-
-	for serviceName, desiredImage := range desiredImages {
-		instances := instancesByService[serviceName]
-		if len(instances) == 0 {
+	for _, serviceName := range sortedMapKeys(clusterFacts.desiredImages) {
+		if len(clusterFacts.instancesByService[serviceName]) == 0 {
 			continue
 		}
-
-		oldImageInstances, newImageInstances, newImageFailedCount := classifyInstancesByImage(instances, desiredImage)
-
-		if len(oldImageInstances) == 0 {
-			if rolloutState[serviceName] == "rolling" {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedServiceRolloutState(serviceName),
-					Value: []byte("complete"),
-				})
-				changes = append(changes, Change{
-					Type: store.OpDelete,
-					Key:  types.KeyDerivedServiceRolloutSurgeAllowance(serviceName),
-				})
-			}
-			continue
-		}
-
-		previousImage := rolloutState[serviceName+"/previous_image"]
-		currentRevision, _ := strconv.Atoi(rolloutState[serviceName+"/revision"])
-		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage, updatePolicies[serviceName], currentRevision)
-		changes = append(changes, trackingChanges...)
-
-		if shouldTriggerRollback(newImageFailedCount, previousImage) {
-			rollbackChanges := buildRollbackChanges(serviceName, previousImage)
-			changes = append(changes, rollbackChanges...)
-			continue
-		}
-
-		if pausedServices[serviceName] {
-			continue
-		}
-
-		effectivePolicy := applyDisruptionBudgetToUpdatePolicy(
-			updatePolicies[serviceName],
-			rolloutDisruptionBudgets[serviceName],
-			desiredInstancesByService[serviceName],
-		)
-		stopChanges := buildOldInstanceStopChanges(
-			oldImageInstances, newImageInstances, effectivePolicy,
-		)
-		changes = append(changes, stopChanges...)
+		changes = append(changes, reconcileServiceRollout(clusterFacts.buildServiceInput(serviceName, now))...)
 	}
-
 	return changes, nil
 }
 
-// classifyInstancesByImage partitions a service's instances into those running
-// the old image and those running the new (desired) image, skipping stopped
-// instances. It also returns the count of new-image instances in the failed
-// state, which is used for rollback threshold checks.
-func classifyInstancesByImage(
-	instances []rolloutInstanceInfo,
-	desiredImage string,
-) ([]rolloutInstanceInfo, []rolloutInstanceInfo, int) {
-	var oldImageInstances, newImageInstances []rolloutInstanceInfo
-	var newImageFailedCount int
-	for _, instanceInfo := range instances {
-		if instanceInfo.state == types.InstanceStopped {
-			continue
+// reconcileServiceRollout runs one pass of the rollout state machine (D5) for
+// one service: start or retarget tracking, finish, roll back on failures, stop
+// old instances, and track progress, the deadline and the reason (D7).
+func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
+	classification := classifyRolloutInstances(serviceInput.instances, serviceInput.desiredImage)
+	writer := serviceInput.writer
+	currentState := types.RolloutState(writer.value(rolloutFieldState))
+	switch {
+	case !isRolloutInProgress(currentState):
+		if len(classification.oldInstances) == 0 {
+			return nil
 		}
-		if instanceInfo.image == "" || instanceInfo.image == desiredImage {
-			newImageInstances = append(newImageInstances, instanceInfo)
-			if instanceInfo.state == types.InstanceFailed {
-				newImageFailedCount++
-			}
-		} else {
-			oldImageInstances = append(oldImageInstances, instanceInfo)
+		beginRolloutTowardDesiredImage(serviceInput, classification, mostCommonImage(classification.oldInstances))
+		currentState = types.RolloutRolling
+	case writer.value(rolloutFieldTargetImage) == "":
+		writer.put(rolloutFieldTargetImage, serviceInput.desiredImage)
+	case writer.value(rolloutFieldTargetImage) != serviceInput.desiredImage:
+		knownGoodImage := writer.value(rolloutFieldPreviousImage)
+		if knownGoodImage == "" {
+			knownGoodImage = mostCommonImage(classification.oldInstances)
+		}
+		beginRolloutTowardDesiredImage(serviceInput, classification, knownGoodImage)
+		currentState = types.RolloutRolling
+	}
+
+	if classification.isFinished(serviceInput.expectedInstanceCount) {
+		finishRollout(serviceInput, currentState)
+		return writer.changes
+	}
+	if currentState == types.RolloutRolling {
+		writer.put(rolloutFieldFailures, strconv.Itoa(classification.failureCount))
+		failureThreshold := computeRolloutFailureThreshold(serviceInput.desiredInstanceCount)
+		if classification.failureCount >= failureThreshold && writer.value(rolloutFieldPreviousImage) != "" {
+			rollbackReason := fmt.Sprintf("%d failures ≥ %d on %s: %s", classification.failureCount, failureThreshold,
+				serviceInput.desiredImage, describeWorstFailingInstance(classification.newInstances))
+			rollBackToPreviousImage(serviceInput, classification, rollbackReason)
+			return writer.changes
 		}
 	}
-	return oldImageInstances, newImageInstances, newImageFailedCount
+	return advanceRollout(serviceInput, classification, currentState)
 }
 
-// buildRolloutTrackingChanges returns changes that record the previous image,
-// set the rollout state to "rolling", and emit a surge allowance when a rollout
-// is first detected (i.e. when no previous image has been recorded yet).
-func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rolloutInstanceInfo, previousImage string, policy extractedUpdatePolicy, currentRevision int) []Change {
-	if previousImage != "" {
-		return nil
+// advanceRollout stops old instances (unless paused), records progress, applies
+// the progress deadline (rollback from rolling, stalled from rollback) and
+// writes the reason the rollout waits. Returns all changes of the pass.
+func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClassification, currentState types.RolloutState) []Change {
+	writer := serviceInput.writer
+	var stopPlan rolloutStopPlan
+	if !serviceInput.paused {
+		stopPlan = planOldInstanceStops(classification, serviceInput.maxUnavailable)
 	}
+	storedRunningNew, _ := strconv.Atoi(writer.value(rolloutFieldRunningNew))
+	progressed := len(stopPlan.stoppedIDs) > 0 || classification.runningNewCount > storedRunningNew
+	waitingReason := buildRolloutReason(serviceInput, classification, stopPlan, currentState)
+
+	if !serviceInput.paused && !progressed && isProgressDeadlineExceeded(writer.value(rolloutFieldProgressAt), serviceInput) {
+		deadlineReason := fmt.Sprintf("no progress for %s: %s", types.FormatCompactDuration(serviceInput.progressDeadline), waitingReason)
+		if currentState == types.RolloutRolling && writer.value(rolloutFieldPreviousImage) != "" {
+			rollBackToPreviousImage(serviceInput, classification, deadlineReason)
+			return writer.changes
+		}
+		if currentState == types.RolloutRollback {
+			logging.Default().Warn("rollback stalled", "service", serviceInput.serviceName, "reason", deadlineReason)
+			writer.put(rolloutFieldState, string(types.RolloutStalled))
+		}
+	}
+	if progressed && currentState == types.RolloutStalled {
+		logging.Default().Info("stalled rollback progresses again", "service", serviceInput.serviceName)
+		writer.put(rolloutFieldState, string(types.RolloutRollback))
+	}
+	recordRolloutProgress(serviceInput, classification.runningNewCount, progressed)
+	writer.put(rolloutFieldReason, truncateRolloutReason(waitingReason))
+	return append(writer.changes, buildInstanceStopChanges(stopPlan.stoppedIDs)...)
+}
+
+// recordRolloutProgress keeps rollout/progress_at and rollout/running_new: a
+// paused rollout has no progress_at (it does not time out, and resuming starts
+// the deadline anew); otherwise progress or a missing value sets it to now.
+func recordRolloutProgress(serviceInput rolloutServiceInput, runningNewCount int, progressed bool) {
+	writer := serviceInput.writer
+	switch {
+	case serviceInput.paused:
+		writer.remove(rolloutFieldProgressAt)
+	case progressed || writer.value(rolloutFieldProgressAt) == "":
+		writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
+	}
+	writer.put(rolloutFieldRunningNew, strconv.Itoa(runningNewCount))
+}
+
+// isProgressDeadlineExceeded reports whether more than the progress deadline
+// has passed since progressAt. A missing or unreadable time never exceeds it:
+// the deadline then starts at this pass.
+func isProgressDeadlineExceeded(progressAtText string, serviceInput rolloutServiceInput) bool {
+	progressAt, parseError := time.Parse(time.RFC3339, progressAtText)
+	if parseError != nil {
+		return false
+	}
+	return serviceInput.now.Sub(progressAt) > serviceInput.progressDeadline
+}
+
+// isRolloutInProgress reports whether a rollout state is one the state machine
+// keeps working on: rolling, rollback or stalled.
+func isRolloutInProgress(rolloutState types.RolloutState) bool {
+	return rolloutState == types.RolloutRolling || rolloutState == types.RolloutRollback || rolloutState == types.RolloutStalled
+}
+
+// beginRolloutTowardDesiredImage starts tracking a rollout to the desired image
+// (D5 rows 1 and 2): rolling, the known-good previous image, the target, the
+// next revision with its history entry, the surge allowance and a fresh
+// deadline. The reason of an earlier rollback is deleted.
+func beginRolloutTowardDesiredImage(serviceInput rolloutServiceInput, classification rolloutClassification, knownGoodImage string) {
+	writer := serviceInput.writer
+	currentRevision, _ := strconv.Atoi(writer.value(rolloutFieldRevision))
 	nextRevision := currentRevision + 1
-	trackingChanges := groupedChanges("rollout-track/"+serviceName,
-		Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedServiceRolloutImage(serviceName),
-			Value: []byte(oldImageInstances[0].image),
-		},
-		Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedServiceRolloutState(serviceName),
-			Value: []byte("rolling"),
-		},
-		Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedServiceRolloutRevision(serviceName),
-			Value: []byte(strconv.Itoa(nextRevision)),
-		},
-		Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedServiceRolloutHistory(serviceName, nextRevision),
-			Value: []byte(oldImageInstances[0].image),
-		},
-	)
-	if policy.maxExtra > 0 {
-		trackingChanges = append(trackingChanges, Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedServiceRolloutSurgeAllowance(serviceName),
-			Value: []byte(strconv.Itoa(policy.maxExtra)),
-		})
+	writer.put(rolloutFieldState, string(types.RolloutRolling))
+	writer.put(rolloutFieldPreviousImage, knownGoodImage)
+	writer.put(rolloutFieldTargetImage, serviceInput.desiredImage)
+	writer.put(rolloutFieldRevision, strconv.Itoa(nextRevision))
+	writer.putKey(types.KeyDerivedServiceRolloutHistory(serviceInput.serviceName, nextRevision), knownGoodImage)
+	if serviceInput.maxExtra > 0 {
+		writer.put(rolloutFieldSurgeAllowance, strconv.Itoa(serviceInput.maxExtra))
+	} else {
+		writer.remove(rolloutFieldSurgeAllowance)
 	}
-	return trackingChanges
+	for _, staleField := range []rolloutField{rolloutFieldRollbackReason, rolloutFieldRolledBackImage, rolloutFieldRolledBackAt, rolloutFieldFailures} {
+		writer.remove(staleField)
+	}
+	writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
+	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.runningNewCount))
+	logging.Default().Info("rollout started", "service", serviceInput.serviceName,
+		"from", knownGoodImage, "to", serviceInput.desiredImage, "revision", strconv.Itoa(nextRevision))
 }
 
-// shouldTriggerRollback returns true when the number of failed new-image
-// instances meets or exceeds the rollback threshold (3) and a previous image
-// is available to revert to.
-func shouldTriggerRollback(newImageFailedCount int, previousImage string) bool {
-	const rollbackThreshold = 3
-	return newImageFailedCount >= rollbackThreshold && previousImage != ""
+// rollBackToPreviousImage reverts the desired image to the previous image (D5
+// row 3), records why and which image was rolled back (D7, D9), restarts the
+// deadline and logs one warning.
+func rollBackToPreviousImage(serviceInput rolloutServiceInput, classification rolloutClassification, rollbackReason string) {
+	writer := serviceInput.writer
+	previousImage := writer.value(rolloutFieldPreviousImage)
+	writer.putKey(types.KeyDesiredServiceImage(serviceInput.serviceName), previousImage)
+	writer.put(rolloutFieldState, string(types.RolloutRollback))
+	writer.put(rolloutFieldTargetImage, previousImage)
+	writer.remove(rolloutFieldSurgeAllowance)
+	writer.put(rolloutFieldRollbackReason, truncateRolloutReason(rollbackReason))
+	writer.put(rolloutFieldRolledBackImage, serviceInput.desiredImage)
+	writer.put(rolloutFieldRolledBackAt, serviceInput.now.UTC().Format(time.RFC3339))
+	writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
+	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.countRunningOldOnImage(previousImage)))
+	writer.put(rolloutFieldReason, truncateRolloutReason("rolling back to "+previousImage))
+	logging.Default().Warn("rollout rolled back", "service", serviceInput.serviceName,
+		"from", serviceInput.desiredImage, "to", previousImage, "reason", rollbackReason)
 }
 
-// buildRollbackChanges returns changes that revert the desired service image
-// to the previous image and set the rollout state to "rollback".
-func buildRollbackChanges(serviceName string, previousImage string) []Change {
-	return groupedChanges("rollout-rollback/"+serviceName,
-		Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDesiredServiceImage(serviceName),
-			Value: []byte(previousImage),
-		},
-		Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedServiceRolloutState(serviceName),
-			Value: []byte("rollback"),
-		},
-		Change{
-			Type: store.OpDelete,
-			Key:  types.KeyDerivedServiceRolloutSurgeAllowance(serviceName),
-		},
-	)
+// finishRollout ends a rollout (complete) or a rollback (rolled-back) once every
+// instance runs the desired image (D5 rows 4 and 5) and deletes the bookkeeping
+// of the run. The rollback reason and rolled-back image stay for the user.
+func finishRollout(serviceInput rolloutServiceInput, currentState types.RolloutState) {
+	writer := serviceInput.writer
+	finalState := types.RolloutRolledBack
+	if currentState == types.RolloutRolling {
+		finalState = types.RolloutComplete
+	}
+	writer.put(rolloutFieldState, string(finalState))
+	for _, finishedField := range []rolloutField{
+		rolloutFieldPreviousImage, rolloutFieldTargetImage, rolloutFieldFailures, rolloutFieldSurgeAllowance,
+		rolloutFieldReason, rolloutFieldProgressAt, rolloutFieldRunningNew,
+	} {
+		writer.remove(finishedField)
+	}
+	logging.Default().Info("rollout finished", "service", serviceInput.serviceName,
+		"state", string(finalState), "image", serviceInput.desiredImage)
 }
 
-// buildOldInstanceStopChanges determines how many old-image instances can be
-// stopped in this reconciliation cycle based on the update policy's
-// max_unavailable setting, the number of already-failed old instances, and
-// whether any healthy new-image instances exist. It returns stop changes for
-// up to canStop old instances.
-func buildOldInstanceStopChanges(
-	oldImageInstances []rolloutInstanceInfo,
-	newImageInstances []rolloutInstanceInfo,
-	policy extractedUpdatePolicy,
-) []Change {
-	maxUnavailable := policy.maxUnavailable
-	if maxUnavailable == 0 {
-		maxUnavailable = 1
+// computeRolloutFailureThreshold returns half the desired instance count,
+// rounded up, kept between the minimum and maximum threshold (D3). A missing
+// count counts as 1.
+func computeRolloutFailureThreshold(desiredInstanceCount int) int {
+	if desiredInstanceCount < 1 {
+		desiredInstanceCount = 1
 	}
+	failureThreshold := (desiredInstanceCount + rolloutFailureThresholdDivisor - 1) / rolloutFailureThresholdDivisor
+	return min(max(failureThreshold, rolloutMinimumFailureThreshold), rolloutMaximumFailureThreshold)
+}
 
-	var healthyNewCount int
-	for _, instanceInfo := range newImageInstances {
-		if instanceInfo.state == types.InstanceRunning {
-			healthyNewCount++
-		}
-	}
-
-	currentUnavailable := 0
-	for _, instanceInfo := range oldImageInstances {
-		if instanceInfo.state == types.InstanceFailed {
-			currentUnavailable++
-		}
-	}
-
-	canStop := maxUnavailable - currentUnavailable
-	if canStop <= 0 {
-		return nil
-	}
-
-	if healthyNewCount == 0 && len(newImageInstances) > 0 {
-		return nil
-	}
-
+// buildInstanceStopChanges returns the changes that stop the given instances
+// by writing their observed state as stopped, in the given (ID) order.
+func buildInstanceStopChanges(instanceIDs []string) []Change {
 	var changes []Change
-	stopped := 0
-	for _, instanceInfo := range oldImageInstances {
-		if stopped >= canStop {
-			break
-		}
-		if isActiveInstanceState(instanceInfo.state) {
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedInstanceState(instanceInfo.id),
-				Value: []byte(string(types.InstanceStopped)),
-			})
-			stopped++
-		}
+	for _, instanceID := range instanceIDs {
+		changes = append(changes, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyObservedInstanceState(instanceID),
+			Value: []byte(string(types.InstanceStopped)),
+		})
 	}
 	return changes
-}
-
-// rolloutInstanceInfo holds instance details needed for rolling update decisions.
-type rolloutInstanceInfo struct {
-	id      string
-	service string
-	state   types.InstanceState
-	image   string
-}
-
-// extractDesiredImages returns a map of service name to desired container image.
-func extractDesiredImages(facts []store.Fact) map[string]string {
-	return collectStringValuesBySuffix(facts, types.ScanDesiredServices, "image")
-}
-
-// extractedUpdatePolicy holds parsed update strategy from facts.
-type extractedUpdatePolicy struct {
-	maxUnavailable int
-	maxExtra       int
-}
-
-// extractUpdatePolicies returns update policies for each service.
-func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy {
-	policies := make(map[string]extractedUpdatePolicy)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
-		if !hasSuffix {
-			continue
-		}
-		policy := policies[serviceName]
-		switch suffix {
-		case "update/max_unavailable":
-			parsedValue, parseError := strconv.Atoi(string(fact.Value))
-			if parseError != nil {
-				logging.Default().Warn("corrupt rollout max_unavailable", "service", serviceName, "value", string(fact.Value))
-				continue
-			}
-			policy.maxUnavailable = parsedValue
-		case "update/max_extra":
-			parsedValue, parseError := strconv.Atoi(string(fact.Value))
-			if parseError != nil {
-				logging.Default().Warn("corrupt rollout max_extra", "service", serviceName, "value", string(fact.Value))
-				continue
-			}
-			policy.maxExtra = parsedValue
-		default:
-			continue
-		}
-		policies[serviceName] = policy
-	}
-	return policies
-}
-
-// extractInstancesByService returns all instances grouped by service name,
-// with effective state from both observed and derived facts.
-func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceInfo {
-	instanceFields := parseInstanceFieldsFromFacts(facts)
-	result := make(map[string][]rolloutInstanceInfo)
-	for instanceID, fields := range instanceFields {
-		serviceName := fields["service"]
-		if serviceName == "" {
-			continue
-		}
-		result[serviceName] = append(result[serviceName], rolloutInstanceInfo{
-			id:      instanceID,
-			service: serviceName,
-			state:   effectiveInstanceState(fields),
-			image:   fields["image"],
-		})
-	}
-	return result
-}
-
-// rolloutDisruptionBudget holds parsed disruption budget fields for a service
-// used during rollout decisions.
-type rolloutDisruptionBudget struct {
-	minAvailable   int // minimum instances that must remain running
-	maxUnavailable int // maximum instances that may be simultaneously unavailable
-}
-
-// extractRolloutDisruptionBudgets scans desired service facts and returns
-// disruption budgets keyed by service name.
-func extractRolloutDisruptionBudgets(facts []store.Fact) map[string]rolloutDisruptionBudget {
-	budgets := make(map[string]rolloutDisruptionBudget)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanDesiredServices)
-		if !hasSuffix {
-			continue
-		}
-		budget := budgets[serviceName]
-		switch suffix {
-		case "disruption/min_available":
-			parsedValue, parseError := strconv.Atoi(string(factEntry.Value))
-			if parseError != nil {
-				logging.Default().Warn("corrupt disruption min_available", "service", serviceName, "value", string(factEntry.Value))
-				continue
-			}
-			budget.minAvailable = parsedValue
-		case "disruption/max_unavailable":
-			parsedValue, parseError := strconv.Atoi(string(factEntry.Value))
-			if parseError != nil {
-				logging.Default().Warn("corrupt disruption max_unavailable", "service", serviceName, "value", string(factEntry.Value))
-				continue
-			}
-			budget.maxUnavailable = parsedValue
-		default:
-			continue
-		}
-		budgets[serviceName] = budget
-	}
-	return budgets
-}
-
-// extractDesiredInstanceCounts scans desired service facts and returns the
-// desired instance count per service.
-func extractDesiredInstanceCounts(facts []store.Fact) map[string]int {
-	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "instances")
-}
-
-// applyDisruptionBudgetToUpdatePolicy returns an update policy with
-// maxUnavailable capped by the disruption budget. If the budget is more
-// restrictive than the update policy, the budget wins.
-func applyDisruptionBudgetToUpdatePolicy(
-	originalPolicy extractedUpdatePolicy,
-	budget rolloutDisruptionBudget,
-	desiredInstanceCount int,
-) extractedUpdatePolicy {
-	effectivePolicy := originalPolicy
-	if budget.maxUnavailable > 0 && budget.maxUnavailable < effectivePolicy.maxUnavailable {
-		effectivePolicy.maxUnavailable = budget.maxUnavailable
-	}
-	if budget.minAvailable > 0 && desiredInstanceCount > 0 {
-		budgetMaxUnavailable := desiredInstanceCount - budget.minAvailable
-		if budgetMaxUnavailable < 1 {
-			budgetMaxUnavailable = 1
-		}
-		if effectivePolicy.maxUnavailable == 0 || budgetMaxUnavailable < effectivePolicy.maxUnavailable {
-			effectivePolicy.maxUnavailable = budgetMaxUnavailable
-		}
-	}
-	return effectivePolicy
-}
-
-// extractRolloutState returns rollout tracking facts from the derived prefix.
-func extractRolloutState(facts []store.Fact) map[string]string {
-	state := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedServices) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDerivedServices)
-		if !hasSuffix || !strings.HasPrefix(suffix, "rollout/") {
-			continue
-		}
-		rolloutField := strings.TrimPrefix(suffix, "rollout/")
-		switch rolloutField {
-		case "state":
-			state[serviceName] = string(fact.Value)
-		case "previous_image":
-			state[serviceName+"/previous_image"] = string(fact.Value)
-		case "revision":
-			state[serviceName+"/revision"] = string(fact.Value)
-		}
-	}
-	return state
-}
-
-// extractRolloutPausedServices returns a set of service names with paused rollouts.
-func extractRolloutPausedServices(facts []store.Fact) map[string]bool {
-	paused := make(map[string]bool)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
-		if !hasSuffix || suffix != "rollout/paused" {
-			continue
-		}
-		if string(fact.Value) == "true" {
-			paused[serviceName] = true
-		}
-	}
-	return paused
 }

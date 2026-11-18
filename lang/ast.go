@@ -197,8 +197,9 @@ type PlacementMatchDecl struct {
 
 // UpdateDecl holds the rolling update strategy for a service.
 type UpdateDecl struct {
-	MaxUnavailable int // maximum instances that can be unavailable during update
-	MaxExtra       int // maximum extra instances allowed during surge
+	MaxUnavailable   int    // maximum instances that can be unavailable during update
+	MaxExtra         int    // maximum extra instances allowed during surge
+	ProgressDeadline string // time without progress before the rollout is rolled back (Go duration, "" = 10m default, M241)
 }
 
 // DisruptionDecl holds the disruption budget for a service. During node drains

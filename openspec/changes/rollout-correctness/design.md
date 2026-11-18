@@ -42,8 +42,10 @@ New key `derived/service/{svc}/rollout/target_image`. A state machine per servic
 | none / `complete` / `rolled-back` | some active instance runs a different image than desired | `rolling`. `previous_image` = the most common old image (ties broken by name). `target_image` = desired. revision+1, history, surge allowance |
 | `rolling` / `rollback` | desired ≠ `target_image` (image changed during a rollout) | `rolling`, `target_image` = desired, revision+1, history. `previous_image` is kept (the last known-good image) |
 | `rolling` | failures ≥ threshold and `previous_image` ≠ "" | desired image = `previous_image`, `target_image` = `previous_image`, `rollback`, surge deleted |
-| `rolling` | no active instance runs a different image | `complete`, delete `previous_image`, `failures`, surge |
-| `rollback` | no active instance runs a different image | `rolled-back`, delete `previous_image`, `failures`, surge |
+| `rolling` | finished (below) | `complete`, delete `previous_image`, `failures`, surge |
+| `rollback` | finished (below) | `rolled-back`, delete `previous_image`, `failures`, surge |
+
+**Finished** (amended 2026-11-18 during implementation, task 2.3): no old instance is left, every new instance is running, and at least the expected count is running (`effective/service/{svc}/instances`, else `desired`). The literal rule "no instance runs a different image" ended a one-instance rollout as soon as its old instance was stopped, before the crash loop could be counted. It would also have ended a rollback with its replacement still unplaced, so the rollback could never become `stalled`.
 
 Tracking starts from the state, not from an empty `previous_image`, so a stale `previous_image` left by an older server is simply overwritten at the next rollout. No migration is needed. The rollback writes `desired/service/{svc}/image`, like Nomad's `auto_revert`. Applying the configuration again starts a new rollout, which is the user's explicit intent.
 

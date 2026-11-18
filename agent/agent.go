@@ -128,6 +128,7 @@ type Agent struct {
 	crashLoopMaxDelay        time.Duration                        // crashLoopMaxDelay caps the wait between restarts; tests set a short value.
 	crashLoopResetPeriod     time.Duration                        // crashLoopResetPeriod is the run time after which the back-off starts over; tests set a short value.
 	initStepBackoffs         map[string]*initStepBackoffEntry     // initStepBackoffs tracks per-instance init step retry state across reconcile cycles so the reconcile loop never blocks on retries.
+	imageFallbackLogged      map[string]bool                      // imageFallbackLogged marks instances without a recorded image whose fallback to the service image was logged (M241 D1).
 	bridgeRetryAttempted     bool                                 // bridgeRetryAttempted is true after the first deferred bridge attachment attempt, preventing repeated retries on every container start.
 	testHookChannel          chan func()                          // testHookChannel lets tests inject closures that execute inside the agent goroutine, avoiding data races on agent-internal state.
 }
@@ -150,6 +151,7 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		crashLoopMaxDelay:        crashLoopMaxDelay,
 		crashLoopResetPeriod:     crashLoopResetPeriod,
 		initStepBackoffs:         make(map[string]*initStepBackoffEntry),
+		imageFallbackLogged:      make(map[string]bool),
 		secretDeliveryWaits:      make(map[string]*secretDeliveryWaitEntry),
 		legacyKeyFilePath:        LegacySecretMasterKeyPath,
 		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
@@ -615,6 +617,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	}
 
 	nodeAgent.cleanupStaleCrashLoopBackoffs(desiredByID)
+	nodeAgent.cleanupStaleImageFallbackLogs(desiredByID)
 	nodeAgent.sweepInstanceData(ctx, desiredByID, running)
 
 	// Clean up init-step backoff state for instances no longer placed on this node.
@@ -731,7 +734,7 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 // the instance for this cycle. Only services with legacy_secret_api get a
 // secret API token. Returns true when the start counts as an attempt (Flow 33).
 func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceInfo placedInstanceInfo) bool {
-	image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
+	image := nodeAgent.lookupInstanceImageFromStore(ctx, instanceInfo)
 	if image == "" {
 		return false
 	}
@@ -1164,6 +1167,34 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 		}
 		if deleteError := types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID); deleteError != nil {
 			logging.Default().Error("failed to delete network allocation", "instance", instanceID, "error", deleteError.Error())
+		}
+	}
+}
+
+// lookupInstanceImageFromStore returns the image recorded for the instance when
+// it was created, so starts and in-place restarts never move it to another image
+// (M241 D1). An instance created before images were recorded falls back to the
+// service's desired image; the fallback is logged once per instance.
+func (nodeAgent *Agent) lookupInstanceImageFromStore(ctx context.Context, instanceInfo placedInstanceInfo) string {
+	recordedImageFact, getError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceImage(instanceInfo.id))
+	if getError == nil && len(recordedImageFact.Value) > 0 {
+		return string(recordedImageFact.Value)
+	}
+	serviceImage := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
+	if !nodeAgent.imageFallbackLogged[instanceInfo.id] {
+		nodeAgent.imageFallbackLogged[instanceInfo.id] = true
+		logging.Default().Info("instance has no recorded image, using the service image",
+			"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", serviceImage)
+	}
+	return serviceImage
+}
+
+// cleanupStaleImageFallbackLogs forgets the logged image fallback of instances
+// no longer placed on this node.
+func (nodeAgent *Agent) cleanupStaleImageFallbackLogs(desiredByID map[string]bool) {
+	for loggedInstanceID := range nodeAgent.imageFallbackLogged {
+		if !desiredByID[loggedInstanceID] {
+			delete(nodeAgent.imageFallbackLogged, loggedInstanceID)
 		}
 	}
 }

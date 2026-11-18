@@ -35,7 +35,7 @@ type configurationRequestBody struct {
 // configurationApplyResponse is the JSON answer of POST /api/apply.
 type configurationApplyResponse struct {
 	FactsSet int      `json:"facts_set"`          // FactsSet is the number of facts the server wrote.
-	Warnings []string `json:"warnings,omitempty"` // Warnings holds the server's instance count warnings (M217).
+	Warnings []string `json:"warnings,omitempty"` // Warnings holds the server's instance count (M217) and rolled-back image (M241) warnings.
 }
 
 // postConfigurationToAPI sends requestBody to routePath (sendAPIJSONRequest)

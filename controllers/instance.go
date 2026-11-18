@@ -17,9 +17,10 @@ import (
 
 // defaultMaxInstanceCreationsPerCycle limits how many new instances the
 // InstanceController creates per reconciliation cycle. Each creation
-// emits 3 store operations, so 19 creations = 57 ops — near the
-// 58-change hard cap. Remaining deficit converges in subsequent cycles.
-const defaultMaxInstanceCreationsPerCycle = 19
+// emits 4 store operations (marker, service, state, recorded image), so
+// 14 creations = 56 ops — near the 58-change hard cap. Remaining deficit
+// converges in subsequent cycles.
+const defaultMaxInstanceCreationsPerCycle = 14
 
 // maxInstanceControllerChangesPerCycle is the hard output cap. If creations
 // plus scale-down changes exceed this, excess changes are deferred to the
@@ -60,10 +61,12 @@ func (instanceController *InstanceController) Name() string { return "instance" 
 
 // Watch returns the fact prefixes that drive instance reconciliation:
 // effective service definitions (which carry the desired instance count and
-// stateful flag) and observed instances (which represent what actually exists).
+// stateful flag), desired services (the image recorded for each new instance,
+// M241 D1) and observed instances (which represent what actually exists).
 func (instanceController *InstanceController) Watch() []string {
 	return []string{
 		types.ScanEffectiveServices,
+		types.ScanDesiredServices,
 		types.ScanObservedInstances,
 		types.ScanDerivedInstances,
 		types.ScanDerivedServices,
@@ -81,6 +84,7 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 		desiredCounts[serviceName] += surgeCount
 	}
 	fieldsByInstanceID := parseInstanceFieldsFromFacts(facts)
+	creation := instanceCreationFacts{desiredImages: extractDesiredImages(facts), fieldsByInstanceID: fieldsByInstanceID}
 	stateByInstanceID, serviceByInstanceID := buildInstanceMapsFromFields(fieldsByInstanceID)
 	activeInstanceIDs := buildActiveInstanceIDsByService(serviceByInstanceID, stateByInstanceID)
 
@@ -95,10 +99,10 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	changes = append(changes, scaleDownChanges...)
 
 	serviceDeficits := computeServiceDeficits(
-		sortedServiceNames, desiredCounts, activeInstanceIDs, stateByInstanceID, fieldsByInstanceID, statefulServices,
+		sortedServiceNames, desiredCounts, activeInstanceIDs, stateByInstanceID, creation, statefulServices,
 	)
 	fairShareChanges := instanceController.allocateCreationsFairly(
-		serviceDeficits, statefulServices, stateByInstanceID, fieldsByInstanceID, &creationsRemaining,
+		serviceDeficits, statefulServices, stateByInstanceID, creation, &creationsRemaining,
 	)
 	changes = append(changes, fairShareChanges...)
 
@@ -176,7 +180,7 @@ func computeServiceDeficits(
 	desiredCounts map[string]int,
 	activeInstanceIDs map[string][]string,
 	stateByInstanceID map[string]types.InstanceState,
-	fieldsByInstanceID map[string]map[string]string,
+	creation instanceCreationFacts,
 	statefulServices map[string]bool,
 ) []serviceDeficit {
 	var deficits []serviceDeficit
@@ -189,7 +193,7 @@ func computeServiceDeficits(
 		}
 		if statefulServices[serviceName] {
 			existingOrdinals := parseExistingOrdinals(serviceName, activeIDs)
-			nextChanges := createNextStatefulInstance(serviceName, wantCount, existingOrdinals, stateByInstanceID, fieldsByInstanceID)
+			nextChanges := createNextStatefulInstance(serviceName, wantCount, existingOrdinals, stateByInstanceID, creation)
 			if len(nextChanges) > 0 {
 				deficits = append(deficits, serviceDeficit{serviceName: serviceName, deficit: 1})
 			}
@@ -210,7 +214,7 @@ func (instanceController *InstanceController) allocateCreationsFairly(
 	deficits []serviceDeficit,
 	statefulServices map[string]bool,
 	stateByInstanceID map[string]types.InstanceState,
-	fieldsByInstanceID map[string]map[string]string,
+	creation instanceCreationFacts,
 	creationsRemaining *int,
 ) []Change {
 	var changes []Change
@@ -269,15 +273,15 @@ func (instanceController *InstanceController) allocateCreationsFairly(
 			"creating", strconv.Itoa(allocated[deficitIndex]),
 			"deficit", strconv.Itoa(entry.deficit))
 		if statefulServices[entry.serviceName] {
-			activeIDs := buildActiveIDsFromFields(entry.serviceName, fieldsByInstanceID, stateByInstanceID)
+			activeIDs := buildActiveIDsFromFields(entry.serviceName, creation.fieldsByInstanceID, stateByInstanceID)
 			existingOrdinals := parseExistingOrdinals(entry.serviceName, activeIDs)
 			nextChanges := createNextStatefulInstance(entry.serviceName,
 				len(existingOrdinals)+allocated[deficitIndex],
-				existingOrdinals, stateByInstanceID, fieldsByInstanceID)
+				existingOrdinals, stateByInstanceID, creation)
 			changes = append(changes, nextChanges...)
 		} else {
 			changes = append(changes, instanceController.createPendingInstances(
-				entry.serviceName, allocated[deficitIndex],
+				entry.serviceName, allocated[deficitIndex], creation,
 			)...)
 		}
 	}
@@ -415,12 +419,13 @@ func parseExistingOrdinals(serviceName string, activeIDs []string) []int {
 // ordinal position if all lower ordinals are running. Stateful services
 // enforce ordered startup: instance N+1 is only created when instance N is
 // running. Returns at most one instance creation per reconciliation cycle.
-// Stale derived markers (controller_stopped, node_failure) from a previous
-// incarnation of the same ordinal ID are deleted atomically with recreation.
+// Stale derived markers (controller_stopped, node_failure) and the restart
+// count of a previous incarnation of the same ordinal ID are deleted
+// atomically with recreation, and the service's image is recorded (M241).
 func createNextStatefulInstance(
 	serviceName string, wantCount int,
 	existingOrdinals []int, stateByInstanceID map[string]types.InstanceState,
-	fieldsByInstanceID map[string]map[string]string,
+	creation instanceCreationFacts,
 ) []Change {
 	ordinalSet := make(map[int]bool, len(existingOrdinals))
 	for _, ordinal := range existingOrdinals {
@@ -443,7 +448,8 @@ func createNextStatefulInstance(
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceOrdinal(instanceID), Value: []byte(strconv.Itoa(nextOrdinal))},
 		)
-		previousFields := fieldsByInstanceID[instanceID]
+		previousFields := creation.fieldsByInstanceID[instanceID]
+		changes = append(changes, creation.buildImageAndRestartChanges(groupID, serviceName, instanceID)...)
 		if previousFields["controller_stopped"] == "true" {
 			changes = append(changes, Change{
 				Type: store.OpDelete, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Group: groupID,
@@ -477,17 +483,45 @@ func stopHighestOrdinalInstances(serviceName string, existingOrdinals []int, cou
 
 // createPendingInstances generates Change entries that create the given number
 // of new instances for a stateless service, each in the "pending" state.
-// Every new instance gets three grouped facts: a marker key, a service
-// association, and a state.
-func (instanceController *InstanceController) createPendingInstances(service string, count int) []Change {
+// Every new instance gets grouped facts: a marker key, a service association,
+// a state, and the service's image when known (M241 D1).
+func (instanceController *InstanceController) createPendingInstances(service string, count int, creation instanceCreationFacts) []Change {
 	var changes []Change
 	for range count {
 		instanceID := instanceController.NewID()
-		changes = append(changes, groupedChanges("instance-create/"+instanceID,
+		groupID := "instance-create/" + instanceID
+		changes = append(changes, groupedChanges(groupID,
 			Change{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(service)},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
 		)...)
+		changes = append(changes, creation.buildImageAndRestartChanges(groupID, service, instanceID)...)
+	}
+	return changes
+}
+
+// instanceCreationFacts holds what the instance controller needs to create an
+// instance besides its count: the image to record and earlier instance fields.
+type instanceCreationFacts struct {
+	desiredImages      map[string]string            // desiredImages maps service name to desired/service/{svc}/image.
+	fieldsByInstanceID map[string]map[string]string // fieldsByInstanceID holds the observed and derived fields of existing instance IDs.
+}
+
+// buildImageAndRestartChanges returns the creation-group changes that record
+// the service's current image for the instance (D1) and delete a restart count
+// left by an earlier instance with the same ID (D2). No image, no image fact:
+// the agent then falls back to the service image.
+func (creation instanceCreationFacts) buildImageAndRestartChanges(groupID string, serviceName string, instanceID string) []Change {
+	var changes []Change
+	if desiredImage := creation.desiredImages[serviceName]; desiredImage != "" {
+		changes = append(changes, Change{
+			Type: store.OpPut, Key: types.KeyDerivedInstanceImage(instanceID), Value: []byte(desiredImage), Group: groupID,
+		})
+	}
+	if _, hasRestarts := creation.fieldsByInstanceID[instanceID]["restarts"]; hasRestarts {
+		changes = append(changes, Change{
+			Type: store.OpDelete, Key: types.KeyObservedInstanceRestarts(instanceID), Group: groupID,
+		})
 	}
 	return changes
 }

@@ -350,3 +350,28 @@ const (
 	// volume whose home node is not alive or cannot host the instance (Flow 26).
 	UnplacedVolumeHomeNodeUnavailable UnplacedReason = "volume_home_node_unavailable"
 )
+
+// RolloutState is the state of a service's image rollout, stored in
+// derived/service/{name}/rollout/state by the rollout controller (M241 D5).
+type RolloutState string
+
+// Rollout states.
+const (
+	// RolloutRolling means instances are being moved to a new image.
+	RolloutRolling RolloutState = "rolling"
+
+	// RolloutComplete means every instance runs the image the rollout moved to.
+	RolloutComplete RolloutState = "complete"
+
+	// RolloutRollback means the rollout failed and instances are moved back to
+	// the previous image.
+	RolloutRollback RolloutState = "rollback"
+
+	// RolloutRolledBack means a rollback finished: every instance runs the
+	// previous image again. The rollback reason stays until the next rollout.
+	RolloutRolledBack RolloutState = "rolled-back"
+
+	// RolloutStalled means a rollback made no progress within the progress
+	// deadline. It keeps retrying and clears once it progresses.
+	RolloutStalled RolloutState = "stalled"
+)

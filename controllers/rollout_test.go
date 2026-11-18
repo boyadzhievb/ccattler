@@ -5,7 +5,10 @@ package controllers
 
 import (
 	"context"
+	"maps"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -283,38 +286,537 @@ func TestRolloutPausedSkipsStops(t *testing.T) {
 	}
 }
 
-// TestRolloutStallsWithoutRollbackWhenNewImageCrashLoops pins the interim
-// behaviour until M241: a new-image instance in crash-loop-backoff (any
-// restart count) neither triggers a rollback nor lets the rollout stop
-// another old-image instance; the rollout stalls (M238 D5, reverted).
-func TestRolloutStallsWithoutRollbackWhenNewImageCrashLoops(t *testing.T) {
-	inputFacts := []store.Fact{
-		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
-		{Key: types.KeyDerivedServiceRolloutState("web"), Value: []byte("rolling")},
-		{Key: types.KeyDerivedServiceRolloutImage("web"), Value: []byte("nginx:1.27")},
-		{Key: types.KeyObservedInstanceState("old-1"), Value: []byte(types.InstanceRunning)},
-		{Key: types.KeyObservedInstanceService("old-1"), Value: []byte("web")},
-		{Key: types.KeyObservedInstanceImage("old-1"), Value: []byte("nginx:1.27")},
-		{Key: types.KeyObservedInstanceState("old-2"), Value: []byte(types.InstanceRunning)},
-		{Key: types.KeyObservedInstanceService("old-2"), Value: []byte("web")},
-		{Key: types.KeyObservedInstanceImage("old-2"), Value: []byte("nginx:1.27")},
-		{Key: types.KeyObservedInstanceState("new-1"), Value: []byte(types.InstanceCrashLoopBackoff)},
-		{Key: types.KeyObservedInstanceService("new-1"), Value: []byte("web")},
-		{Key: types.KeyObservedInstanceImage("new-1"), Value: []byte("nginx:1.28")},
-		{Key: types.KeyObservedInstanceRestarts("new-1"), Value: []byte("10")},
+// rolloutTestNow is the fixed clock of the M241 rollout tests.
+var rolloutTestNow = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+
+// rolloutTestInstance describes one instance of the "web" service for the
+// M241 rollout tests.
+type rolloutTestInstance struct {
+	instanceID   string              // instanceID is the instance's ID.
+	image        string              // image is the observed image; "" for none yet.
+	state        types.InstanceState // state is the observed state.
+	restarts     string              // restarts is the observed restart count; "" for none.
+	nodeFailure  bool                // nodeFailure marks the instance as on a lost node.
+	statusReason string              // statusReason is the observed status reason.
+}
+
+// buildRolloutTestFacts returns sorted facts for service "web" with the given
+// desired image, extra facts (key → value) and instances.
+func buildRolloutTestFacts(desiredImage string, extraFacts map[string]string, instances ...rolloutTestInstance) []store.Fact {
+	inputFacts := []store.Fact{{Key: types.KeyDesiredServiceImage("web"), Value: []byte(desiredImage)}}
+	for factKey, factValue := range extraFacts {
+		inputFacts = append(inputFacts, store.Fact{Key: factKey, Value: []byte(factValue)})
+	}
+	for _, instance := range instances {
+		inputFacts = append(inputFacts,
+			store.Fact{Key: types.KeyObservedInstanceService(instance.instanceID), Value: []byte("web")},
+			store.Fact{Key: types.KeyObservedInstanceState(instance.instanceID), Value: []byte(instance.state)},
+		)
+		if instance.image != "" {
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceImage(instance.instanceID), Value: []byte(instance.image)})
+		}
+		if instance.restarts != "" {
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceRestarts(instance.instanceID), Value: []byte(instance.restarts)})
+		}
+		if instance.nodeFailure {
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyDerivedInstanceNodeFailure(instance.instanceID), Value: []byte("true")})
+		}
+		if instance.statusReason != "" {
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceStatusReason(instance.instanceID), Value: []byte(instance.statusReason)})
+		}
 	}
 	store.SortFacts(inputFacts)
+	return inputFacts
+}
 
-	proposedChanges, reconcileError := NewRolloutController().Reconcile(context.Background(), inputFacts)
+// rollingFacts returns the rollout facts of a "web" rollout from previousImage
+// to targetImage whose last progress was progressAge ago.
+func rollingFacts(rolloutState types.RolloutState, previousImage string, targetImage string, progressAge time.Duration) map[string]string {
+	return map[string]string{
+		types.KeyDerivedServiceRolloutState("web"):       string(rolloutState),
+		types.KeyDerivedServiceRolloutImage("web"):       previousImage,
+		types.KeyDerivedServiceRolloutTargetImage("web"): targetImage,
+		types.KeyDerivedServiceRolloutRevision("web"):    "1",
+		types.KeyDerivedServiceRolloutProgressAt("web"):  rolloutTestNow.Add(-progressAge).Format(time.RFC3339),
+	}
+}
+
+// mergeFactMaps returns one map holding the entries of all given maps; later maps win.
+func mergeFactMaps(factMaps ...map[string]string) map[string]string {
+	merged := make(map[string]string)
+	for _, factMap := range factMaps {
+		maps.Copy(merged, factMap)
+	}
+	return merged
+}
+
+// reconcileRolloutTestFacts runs a rollout controller with the test clock and
+// returns its changes and the last change per key.
+func reconcileRolloutTestFacts(t *testing.T, inputFacts []store.Fact) ([]Change, map[string]Change) {
+	t.Helper()
+	rolloutController := NewRolloutController()
+	rolloutController.Now = func() time.Time { return rolloutTestNow }
+	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
+	changesByKey := make(map[string]Change, len(proposedChanges))
 	for _, change := range proposedChanges {
-		if change.Key == types.KeyDesiredServiceImage("web") {
-			t.Errorf("rollback proposed for a crash-looping new image before M241: %v", change)
+		if _, duplicate := changesByKey[change.Key]; duplicate {
+			t.Errorf("key %s proposed twice in one pass", change.Key)
 		}
-		if string(change.Value) == string(types.InstanceStopped) {
-			t.Errorf("rollout proceeded (old instance stopped) while the new image crash-loops: %v", change)
+		changesByKey[change.Key] = change
+	}
+	return proposedChanges, changesByKey
+}
+
+// stoppedInstanceIDs returns the IDs of the instances the changes stop, in change order.
+func stoppedInstanceIDs(proposedChanges []Change) []string {
+	var stoppedIDs []string
+	for _, change := range proposedChanges {
+		if change.Type == store.OpPut && string(change.Value) == string(types.InstanceStopped) &&
+			strings.HasPrefix(change.Key, types.ScanObservedInstances) {
+			instanceID := strings.SplitN(strings.TrimPrefix(change.Key, types.ScanObservedInstances), "/", 2)[0]
+			stoppedIDs = append(stoppedIDs, instanceID)
 		}
+	}
+	return stoppedIDs
+}
+
+// putValue returns the value a change puts at factKey and whether one does.
+func putValue(changesByKey map[string]Change, factKey string) (string, bool) {
+	change, hasChange := changesByKey[factKey]
+	if !hasChange || change.Type != store.OpPut {
+		return "", false
+	}
+	return string(change.Value), true
+}
+
+// isDeleted reports whether the changes delete factKey.
+func isDeleted(changesByKey map[string]Change, factKey string) bool {
+	change, hasChange := changesByKey[factKey]
+	return hasChange && change.Type == store.OpDelete
+}
+
+// assertNoRollback fails when the changes revert the desired image of "web".
+func assertNoRollback(t *testing.T, changesByKey map[string]Change) {
+	t.Helper()
+	if revertedImage, reverted := putValue(changesByKey, types.KeyDesiredServiceImage("web")); reverted {
+		t.Errorf("desired image reverted to %q, want no rollback", revertedImage)
+	}
+}
+
+// assertContainsAll fails when text lacks one of the fragments.
+func assertContainsAll(t *testing.T, what string, text string, fragments ...string) {
+	t.Helper()
+	for _, fragment := range fragments {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("%s %q does not contain %q", what, text, fragment)
+		}
+	}
+}
+
+// TestRolloutStopsOldInstancesInIDOrder: spec service-rollout, "Paced and deterministic".
+func TestRolloutStopsOldInstancesInIDOrder(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		map[string]string{types.KeyDesiredServiceUpdateMaxUnavailable("web"): "1"},
+		rolloutTestInstance{instanceID: "web-d", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-b", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-c", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-a", image: "app:a", state: types.InstanceRunning},
+	)
+	for attempt := range 20 {
+		proposedChanges, _ := reconcileRolloutTestFacts(t, inputFacts)
+		stoppedIDs := stoppedInstanceIDs(proposedChanges)
+		if len(stoppedIDs) != 1 || stoppedIDs[0] != "web-a" {
+			t.Fatalf("attempt %d stopped %v, want exactly [web-a]", attempt, stoppedIDs)
+		}
+	}
+}
+
+// TestRolloutCountsAllUnavailableInstancesAgainstMaxUnavailable: spec
+// service-rollout, "Unavailable instances use up the budget".
+func TestRolloutCountsAllUnavailableInstancesAgainstMaxUnavailable(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceUpdateMaxUnavailable("web"): "2",
+			types.KeyDesiredServiceInstances("web"):            "5",
+		}),
+		rolloutTestInstance{instanceID: "new-1", image: "app:b", state: types.InstanceCrashLoopBackoff},
+		rolloutTestInstance{instanceID: "new-2", image: "app:b", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "old-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "old-2", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "old-3", image: "app:a", state: types.InstanceRunning},
+	)
+	proposedChanges, _ := reconcileRolloutTestFacts(t, inputFacts)
+	if stoppedIDs := stoppedInstanceIDs(proposedChanges); len(stoppedIDs) != 1 {
+		t.Errorf("stopped %v, want exactly one healthy old instance (max_unavailable 2, one new instance unavailable)", stoppedIDs)
+	}
+}
+
+// TestRolloutStopsUnhealthyOldInstancesFirst: spec service-rollout,
+// "Crash-looping old instance goes first".
+func TestRolloutStopsUnhealthyOldInstancesFirst(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceUpdateMaxUnavailable("web"): "1",
+		}),
+		rolloutTestInstance{instanceID: "old-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "old-2", image: "app:a", state: types.InstanceCrashLoopBackoff, restarts: "4"},
+		rolloutTestInstance{instanceID: "old-3", image: "app:a", state: types.InstanceRunning},
+	)
+	for attempt := range 20 {
+		proposedChanges, _ := reconcileRolloutTestFacts(t, inputFacts)
+		if stoppedIDs := stoppedInstanceIDs(proposedChanges); len(stoppedIDs) != 1 || stoppedIDs[0] != "old-2" {
+			t.Fatalf("attempt %d stopped %v, want exactly [old-2]", attempt, stoppedIDs)
+		}
+	}
+}
+
+// TestRolloutCountsNewImageRestartsAndFailures: spec service-rollout,
+// "Restarts and failed instances count".
+func TestRolloutCountsNewImageRestartsAndFailures(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceInstances("web"): "10",
+		}),
+		rolloutTestInstance{instanceID: "new-1", image: "app:b", state: types.InstanceRunning, restarts: "2"},
+		rolloutTestInstance{instanceID: "new-2", image: "app:b", state: types.InstanceFailed},
+		rolloutTestInstance{instanceID: "old-1", image: "app:a", state: types.InstanceRunning, restarts: "7"},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if failureCount, written := putValue(changesByKey, types.KeyDerivedServiceRolloutFailures("web")); !written || failureCount != "3" {
+		t.Errorf("rollout/failures = %q (written %v), want 3", failureCount, written)
+	}
+	assertNoRollback(t, changesByKey)
+}
+
+// TestRolloutIgnoresNodeFailureForRollback: spec service-rollout, "Node loss
+// is not a failure of the image".
+func TestRolloutIgnoresNodeFailureForRollback(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceInstances("web"): "4",
+		}),
+		rolloutTestInstance{instanceID: "new-1", image: "app:b", state: types.InstanceRunning, nodeFailure: true},
+		rolloutTestInstance{instanceID: "new-2", image: "app:b", state: types.InstanceRunning, nodeFailure: true},
+		rolloutTestInstance{instanceID: "new-3", image: "app:b", state: types.InstanceRunning, nodeFailure: true},
+		rolloutTestInstance{instanceID: "old-1", image: "app:a", state: types.InstanceRunning},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if failureCount, written := putValue(changesByKey, types.KeyDerivedServiceRolloutFailures("web")); !written || failureCount != "0" {
+		t.Errorf("rollout/failures = %q (written %v), want 0", failureCount, written)
+	}
+	assertNoRollback(t, changesByKey)
+}
+
+// TestRolloutRollsBackSmallServiceOnRestarts: spec service-rollout, "One-instance
+// service rolls back" (and instance-restart's ended interim scenario).
+func TestRolloutRollsBackSmallServiceOnRestarts(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceInstances("web"): "1",
+		}),
+		rolloutTestInstance{instanceID: "old-1", image: "app:a", state: types.InstanceStopped},
+		rolloutTestInstance{instanceID: "new-1", image: "app:b", state: types.InstanceCrashLoopBackoff, restarts: "3",
+			statusReason: "exited with code 1; restarting in 40s"},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if revertedImage, _ := putValue(changesByKey, types.KeyDesiredServiceImage("web")); revertedImage != "app:a" {
+		t.Errorf("desired image = %q, want app:a", revertedImage)
+	}
+	if rolloutState, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); rolloutState != string(types.RolloutRollback) {
+		t.Errorf("rollout/state = %q, want rollback", rolloutState)
+	}
+	rollbackReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRollbackReason("web"))
+	assertContainsAll(t, "rollback_reason", rollbackReason, "3 failures", "≥ 3", "app:b", "exited with code 1")
+	if rolledBackImage, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRolledBackImage("web")); rolledBackImage != "app:b" {
+		t.Errorf("rolled_back_image = %q, want app:b", rolledBackImage)
+	}
+	if rolledBackAt, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRolledBackAt("web")); rolledBackAt != rolloutTestNow.Format(time.RFC3339) {
+		t.Errorf("rolled_back_at = %q, want %s", rolledBackAt, rolloutTestNow.Format(time.RFC3339))
+	}
+}
+
+// TestRolloutRollbackThresholdScalesWithDesiredCount: spec service-rollout,
+// "Threshold scales with the service".
+func TestRolloutRollbackThresholdScalesWithDesiredCount(t *testing.T) {
+	testCases := []struct {
+		name          string // name describes the case.
+		restarts      string // restarts is the new instance's restart count.
+		wantRollback  bool   // wantRollback says whether the rollout rolls back.
+		desiredCount  string // desiredCount is the service's desired instance count.
+		wantThreshold string // wantThreshold is the threshold the rollback reason names.
+	}{
+		{name: "10 instances, 4 failures", restarts: "4", desiredCount: "10", wantRollback: false},
+		{name: "10 instances, 5 failures", restarts: "5", desiredCount: "10", wantRollback: true, wantThreshold: "≥ 5"},
+		{name: "2 instances, 2 failures (lower bound 3)", restarts: "2", desiredCount: "2", wantRollback: false},
+		{name: "1000 instances, 200 failures (upper bound 200)", restarts: "200", desiredCount: "1000", wantRollback: true, wantThreshold: "≥ 200"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			inputFacts := buildRolloutTestFacts("app:b",
+				mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+					types.KeyDesiredServiceInstances("web"): testCase.desiredCount,
+				}),
+				rolloutTestInstance{instanceID: "new-1", image: "app:b", state: types.InstanceCrashLoopBackoff, restarts: testCase.restarts},
+				rolloutTestInstance{instanceID: "old-1", image: "app:a", state: types.InstanceRunning},
+			)
+			_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+			revertedImage, reverted := putValue(changesByKey, types.KeyDesiredServiceImage("web"))
+			if reverted != testCase.wantRollback {
+				t.Fatalf("rollback = %v (image %q), want %v", reverted, revertedImage, testCase.wantRollback)
+			}
+			if testCase.wantRollback {
+				rollbackReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRollbackReason("web"))
+				assertContainsAll(t, "rollback_reason", rollbackReason, testCase.wantThreshold)
+			}
+		})
+	}
+}
+
+// TestRolloutTracksSecondRollout: spec service-rollout, "Second rollout is tracked".
+func TestRolloutTracksSecondRollout(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:c",
+		map[string]string{
+			types.KeyDerivedServiceRolloutState("web"):          string(types.RolloutComplete),
+			types.KeyDerivedServiceRolloutImage("web"):          "app:a", // stale, left by an older server
+			types.KeyDerivedServiceRolloutRevision("web"):       "1",
+			types.KeyDerivedServiceRolloutRollbackReason("web"): "old reason",
+		},
+		rolloutTestInstance{instanceID: "web-1", image: "app:b", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-2", image: "app:b", state: types.InstanceRunning},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	wantPuts := map[string]string{
+		types.KeyDerivedServiceRolloutState("web"):       string(types.RolloutRolling),
+		types.KeyDerivedServiceRolloutImage("web"):       "app:b",
+		types.KeyDerivedServiceRolloutTargetImage("web"): "app:c",
+		types.KeyDerivedServiceRolloutRevision("web"):    "2",
+		types.KeyDerivedServiceRolloutHistory("web", 2):  "app:b",
+	}
+	for factKey, wantValue := range wantPuts {
+		if gotValue, _ := putValue(changesByKey, factKey); gotValue != wantValue {
+			t.Errorf("%s = %q, want %q", factKey, gotValue, wantValue)
+		}
+	}
+	if !isDeleted(changesByKey, types.KeyDerivedServiceRolloutRollbackReason("web")) {
+		t.Error("rollback_reason of the earlier rollback not deleted when the next rollout starts")
+	}
+}
+
+// TestRolloutRollbackMovesToRolledBack: spec service-rollout, "Rollback finishes".
+func TestRolloutRollbackMovesToRolledBack(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:a",
+		mergeFactMaps(rollingFacts(types.RolloutRollback, "app:a", "app:a", time.Minute), map[string]string{
+			types.KeyDerivedServiceRolloutRollbackReason("web"): "3 failures ≥ 3 on app:b: exited with code 1",
+			types.KeyDerivedServiceRolloutFailures("web"):       "3",
+		}),
+		rolloutTestInstance{instanceID: "web-1", image: "app:b", state: types.InstanceStopped},
+		rolloutTestInstance{instanceID: "web-2", image: "app:a", state: types.InstanceRunning},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if rolloutState, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); rolloutState != string(types.RolloutRolledBack) {
+		t.Errorf("rollout/state = %q, want rolled-back", rolloutState)
+	}
+	for _, deletedKey := range []string{types.KeyDerivedServiceRolloutImage("web"), types.KeyDerivedServiceRolloutFailures("web")} {
+		if !isDeleted(changesByKey, deletedKey) {
+			t.Errorf("%s not deleted when the rollback finished", deletedKey)
+		}
+	}
+	if isDeleted(changesByKey, types.KeyDerivedServiceRolloutRollbackReason("web")) {
+		t.Error("rollback_reason deleted when the rollback finished, want it kept until the next rollout")
+	}
+}
+
+// TestRolloutNewImageMidRolloutKeepsKnownGood: spec service-rollout, "Image
+// changed mid-rollout".
+func TestRolloutNewImageMidRolloutKeepsKnownGood(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:c",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceInstances("web"): "2",
+		}),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-2", image: "app:b", state: types.InstanceRunning},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if rolloutState, changed := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); changed && rolloutState != string(types.RolloutRolling) {
+		t.Errorf("rollout/state = %q, want it to stay rolling", rolloutState)
+	}
+	if targetImage, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutTargetImage("web")); targetImage != "app:c" {
+		t.Errorf("target_image = %q, want app:c", targetImage)
+	}
+	if revision, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRevision("web")); revision != "2" {
+		t.Errorf("revision = %q, want 2", revision)
+	}
+	if previousImage, overwritten := putValue(changesByKey, types.KeyDerivedServiceRolloutImage("web")); overwritten && previousImage != "app:a" {
+		t.Errorf("previous_image overwritten with %q, want it to stay app:a", previousImage)
+	}
+
+	laterFacts := buildRolloutTestFacts("app:c",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:c", time.Minute), map[string]string{
+			types.KeyDesiredServiceInstances("web"): "2",
+		}),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-3", image: "app:c", state: types.InstanceCrashLoopBackoff, restarts: "3"},
+	)
+	_, laterChangesByKey := reconcileRolloutTestFacts(t, laterFacts)
+	if revertedImage, _ := putValue(laterChangesByKey, types.KeyDesiredServiceImage("web")); revertedImage != "app:a" {
+		t.Errorf("later rollback reverted to %q, want app:a", revertedImage)
+	}
+}
+
+// TestRolloutReasonNamesWaitingInstance: spec service-rollout, "New image cannot be pulled".
+func TestRolloutReasonNamesWaitingInstance(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-3", state: types.InstanceImagePullBackoff, statusReason: "pull failed: not found"},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	rolloutReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutReason("web"))
+	assertContainsAll(t, "rollout/reason", rolloutReason, "web-3", "image-pull-backoff", "pull failed: not found")
+}
+
+// TestRolloutReasonForPauseAndBudget: spec service-rollout, "Paused and budget-bound rollouts".
+func TestRolloutReasonForPauseAndBudget(t *testing.T) {
+	t.Run("paused", func(t *testing.T) {
+		inputFacts := buildRolloutTestFacts("app:b",
+			mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+				types.KeyDesiredServiceRolloutPaused("web"): "true",
+			}),
+			rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+			rolloutTestInstance{instanceID: "web-2", image: "app:b", state: types.InstanceRunning},
+		)
+		_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+		rolloutReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutReason("web"))
+		assertContainsAll(t, "rollout/reason", rolloutReason, "paused")
+	})
+	t.Run("max_unavailable used up", func(t *testing.T) {
+		inputFacts := buildRolloutTestFacts("app:b",
+			mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+				types.KeyDesiredServiceUpdateMaxUnavailable("web"): "1",
+				types.KeyDesiredServiceInstances("web"):            "4",
+			}),
+			rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+			rolloutTestInstance{instanceID: "web-2", image: "app:a", state: types.InstanceRunning},
+			rolloutTestInstance{instanceID: "web-3", image: "app:b", state: types.InstanceRunning, nodeFailure: true},
+			rolloutTestInstance{instanceID: "web-4", image: "app:b", state: types.InstanceRunning},
+		)
+		proposedChanges, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+		if stoppedIDs := stoppedInstanceIDs(proposedChanges); len(stoppedIDs) != 0 {
+			t.Errorf("stopped %v with the budget used up, want none", stoppedIDs)
+		}
+		rolloutReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutReason("web"))
+		assertContainsAll(t, "rollout/reason", rolloutReason, "max_unavailable", "web-3")
+	})
+}
+
+// unplacedTestFacts returns the scheduler facts of an unplaced instance that
+// needs 2000m CPU and 1024 MiB memory.
+func unplacedTestFacts(instanceID string) map[string]string {
+	return map[string]string{
+		types.KeyDerivedSchedulerUnplacedReason(instanceID):       string(types.UnplacedInsufficientCapacity),
+		types.KeyDerivedSchedulerUnplacedRequirements(instanceID): `{"service":"web","cpu":2000,"memory":1024,"architecture":""}`,
+	}
+}
+
+// TestRolloutRollsBackAfterProgressDeadlineWithReason: spec service-rollout,
+// "No room for the new instance".
+func TestRolloutRollsBackAfterProgressDeadlineWithReason(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", 11*time.Minute), unplacedTestFacts("web-3")),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-3", state: types.InstancePending},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if revertedImage, _ := putValue(changesByKey, types.KeyDesiredServiceImage("web")); revertedImage != "app:a" {
+		t.Errorf("desired image = %q, want app:a", revertedImage)
+	}
+	if rolloutState, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); rolloutState != string(types.RolloutRollback) {
+		t.Errorf("rollout/state = %q, want rollback", rolloutState)
+	}
+	rollbackReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRollbackReason("web"))
+	assertContainsAll(t, "rollback_reason", rollbackReason, "no progress for 10m", "web-3", "insufficient_capacity", "cpu 2000m", "memory 1024Mi")
+}
+
+// TestRolloutProgressRestartsDeadline: spec service-rollout, "Progress restarts the deadline".
+func TestRolloutProgressRestartsDeadline(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", 9*time.Minute), map[string]string{
+			types.KeyDerivedServiceRolloutRunningNew("web"): "0",
+			types.KeyDesiredServiceInstances("web"):         "3",
+		}),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-2", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-3", image: "app:b", state: types.InstanceRunning},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	assertNoRollback(t, changesByKey)
+	if progressAt, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutProgressAt("web")); progressAt != rolloutTestNow.Format(time.RFC3339) {
+		t.Errorf("progress_at = %q, want now (%s)", progressAt, rolloutTestNow.Format(time.RFC3339))
+	}
+	if runningNew, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutRunningNew("web")); runningNew != "1" {
+		t.Errorf("running_new = %q, want 1", runningNew)
+	}
+}
+
+// TestRolloutPausedIgnoresProgressDeadline: spec service-rollout, "Paused
+// rollout does not time out".
+func TestRolloutPausedIgnoresProgressDeadline(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:b",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", 30*time.Minute), unplacedTestFacts("web-3"), map[string]string{
+			types.KeyDesiredServiceRolloutPaused("web"): "true",
+		}),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-3", state: types.InstancePending},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	assertNoRollback(t, changesByKey)
+	if rolloutState, changed := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); changed {
+		t.Errorf("paused rollout moved to %q, want it to stay rolling", rolloutState)
+	}
+}
+
+// TestRolloutRollbackStallsWithReason: spec service-rollout, "Rollback that
+// cannot progress".
+func TestRolloutRollbackStallsWithReason(t *testing.T) {
+	inputFacts := buildRolloutTestFacts("app:a",
+		mergeFactMaps(rollingFacts(types.RolloutRollback, "app:a", "app:a", 11*time.Minute), unplacedTestFacts("web-3")),
+		rolloutTestInstance{instanceID: "web-2", image: "app:b", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-3", state: types.InstancePending},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+	if rolloutState, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); rolloutState != string(types.RolloutStalled) {
+		t.Errorf("rollout/state = %q, want stalled", rolloutState)
+	}
+	rolloutReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutReason("web"))
+	assertContainsAll(t, "rollout/reason", rolloutReason, "web-3", "insufficient_capacity")
+	assertNoRollback(t, changesByKey)
+}
+
+// TestRolloutStartWhilePausedProposesEachKeyOnce checks that a rollout that
+// starts paused, or starts and rolls back in the same pass, proposes every key
+// once (a transaction never holds a key twice).
+func TestRolloutStartWhilePausedProposesEachKeyOnce(t *testing.T) {
+	pausedFacts := buildRolloutTestFacts("app:b",
+		map[string]string{types.KeyDesiredServiceRolloutPaused("web"): "true"},
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+	)
+	_, changesByKey := reconcileRolloutTestFacts(t, pausedFacts)
+	if rolloutState, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutState("web")); rolloutState != string(types.RolloutRolling) {
+		t.Errorf("rollout/state = %q, want rolling", rolloutState)
+	}
+
+	retargetFacts := buildRolloutTestFacts("app:c",
+		mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
+			types.KeyDesiredServiceInstances("web"): "1",
+		}),
+		rolloutTestInstance{instanceID: "web-1", image: "app:a", state: types.InstanceRunning},
+		rolloutTestInstance{instanceID: "web-2", image: "app:c", state: types.InstanceCrashLoopBackoff, restarts: "3"},
+	)
+	_, retargetChangesByKey := reconcileRolloutTestFacts(t, retargetFacts)
+	if rolloutState, _ := putValue(retargetChangesByKey, types.KeyDerivedServiceRolloutState("web")); rolloutState != string(types.RolloutRollback) {
+		t.Errorf("rollout/state = %q after retarget and failures in one pass, want rollback", rolloutState)
 	}
 }

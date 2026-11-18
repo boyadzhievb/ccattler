@@ -836,6 +836,14 @@ func KeyDesiredServiceUpdateMaxExtra(name string) string {
 	return fmt.Sprintf("%s/service/%s/update/max_extra", PrefixDesired, name)
 }
 
+// KeyDesiredServiceUpdateProgressDeadline returns the store path for how long a
+// rollout may go without progress before it is rolled back (Go duration text,
+// DSL update { progress_deadline }, M241 D7).
+// Path: desired/service/{name}/update/progress_deadline
+func KeyDesiredServiceUpdateProgressDeadline(name string) string {
+	return fmt.Sprintf("%s/service/%s/update/progress_deadline", PrefixDesired, name)
+}
+
 // KeyDesiredServiceStateful returns the store path for a service's stateful
 // flag. When "true", the instance controller uses ordinal IDs, ordered
 // startup, and reverse scale-down.
@@ -1643,10 +1651,68 @@ func ScanDerivedServiceRolloutHistory(name string) string {
 	return fmt.Sprintf("%s/service/%s/rollout/history/", PrefixDerived, name)
 }
 
+// KeyDerivedServiceRolloutTargetImage returns the store path for the image the
+// current rollout (or rollback) moves the service to (M241 D5).
+// Path: derived/service/{name}/rollout/target_image
+func KeyDerivedServiceRolloutTargetImage(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/target_image", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutReason returns the store path for the plain-text
+// reason a rollout in progress is waiting (M241 D7).
+// Path: derived/service/{name}/rollout/reason
+func KeyDerivedServiceRolloutReason(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/reason", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutRollbackReason returns the store path for why the last
+// rollback happened; kept until the next rollout starts (M241 D7).
+// Path: derived/service/{name}/rollout/rollback_reason
+func KeyDerivedServiceRolloutRollbackReason(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/rollback_reason", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutProgressAt returns the store path for the RFC 3339 time
+// of the rollout's last progress, the start of its progress deadline (M241 D7).
+// Path: derived/service/{name}/rollout/progress_at
+func KeyDerivedServiceRolloutProgressAt(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/progress_at", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutRunningNew returns the store path for the number of
+// running target-image instances last seen, used to detect progress (M241 D7).
+// Path: derived/service/{name}/rollout/running_new
+func KeyDerivedServiceRolloutRunningNew(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/running_new", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutRolledBackImage returns the store path for the image
+// the last rollback moved away from; apply warns when it is applied again (M241 D9).
+// Path: derived/service/{name}/rollout/rolled_back_image
+func KeyDerivedServiceRolloutRolledBackImage(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/rolled_back_image", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutRolledBackAt returns the store path for the RFC 3339
+// time of the last rollback (M241 D9).
+// Path: derived/service/{name}/rollout/rolled_back_at
+func KeyDerivedServiceRolloutRolledBackAt(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/rolled_back_at", PrefixDerived, name)
+}
+
 // KeyDesiredServiceRolloutPaused returns the store path for pausing a rolling update.
 // Path: desired/service/{name}/rollout/paused
 func KeyDesiredServiceRolloutPaused(name string) string {
 	return fmt.Sprintf("%s/service/%s/rollout/paused", PrefixDesired, name)
+}
+
+// KeyDerivedInstanceImage returns the store path for the image an instance was
+// created with. The instance controller records it at creation; the agent starts
+// and restarts the instance only with it (M241 D1). It shadows the observed image
+// in merged instance fields, which is the image the instance runs.
+// Path: derived/instance/{instanceID}/image
+func KeyDerivedInstanceImage(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/image", PrefixDerived, instanceID)
 }
 
 // KeyDerivedInstanceInitPhase returns the store path for a controller-derived init

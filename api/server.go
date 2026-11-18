@@ -637,7 +637,7 @@ type applyResponse struct {
 	OK       bool     `json:"ok"`
 	FactsSet int      `json:"facts_set,omitempty"`
 	Error    string   `json:"error,omitempty"`
-	Warnings []string `json:"warnings,omitempty"` // instance count warnings, one per service (M217)
+	Warnings []string `json:"warnings,omitempty"` // instance count warnings (M217) and rolled-back image warnings (M241), one per service each
 }
 
 // handleApply serves POST /api/apply to submit DSL configuration. The request

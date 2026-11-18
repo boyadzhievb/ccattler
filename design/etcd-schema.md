@@ -24,6 +24,8 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/placement/zone
 │   ├── service/{name}/update/max_unavailable
 │   ├── service/{name}/update/max_extra
+│   ├── service/{name}/update/progress_deadline  # Go duration; no progress this long → rollback (default 10m, M241)
+│   ├── service/{name}/rollout/paused         # "true" pauses the stops of a rollout
 │   ├── secret_generation/{name}    # secret value generation (decimal): 1 on create, +1 only when `cca secret set` stores a different value; read by agents into the config hash (M236, Flow 16)
 │   ├── volume/{name}               # volume definition
 │   ├── volume/{name}/size
@@ -46,14 +48,14 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}/service        # which service this belongs to
 │   ├── instance/{instance-id}/node           # which node it runs on
 │   ├── instance/{instance-id}/state          # pending | starting | pulling | image-pull-backoff | waiting-for-secrets | running | crash-loop-backoff | failed | stopped
-│   ├── instance/{instance-id}/image          # actual image running
+│   ├── instance/{instance-id}/image          # image the agent last started (shadowed by derived/instance/{id}/image in merged reads)
 │   ├── instance/{instance-id}/ip             # assigned overlay IP
 │   ├── instance/{instance-id}/health         # healthy | unhealthy | unknown
 │   ├── instance/{instance-id}/created-at     # RFC3339 timestamp (write-once)
 │   ├── instance/{instance-id}/hostport       # legacy single host port
 │   ├── instance/{instance-id}/hostport/{port}  # per-container-port host port mapping
 │   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"
-│   ├── instance/{instance-id}/restarts       # in-place restart count (integer), written by the agent from the first restart (M233)
+│   ├── instance/{instance-id}/restarts       # in-place restart count (integer), written by the agent from the first restart (M233); deleted by the instance controller when it creates the ID again (M241)
 │   ├── instance/{instance-id}/config-hash    # SHA256 of config inputs
 │   ├── instance/{instance-id}/pull-status    # JSON: {error, attempts, retryAfter, image}
 │   ├── instance/{instance-id}/status-reason  # human-readable reason string
@@ -71,8 +73,20 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   └── volume/{name}/attachment/{node}/{instance}  # shared volume: host mount path (Flow 14)
 │
 ├── derived/                        # controller-derived state (not agent observations)
-│   ├── service/{name}/rollout/state          # rolling | complete | rollback
-│   ├── service/{name}/rollout/previous_image # rollback image
+│   ├── service/{name}/rollout/state          # rolling | complete | rollback | rolled-back | stalled (Flow 34)
+│   ├── service/{name}/rollout/previous_image # known-good image a rollback goes back to; deleted when the run ends
+│   ├── service/{name}/rollout/target_image   # image the rollout (or rollback) moves to (M241)
+│   ├── service/{name}/rollout/revision       # rollout counter
+│   ├── service/{name}/rollout/history/{rev}  # previous image of rollout {rev}
+│   ├── service/{name}/rollout/surge_allowance  # max_extra while rolling
+│   ├── service/{name}/rollout/failures       # new-image restarts + failed instances while rolling (M241)
+│   ├── service/{name}/rollout/reason         # what a rollout in progress waits for (M241)
+│   ├── service/{name}/rollout/rollback_reason  # why the last rollback happened; kept until the next rollout (M241)
+│   ├── service/{name}/rollout/progress_at    # RFC 3339 time of the last progress; absent while paused (M241)
+│   ├── service/{name}/rollout/running_new    # running target-image instances last seen (M241)
+│   ├── service/{name}/rollout/rolled_back_image  # image the last rollback moved away from; apply warns on it (M241 D9)
+│   ├── service/{name}/rollout/rolled_back_at # RFC 3339 time of the last rollback (M241 D9)
+│   ├── instance/{instance-id}/image          # image recorded at creation; the agent starts and restarts the instance only with it (M241)
 │   ├── instance/{instance-id}/init/phase     # pending | running | complete | failed
 │   ├── instance/{instance-id}/drain_since    # Unix millis when drain began
 │   ├── instance/{instance-id}/drain_readiness  # readiness override during drain
@@ -205,7 +219,7 @@ Each controller watches only the prefixes it cares about:
 | Node-failure controller | `lease/node/`, `observed/node/`, `observed/instance/`, `derived/instance/`, `placement/` |
 | Intent resolver | `intent/`, `desired/service/` |
 | Init controller | `observed/instance/`, `desired/service/`, `derived/instance/` |
-| Rollout controller | `desired/service/`, `observed/instance/`, `derived/service/` |
+| Rollout controller | `desired/service/`, `effective/service/`, `observed/instance/`, `derived/instance/`, `derived/service/`, `derived/scheduler/unplaced/`, `placement/` |
 
 ### 7. Intent Layer Resolution
 

@@ -564,6 +564,7 @@ The existing rollout controller implements `max_unavailable` but ignores `max_ex
 - Surge allowance is only emitted while rollout state is "rolling". When complete or rollback, it is deleted.
 - max_extra = 0 (default) means no surge — behavior identical to before.
 - The rollout controller's max_unavailable pacing is unchanged — surge only affects creation rate, not stop rate.
+- Pacing, failure counting, rollback, the progress deadline and the rollout states: Flow 34.
 
 ---
 
@@ -1735,10 +1736,69 @@ instance no longer placed here → entry dropped with the stale-instance cleanup
 ```
 
 - The back-off lives in agent memory (`crashLoopBackoffs`); an agent restart loses it, the count in the store survives.
-- `crash-loop-backoff` is not `failed`: `findInstancesPlacedOnThisNode` keeps the instance desired, the failure controller does not act on it, the endpoint controller removes its endpoint (not `running`). A node failure still marks it `failed` (node failure controller), a drain still evicts it, a rollout can stop it, `cca restart` restarts it. Rollouts (until M241): a crash-looping new-image instance is not `failed` and not `running`, so the rollout neither rolls back nor stops further old instances; it stalls until a config with a working (or the previous) image is applied (`TestRolloutStallsWithoutRollbackWhenNewImageCrashLoops`). `cca status` RUNTIME HEALTH and the e2e health check show it on its own (M238 D6).
+- `crash-loop-backoff` is not `failed`: `findInstancesPlacedOnThisNode` keeps the instance desired, the failure controller does not act on it, the endpoint controller removes its endpoint (not `running`). A node failure still marks it `failed` (node failure controller), a drain still evicts it, a rollout can stop it, `cca restart` restarts it. Rollouts (Flow 34, M241): an in-place restart reuses the instance's recorded image (`derived/instance/{id}/image`), never the service's newer desired image; the restarts of a new-image instance count as new-image failures and roll the rollout back (`TestRolloutRollsBackSmallServiceOnRestarts`); a crash-looping old-image instance is stopped first, without using `max_unavailable`. `cca status` RUNTIME HEALTH and the e2e health check show it on its own (M238 D6).
 - A failed `Start` that is not the workload's own (image not found, CNI, netns, create container, other task failures such as cgroup, seccomp, mounts or the shim; `ProcessFailed` false) publishes `failed` as before (the failure controller replaces it, Flow 15), possibly on another node. Only containerd sets `ProcessFailed` (`extractRuncProcessExecFailure`); start errors of the process and nerdctl runtimes stay `failed`.
 - The agent never publishes `failed` from observing a container (start path or running path, M238): an exited container always reaches the back-off in place.
 - The base, maximum and reset durations are agent fields set from `crashLoopBaseDelay`, `crashLoopMaxDelay`, `crashLoopResetPeriod`; tests set short values.
 - The same `backoff.Delay` formula serves the image pull back-off (Flow 14 states) and the failure controller's replacement delay.
 - Not covered: keeping the IP across restarts (M237), rescheduling to another node.
 - Previous run's log (M234): every start (`ContainerdRuntime.Start`) moves `<id>-json.log` to `<id>-json.log.previous` before the new task opens the log (the shim appends), so the run that exited stays readable with `cca logs --previous`; one previous run per instance. An instant exit keeps its log the same way (it is restarted in place under the same ID, M238); a start whose process could not start writes no log (no process ran), so `--previous` then shows the run before it, if any. Stopping a container keeps `/var/lib/ccattler/logs/<id>/`; the agent's stale-instance cleanup calls `RemoveInstanceData` (optional `runtime.InstanceDataRemover`) when the instance leaves the node.
+
+## Flow 34: Rolling Update and Rollback (M241)
+
+**Problem**: Since M233/M238 a crash-looping instance stays `crash-loop-backoff` instead of becoming `failed`, and the rollout controller rolled back only on 3 `failed` new-image instances, so a broken image stalled the rollout. The agent restarted old instances in place with the service's new image, restart counts outlived re-created ordinals, `previous_image` was never deleted (no tracking from the second rollout on), node loss counted as image failure, and stops were in map order.
+
+**Invariant**: An instance runs only the image recorded when it was created; only a rollout moves a service to another image, by replacing instances within `max_unavailable` (unhealthy old instances first). New-image failures (restarts + `failed`, lost nodes excluded) reaching half the desired count (3…200), or no progress for the progress deadline, roll back to the last known-good image with a recorded reason. A waiting rollout always says why; stalled and rolled-back services show in `cca status`.
+
+```
+apply image b (was a)  → desired/service/{svc}/image = b
+                         apply answer warns when b == rollout/rolled_back_image (D9)
+
+InstanceController creating an instance (any time)                     [D1, D2]
+  instance-create/{id} group: observed marker/service/state=pending
+                              + derived/instance/{id}/image = desired image
+                              + DELETE observed/instance/{id}/restarts (stale count of a re-created ID)
+Agent start / in-place restart (Flow 33)
+  image = derived/instance/{id}/image, else desired/service/{svc}/image (pre-M241 instance, logged once)
+
+RolloutController pass, per service (sorted), instances sorted by ID     [D3–D7]
+  image(instance) = derived/instance/{id}/image, else observed image; "" → new
+  old = active instances whose image ≠ desired; new = the rest
+  unavailable = failed | crash-loop-backoff | image-pull-backoff | node_failure
+  failures = Σ restarts(new) + count(new failed), node_failure skipped
+  threshold = clamp(ceil(desired instances / 2), 3, 200)
+
+  state none/complete/rolled-back and old exists
+      → rolling: previous_image = most common old image, target_image = b, revision+1,
+        history/{rev} = previous, surge_allowance = max_extra, progress_at = now,
+        DELETE rollback_reason, rolled_back_image, rolled_back_at, failures
+  state rolling/rollback/stalled and desired ≠ target_image (image changed mid-rollout)
+      → same, previous_image kept (the last known-good image)
+  no old instance, ≥ expected count running, every new instance running
+      → rolling: complete;  rollback/stalled: rolled-back
+        DELETE previous_image, target_image, failures, surge_allowance, reason, progress_at, running_new
+        (rollback_reason, rolled_back_image, rolled_back_at stay until the next rollout)
+  rolling: PUT failures (when changed); failures ≥ threshold
+      → rollback group: desired/service/{svc}/image = previous, target_image = previous,
+        state = rollback, DELETE surge, rollback_reason = "N failures ≥ T on b: <exit reason>",
+        rolled_back_image = b, rolled_back_at = now, progress_at = now; one warning logged
+  stops (not paused): every unavailable old instance (no budget), then healthy old ones,
+        in ID order, up to max_unavailable − unavailable new instances, only while a new
+        instance runs (or none exists and no unhealthy one is being replaced)
+        → PUT observed/instance/{id}/state = stopped
+  progress = a stop, or more running new instances than rollout/running_new
+        → progress_at = now (absent while paused; resuming restarts the deadline)
+  no progress for update { progress_deadline } (default 10m), not paused:
+        rolling  → rollback as above, rollback_reason = "no progress for 10m: <reason>"
+        rollback → stalled (keeps retrying; progress → rollback again)
+  reason (written when changed): paused | previous image also fails (N failures on a)
+        | waiting for <id> (<state>: <status reason>, or "unplaced: insufficient_capacity
+          (cpu …m, memory …Mi)" from derived/scheduler/unplaced/{id}/*) | max_unavailable
+          N used up by <ids> | replacing N old-image instances
+```
+
+- Desired and observed stay separate: the rollback writes `desired/service/{svc}/image` (as Nomad's `auto_revert`); re-applying the configuration starts a new rollout and warns.
+- The failure count is current facts only: a `failed` instance the failure controller replaces drops out of it; crash loops stay on the same instance and keep counting.
+- A rollback never rolls back again; without progress it becomes `stalled` and clears itself once it progresses or completes.
+- `cca describe service` shows state, failures, reason and rollback reason; the status API carries `rollout_state`, `rollout_reason`, `rollout_rollback_reason`; `cca status` RUNTIME HEALTH and `test/e2e/health_check.sh` Check 6 list stalled and rolled-back services (D8).
+- Behaviour: `openspec/specs/service-rollout`, `openspec/specs/instance-restart`. Functions and keys: CONTROLLER_DATA_FLOW_GRAPH.md § rollout, INSTANCE_LIFECYCLE_GRAPH.md.

@@ -59,6 +59,12 @@ service web {
         separate "logging"
         rebalance true            # opt-in: scheduler may move running instances to even out load
     }
+
+    update {
+        max_unavailable 1         # instances a rollout may take down at once
+        max_extra 1               # extra new-image instances created ahead of stops
+        progress_deadline 15m     # no progress this long → roll back (default 10m)
+    }
 }
 
 volume database {
@@ -130,6 +136,10 @@ gate web-public {
     tls auto
 }
 ```
+
+## Rolling Updates
+
+Changing a service's `image` starts a rollout: old-image instances are replaced within `update { max_unavailable }` (crash-looping or failed ones first, without using the budget), `max_extra` extra new-image instances may run meanwhile, and the rollout rolls back to the previous image when the new image fails (restarts plus failed instances reach half the desired count, between 3 and 200) or makes no progress for `progress_deadline` (a positive Go duration such as `10m` or `1h30m`; an invalid or zero value is a parse error). `update { progress_deadline }` compiles to `desired/service/{svc}/update/progress_deadline`. Behaviour: `openspec/specs/service-rollout`; the chain: Flow 34 of `runtime-invariant-flows.md`.
 
 ## Instance Count Limits
 

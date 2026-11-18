@@ -137,8 +137,8 @@ IntentResolverController.Reconcile(ctx, facts)               :53
 
 See INSTANCE_LIFECYCLE_GRAPH.md §1 for full call tree.
 
-**Watch:** `effective/service/`, `observed/instance/`, `derived/instance/`, `derived/service/`
-**Writes:** `observed/instance/{id}/*`, `derived/instance/{id}/controller_stopped`
+**Watch:** `effective/service/`, `desired/service/` (image to record, M241), `observed/instance/`, `derived/instance/`, `derived/service/`
+**Writes:** `observed/instance/{id}/*` (DELETE `restarts` on re-creation, M241), `derived/instance/{id}/controller_stopped`, `derived/instance/{id}/image` (M241)
 
 ---
 
@@ -211,42 +211,68 @@ See INSTANCE_LIFECYCLE_GRAPH.md §7 for full call tree.
 
 ---
 
-### rollout (controllers/rollout.go)
+### rollout (controllers/rollout.go, rollout_plan.go, rollout_facts.go)
+
+Flow 34 (M241). Behaviour: `openspec/specs/service-rollout`.
 
 ```
-RolloutController.Reconcile(ctx, facts)                      :46
-├── extractDesiredImages(facts)                              :269
-├── extractUpdatePolicies(facts)                             :280
-│   └── reads desired/service/{svc}/update/{strategy,maxSurge,maxUnavailable}
-├── extractInstancesByService(facts)                         :313
-│   └── reads observed/instance/{id}/{state,image,service}
-├── extractRolloutDisruptionBudgets(facts)                   :340
-├── extractDesiredInstanceCounts(facts)                      :373
-├── extractRolloutState(facts)                               :402
-├── extractRolloutPausedServices(facts)                      :423
+RolloutController.Reconcile(ctx, facts)                      :74
+├── extractRolloutClusterFacts(facts)                        [rollout_facts.go:136]
+│   ├── extractDesiredImages                                 :188  desired/service/{svc}/image
+│   ├── extractUpdatePolicies                                :201  update/{max_unavailable,max_extra,progress_deadline}
+│   │   └── parseUpdatePolicyInteger                         :232
+│   ├── extractInstancesByService                            :245  sorted by ID
+│   │   └── observed/instance/{id}/{service,state,image,restarts,status-reason,exit-reason}
+│   │       derived/instance/{id}/{image (shadows observed image),node_failure,controller_stopped}
+│   ├── extractRolloutFields                                 :341  derived/service/{svc}/rollout/* (history excluded)
+│   ├── extractRolloutDisruptionBudgets                      :278
+│   ├── extractDesiredInstanceCounts                         :311  desired/service/{svc}/instances
+│   ├── effective/service/{svc}/instances (completion count)
+│   ├── extractRolloutPausedServices                         :361  desired/service/{svc}/rollout/paused
+│   └── extractUnplacedDemand                                [clusterscale.go]  derived/scheduler/unplaced/{id}/{reason,requirements}
 │
-└── FOR EACH service with image mismatch:
-    ├── classifyInstancesByImage(instances, desiredImage)     :113
-    │   → old-image instances, new-image instances
-    │
-    ├── shouldTriggerRollback(newImageFailed, prevImage)      :178
-    │   └── IF rollback needed:
-    │       └── buildRollbackChanges(svc, prevImage)          :185
-    │           └── PUT desired/service/{svc}/image = previousImage
-    │
-    ├── buildRolloutTrackingChanges(svc, oldInstances, ...)   :138
-    │   ├── PUT derived/service/{svc}/rollout/state = "rolling"
-    │   ├── PUT derived/service/{svc}/rollout/image = targetImage
-    │   ├── PUT derived/service/{svc}/rollout/revision = N+1
-    │   └── PUT derived/service/{svc}/rollout/surge_allowance = N
-    │
-    └── buildOldInstanceStopChanges(oldInstances, budget)     :209
-        └── PUT derived/instance/{id}/controller_stopped = "true"
-            (respects maxUnavailable and disruption budget)
+└── FOR EACH service (sorted) with instances:
+    buildServiceInput(svc, now)                              [rollout_facts.go:152]
+    │   └── applyDisruptionBudgetToUpdatePolicy              :318
+    reconcileServiceRollout(input)                           :90
+    ├── classifyRolloutInstances(instances, desiredImage)     [rollout_plan.go:35]
+    │   → old / new, runningNew, failures (restarts + failed, node_failure skipped),
+    │     unavailable new IDs (isUnavailableForRollout :88)
+    ├── state none/complete/rolled-back + old exists, or desired ≠ target_image:
+    │   └── beginRolloutTowardDesiredImage                   :197
+    │       ├── mostCommonImage(old)                         [rollout_plan.go:213]
+    │       └── PUT state=rolling, previous_image, target_image, revision+1,
+    │           history/{rev}, surge_allowance | DELETE rollback_reason, rolled_back_*, failures;
+    │           progress_at=now, running_new
+    ├── classification.isFinished(expected count)           [rollout_plan.go:66]
+    │   └── finishRollout                                    :243
+    │       └── PUT state=complete|rolled-back; DELETE previous_image, target_image,
+    │           failures, surge_allowance, reason, progress_at, running_new
+    ├── rolling: PUT failures; failures ≥ computeRolloutFailureThreshold :263
+    │   └── rollBackToPreviousImage                          :223
+    │       ├── describeWorstFailingInstance                 [rollout_plan.go:178]
+    │       └── PUT desired/service/{svc}/image = previous_image, state=rollback,
+    │           target_image, rollback_reason, rolled_back_image, rolled_back_at,
+    │           progress_at, running_new, reason | DELETE surge_allowance
+    └── advanceRollout                                       :132
+        ├── planOldInstanceStops (not paused)                [rollout_plan.go:111]
+        │   → unavailable old first (no budget), then healthy old in ID order
+        │     up to max_unavailable − unavailable new
+        ├── buildRolloutReason                               [rollout_plan.go:138]
+        │   └── describeWaitingInstance                      [rollout_plan.go:160]
+        ├── isProgressDeadlineExceeded                       :179
+        │   ├── rolling  → rollBackToPreviousImage("no progress for …")
+        │   └── rollback → PUT state=stalled (progress → rollback)
+        ├── recordRolloutProgress                            :165  progress_at, running_new
+        ├── PUT reason (truncateRolloutReason [rollout_plan.go:229])
+        └── buildInstanceStopChanges                         :273
+            └── PUT observed/instance/{id}/state = "stopped"
 ```
 
-**Watch:** `desired/service/`, `observed/instance/`, `derived/instance/`, `derived/service/`, `placement/instance/`
-**Writes:** `derived/service/{svc}/rollout/*`, `derived/service/{svc}/rollout/surge_allowance`, `observed/instance/{id}/state`, `desired/service/{svc}/image`
+All rollout bookkeeping of a service goes through `rolloutFactWriter` (rollout_facts.go:74–100): one change group `rollout/{svc}`, a put only when the value changes, a delete only when the fact exists.
+
+**Watch:** `desired/service/`, `effective/service/`, `observed/instance/`, `derived/instance/`, `derived/service/`, `derived/scheduler/unplaced/`, `placement/instance/`
+**Writes:** `derived/service/{svc}/rollout/{state,previous_image,target_image,revision,history/{rev},failures,surge_allowance,reason,rollback_reason,progress_at,running_new,rolled_back_image,rolled_back_at}`, `observed/instance/{id}/state`, `desired/service/{svc}/image`
 
 ---
 
@@ -492,7 +518,7 @@ drain                → instance, scheduler, node-failure, cloud-node-lifecycle
 network              → endpoint
 stateful-dns         → intent-resolver, instance
 init                 → instance
-rollout              → instance, scheduler
+rollout              → intent-resolver, instance, scheduler
 autoscale            → instance, failure, node-failure, init, warm-zero, rollout
 warm-zero            → instance, endpoint, rollout
 eviction             → instance, node-failure, cloud-node-lifecycle, rollout

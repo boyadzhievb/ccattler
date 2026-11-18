@@ -1055,6 +1055,10 @@ type serviceStatusEntry struct {
 	DesiredCount int    `json:"desired"`         // how many instances should be running
 	RunningCount int    `json:"running"`         // how many instances are currently running
 	ExposedPorts []int  `json:"ports,omitempty"` // ports exposed by this service
+
+	RolloutState          string `json:"rollout_state,omitempty"`           // rollout state (rolling, rolled-back, stalled, ...), M241
+	RolloutReason         string `json:"rollout_reason,omitempty"`          // what a rollout in progress waits for, M241
+	RolloutRollbackReason string `json:"rollout_rollback_reason,omitempty"` // why the last rollback happened, M241
 }
 
 // instanceStatusEntry represents one instance in the cluster status output.
@@ -1245,9 +1249,22 @@ func collectServiceStatusEntries(ctx context.Context, factStore store.StateStore
 		serviceEntries = append(serviceEntries, serviceStatusEntry{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
 			RunningCount: runningInstanceCount, ExposedPorts: service.Ports,
+			RolloutState:          readFactValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutState(serviceName)),
+			RolloutReason:         readFactValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutReason(serviceName)),
+			RolloutRollbackReason: readFactValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
 		})
 	}
 	return serviceEntries
+}
+
+// readFactValueOrEmpty returns the value stored at factKey, or "" when it is
+// missing or cannot be read.
+func readFactValueOrEmpty(ctx context.Context, factStore store.StateStore, factKey string) string {
+	fact, getError := factStore.Get(ctx, factKey)
+	if getError != nil {
+		return ""
+	}
+	return string(fact.Value)
 }
 
 // collectInstanceStatusEntries builds status entries for all active (non-stopped)
@@ -1410,6 +1427,7 @@ func renderStatusText(statusData clusterStatusResponse, instanceStates []string)
 	}
 
 	renderRuntimeHealthSummary(&textBuilder, instanceStates)
+	renderRolloutHealthLines(&textBuilder, statusData.Services)
 
 	// Render networking section if VIPs exist.
 	if len(statusData.Networking) > 0 {
@@ -1444,6 +1462,31 @@ func renderStatusText(statusData clusterStatusResponse, instanceStates []string)
 	}
 
 	return textBuilder.String()
+}
+
+// rolloutHealthReasonMaxLength cuts the reason of a Rollouts: line so the line
+// fits a terminal (M241 D8).
+const rolloutHealthReasonMaxLength = 100
+
+// renderRolloutHealthLines adds a Rollouts: line to RUNTIME HEALTH for every
+// service whose rollout is stalled (with its reason) or rolled back (with the
+// rollback reason), so neither stays unnoticed (M241 D8).
+func renderRolloutHealthLines(textBuilder *strings.Builder, services []serviceStatusEntry) {
+	for _, service := range services {
+		var reason string
+		switch types.RolloutState(service.RolloutState) {
+		case types.RolloutStalled:
+			reason = service.RolloutReason
+		case types.RolloutRolledBack:
+			reason = service.RolloutRollbackReason
+		default:
+			continue
+		}
+		if len(reason) > rolloutHealthReasonMaxLength {
+			reason = strings.ToValidUTF8(reason[:rolloutHealthReasonMaxLength], "") + "..."
+		}
+		fmt.Fprintf(textBuilder, "  Rollouts:    %s %s: %s\n", service.Name, service.RolloutState, reason)
+	}
 }
 
 // renderRuntimeHealthSummary writes the RUNTIME HEALTH section, counting all

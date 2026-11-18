@@ -282,6 +282,16 @@ if [[ -n "$STATUS_JSON" ]]; then
             | "    \(.id) (\(.service)) on \(.node): \(.status_reason // "")"'
     fi
 
+    # A stalled or rolled-back rollout is never quiet (M241 D8).
+    rollout_filter='.services[]? | select(.rollout_state == "stalled" or .rollout_state == "rolled-back")'
+    rollout_problems=$(echo "$STATUS_JSON" | jq "[$rollout_filter] | length")
+    if [[ "$rollout_problems" -gt 0 ]]; then
+        warn "$rollout_problems service rollout(s) stalled or rolled back"
+        rollout_line='"    \(.name) \(.rollout_state): \((if .rollout_state == "stalled"
+            then .rollout_reason else .rollout_rollback_reason end) // "")"'
+        echo "$STATUS_JSON" | jq -r "$rollout_filter | $rollout_line"
+    fi
+
     unhealthy_filter='[.instances[] | select(.health != null and .health != "" and .health != "healthy" and .health != "-")] | length'
     unhealthy_instances=$(echo "$STATUS_JSON" | jq "$unhealthy_filter")
     if [[ "$unhealthy_instances" -gt 0 ]]; then

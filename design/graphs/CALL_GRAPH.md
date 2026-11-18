@@ -68,7 +68,7 @@ executeReconciliationCycle
 ### reconcileDesiredInstance → full instance startup sequence
 ```
 reconcileDesiredInstance(instanceInfo)
-├── lookupServiceImageFromStore                  [BAIL if empty]
+├── lookupInstanceImageFromStore                 [M241 D1: derived/instance/{id}/image, else lookupServiceImageFromStore (logged once); BAIL if empty]
 ├── prepareInstanceSecretMaterial                [M174, Flow 27; BAIL → waiting-for-secrets]
 │   ├── loadServiceSecretRequirements            [desired grants, connection secrets (collectConnectionSecretNames), image_pull_secret; never secrets/; store error → BAIL, retry]
 │   ├── SecretMaterialStore.ReadInstanceSecrets  [material from this boot → reuse if materialMatchesRequirements]
@@ -207,7 +207,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/instance/{id}/state` | findInstancesPlacedOnThisNode |
 | `observed/instance/{id}/service` | findInstancesPlacedOnThisNode |
 | `derived/drain/{nodeID}/{instanceID}` | findInstancesPlacedOnThisNode |
-| `desired/service/{name}/image` | lookupServiceImageFromStore |
+| `derived/instance/{id}/image` | lookupInstanceImageFromStore (M241) |
+| `desired/service/{name}/image` | lookupServiceImageFromStore (fallback of lookupInstanceImageFromStore) |
 | `desired/service/{name}/pull_policy` | lookupServicePullPolicyFromStore |
 | `desired/service/{name}/image_pull_secret` | loadServiceSecretRequirements, resolveImagePullCredentials |
 | `observed/instance/{id}/secret-wait` | recordSecretDeliveryWait (write), clearSecretDeliveryWait (delete) |
@@ -269,7 +270,9 @@ executeReconciliationCycle(controller, deltaEvents)
 | `prepareInstanceSecretMaterial` | `reconcileDesiredInstance` (before image pull) |
 | `buildInstanceSecretMounts` | `reconcileDesiredInstance`, `materializeInitConfigFiles` |
 | `sweepSecretMaterial` | `executeReconciliationCycle` (after stale cleanup) |
-| `lookupServiceImageFromStore` | `reconcileDesiredInstance` |
+| `lookupInstanceImageFromStore` | `reconcileDesiredInstance` (M241) |
+| `lookupServiceImageFromStore` | `lookupInstanceImageFromStore` (fallback) |
+| `cleanupStaleImageFallbackLogs` | `executeReconciliationCycle` (agent, after cleanupStaleCrashLoopBackoffs) |
 | `resolveImagePullCredentials` | `reconcileDesiredInstance` |
 | `hasInitSteps` | `reconcileDesiredInstance` |
 | `publishStatusReason` | `reconcileDesiredInstance` (multiple points) |
@@ -354,7 +357,7 @@ LOG = swallowed and continues).
 ### reconcileDesiredInstance error paths
 ```
 reconcileDesiredInstance
-├── lookupServiceImageFromStore → returns ""
+├── lookupInstanceImageFromStore → returns "" (no recorded image and no service image)
 │   └── BAIL: silent return (no image yet, controller hasn't written it)
 │
 ├── ensureImageAvailable → returns false

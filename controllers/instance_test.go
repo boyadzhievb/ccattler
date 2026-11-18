@@ -282,8 +282,8 @@ func TestControllerInterface(t *testing.T) {
 	if instanceController.Name() != "instance" {
 		t.Fatalf("name: got %s, want instance", instanceController.Name())
 	}
-	if len(instanceController.Watch()) != 4 {
-		t.Fatalf("expected 4 watch prefixes, got %d", len(instanceController.Watch()))
+	if len(instanceController.Watch()) != 5 {
+		t.Fatalf("expected 5 watch prefixes, got %d", len(instanceController.Watch()))
 	}
 }
 
