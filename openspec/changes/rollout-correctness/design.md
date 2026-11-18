@@ -59,6 +59,9 @@ Tracking starts from the state, not from an empty `previous_image`, so a stale `
 ### D8 — Stalled and rolled-back services are visible in status (user, 2026-11-18)
 The status API's service entries (api/status.go) gain `rollout_state`, `rollout_reason` and `rollout_rollback_reason`. `renderRuntimeHealthSummary` (cmd/cca/command_server.go) adds a `Rollouts:` line per `stalled` or `rolled-back` service, with the reason cut to the terminal line. test/e2e/health_check.sh Check 6 warns for them, as it does for crash-loop-backoff instances. A `stalled` service keeps retrying: progress or new capacity (the cluster-scale controller already asks for a node on `insufficient_capacity`) lets the rollback finish, so the state clears without user action. If it can't clear, the user sees it in `cca status`.
 
+### D9 — Applying a rolled-back image warns (user, 2026-11-18)
+Every rollback group also writes `rollout/rolled_back_image` (the bad target image) and `rollout/rolled_back_at` (RFC 3339, from the controller clock). They are deleted with `rollback_reason` when the next rollout starts. The apply handler (api/server.go, both apply paths, next to the M217 instance-count warnings) compares each compiled `desired/service/{svc}/image` with the stored `rolled_back_image` and appends a warning to the existing `applyResponse.Warnings`. `cca apply` already prints those warnings. It only warns, because a fixed image may reuse the tag. This keeps a scheduled CI apply from rolling a broken image out and back silently: each attempt says why the last one was rolled back.
+
 ### D6 — Determinism
 Services are processed in sorted name order, and instances are sorted by ID before classification. The proposed changes are then the same for the same facts (CLAUDE.md: deterministic iteration).
 

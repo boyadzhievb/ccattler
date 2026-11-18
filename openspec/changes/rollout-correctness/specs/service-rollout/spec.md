@@ -140,6 +140,21 @@ The status API SHALL include each service's rollout state, reason and rollback r
 - **THEN** test/e2e/health_check.sh prints a warning naming the service, the state and the reason
 - Check: health_check.sh run on a sample status JSON (by hand), and `deploy-run:rollout-rollback`
 
+### Requirement: Applying a rolled-back image warns
+A rollback SHALL record the image it rolled back from and when, in `rollout/rolled_back_image` and `rollout/rolled_back_at`, kept with `rollout/rollback_reason` until the next rollout starts. When a configuration applied to the cluster sets a service's image to its `rolled_back_image`, the apply SHALL succeed and its response SHALL carry a warning naming the service, the image, how long ago it was rolled back, and the rollback reason; `cca apply` SHALL print it.
+
+#### Scenario: Same broken image applied again
+- **GIVEN** service `web` rolled back from `app:v2` 5 minutes ago with reason `3 failures ≥ 3 on app:v2: exited with code 1`
+- **WHEN** the user applies a configuration with `web` on `app:v2`
+- **THEN** the apply succeeds and prints a warning naming `web`, `app:v2`, about 5 minutes ago and the reason
+- Test: `TestApplyWarnsForRolledBackImage`
+
+#### Scenario: Other image applies without warning
+- **GIVEN** the same rolled-back service
+- **WHEN** the user applies `web` on `app:v3`
+- **THEN** no rollback warning is printed
+- Test: `TestApplyWarnsForRolledBackImage`
+
 ### Requirement: A new image during a rollout keeps the last known-good image
 When the desired image changes while a rollout or rollback is in progress, the rollout controller SHALL start a new rollout to the new image whose previous image stays the image of the last completed rollout.
 
