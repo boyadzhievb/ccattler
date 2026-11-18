@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.92.0-beta <Badge type="tip" text="latest" /> {#v1-92-0-beta}
+## v1.93.0-beta <Badge type="tip" text="latest" /> {#v1-93-0-beta}
+
+**2026-11-18** — Rollout Correctness.
+
+- **Rollout Correctness** (M241) — Bug fix (found in the M238 review): a rollout whose new image crash-loops rolls back again, counting only this rollout's instances on the new image; a node loss no longer counts as an application failure; crash-looping old instances are replaced first; a rollback reverts to the image right before the rollout, not an older one. Each instance records its image, and the agent replaces a container that runs another image, so stateful and per-node rollouts really change the running container (a re-created instance starts at once, without the old image's back-off or restart count). A new instance counts once it stays healthy for `min_healthy_time` (default 10s); a rollout without progress for `progress_deadline` (default 10m) rolls back, and a waiting rollout always says why (`cca describe service`); stalled and rolled-back services show in `cca status` and the deploy health check. Pacing follows Kubernetes: `max_unavailable`/`max_extra` default to 25%/25% for stateless, 1/0 for stateful and per-node services, a disruption budget caps them, and surge is only added while old instances remain. Per-node rollouts no longer deadlock: a stopped or controller-stopped instance no longer holds its node's slot or requests, and the agent never overwrites a stop with a stale state. Applying a rolled-back image warns. Known limits: a stop request releases node resources before the container is gone (M246); capacity stalls need M243.
+
+---
+
+## v1.92.0-beta {#v1-92-0-beta}
 
 **2026-11-17** — Instant Exit Bypasses the Crash-Loop Back-off.
 
