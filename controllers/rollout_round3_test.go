@@ -167,3 +167,45 @@ func TestRolloutReasonNamesWaitingPerNodeInstance(t *testing.T) {
 		})
 	}
 }
+
+// TestRolloutNeverCountsOldImageExitsAgainstTarget: testbed rerun after 2e
+// (2f.2). A re-created ordinal whose container still ran (and exited on) its
+// previous image carries that image's restarts and state until the agent
+// starts the recorded image. They are not failures of the recorded image:
+// no "previous image also fails" during a rollback, no failures while rolling.
+func TestRolloutNeverCountsOldImageExitsAgainstTarget(t *testing.T) {
+	testCases := []struct {
+		name          string            // name describes the case.
+		desiredImage  string            // desiredImage is the service's desired (and the ordinal's recorded) image.
+		rolloutFacts  map[string]string // rolloutFacts are the stored rollout facts.
+		previousImage string            // previousImage is the image the ordinal's container ran and exited on.
+	}{
+		{name: "rollback from b to a", desiredImage: "app:a", previousImage: "app:b",
+			rolloutFacts: rollingFacts(types.RolloutRollback, "app:a", "app:a", time.Minute)},
+		{name: "rolling from a to b", desiredImage: "app:b", previousImage: "app:a",
+			rolloutFacts: rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute)},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			inputFacts := buildRolloutTestFacts(testCase.desiredImage,
+				mergeFactMaps(testCase.rolloutFacts, map[string]string{
+					types.KeyDerivedInstanceImage("web-0"):     testCase.desiredImage,
+					types.KeyDerivedServiceRolloutState("web"): testCase.rolloutFacts[types.KeyDerivedServiceRolloutState("web")],
+				}),
+				rolloutTestInstance{instanceID: "web-0", image: testCase.previousImage, state: types.InstanceCrashLoopBackoff,
+					restarts: "3", lastExit: "exited with code 1"},
+			)
+			_, changesByKey := reconcileRolloutTestFacts(t, inputFacts)
+			if revertedImage, reverted := putValue(changesByKey, types.KeyDesiredServiceImage("web")); reverted {
+				t.Errorf("desired image reverted to %q, want no rollback for the old image's exits", revertedImage)
+			}
+			if failures, written := putValue(changesByKey, types.KeyDerivedServiceRolloutFailures("web")); written && failures != "0" {
+				t.Errorf("rollout/failures = %q, want 0", failures)
+			}
+			rolloutReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutReason("web"))
+			if strings.Contains(rolloutReason, "also fails") {
+				t.Errorf("rollout/reason %q counts the old image's exit against %s", rolloutReason, testCase.desiredImage)
+			}
+		})
+	}
+}

@@ -563,10 +563,75 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
 
 Testbed on `ae47f36` (push run 44366640013): T1 stateful whoami → nginx PASSED (agent logged `container runs another image than recorded, replacing it`, nginx/1.27.5 served at the instance IP, `complete` after the 10 s healthy wait). T2 per-node whoami → nginx PASSED (one node at a time, reason `waiting for <id> to stay healthy` each time, `complete`; the 2e.2 reason gap did not reappear). Stateful nginx → `mariadb:11` (no password, exits 1) rolled back (`Rollback reason: 3 failures ≥ 3 on …/mariadb:11: exited with code 1`) and ended `rolled-back` on nginx, but:
 
-- [ ] 2f.1 Back-off of the old image delays the rollback. The rollback recreated `m241db-0` with recorded image nginx at 18:19:30 before the agent saw the stop; the mariadb container exited at 18:19:31, and the agent counted the exit (attempt 4, `wait=1m20s`) and started nginx only at 18:20:51. The exited-container path (`reconcileInstanceWithoutRunningContainer` → `isExitedInstanceDueForRestart`, agent/crash_loop_backoff.go) never compares the exited container's image with the recorded image, and `hasConfigChangedSinceStart` did not end the wait. Fix: when the exited (or start-failed) container's image differs from the recorded image, drop the back-off entry and start the recorded image at once (the same new-incarnation rule as `replaceContainerOnAnotherImage`). Up to 5 min (the back-off cap) per instance otherwise.
-- [ ] 2f.2 The old image's exit is counted against the new image. After that exit, describe said `rolling back, but the previous image also fails: 1 failures on …/nginx:1.27` and `m241db-0` showed 1 restart, though nginx never exited. An exit, its exit reason and its restart count belong to the image the container ran, not the instance's recorded image; a new incarnation on another image starts with 0 restarts. Find where the per-image failure count reads it (B1 lifetime restarts per image) and fix both sides.
-- [ ] 2f.3 Failing tests first (agent: exited container on another image than recorded starts at once without counting; loop/rollout: an exit of the old image during a rollback never counts as a failure of the target image). Record red, then green.
-- [ ] 2f.4 Docs and graphs (INSTANCE_LIFECYCLE_GRAPH.md exited path, runtime-invariant-flows Flow 34); checks as in 3.1, paste results.
+- [x] 2f.1 Back-off of the old image delays the rollback. The rollback recreated `m241db-0` with recorded image nginx at 18:19:30 before the agent saw the stop; the mariadb container exited at 18:19:31, and the agent counted the exit (attempt 4, `wait=1m20s`) and started nginx only at 18:20:51. The exited-container path (`reconcileInstanceWithoutRunningContainer` → `isExitedInstanceDueForRestart`, agent/crash_loop_backoff.go) never compares the exited container's image with the recorded image, and `hasConfigChangedSinceStart` did not end the wait. Fix: when the exited (or start-failed) container's image differs from the recorded image, drop the back-off entry and start the recorded image at once (the same new-incarnation rule as `replaceContainerOnAnotherImage`). Up to 5 min (the back-off cap) per instance otherwise.
+  - Root cause: only the running path (`replaceContainerOnAnotherImage`, 2e.1) compared images. On the exited path, `isExitedInstanceDueForRestart` recorded the mariadb exit against the re-created instance and started a new wait (attempt 4, 1m20s). `hasConfigChangedSinceStart` could not end that wait. The re-creation does not delete `observed/instance/{id}/config-hash`, and this was not the cause either: `computeServiceConfigHash` hashes only config env/files, secret grants, connections, the pull secret and secret generations. The image is not an input, so the stored hash matched and the wait ran on.
+  - Fix: `findNewIncarnationOnAnotherImage` (agent/agent.go) is the shared rule: the observed image, which the agent last started or failed to start (`handleInstanceStartError` publishes it too), differs from the recorded image. `replaceContainerOnAnotherImage` uses it. The new `forgetOldIncarnationBackoff` (agent/crash_loop_backoff.go) is called first in `reconcileInstanceWithoutRunningContainer` for an exited container or a retry after a start failure. On a mismatch it drops the back-off entry and treats the container as missing: the recorded image starts at once (`runtime.Start` removes the exited container first), with no exit, last exit or back-off recorded and no restart counted.
+- [x] 2f.2 The old image's exit is counted against the new image. After that exit, describe said `rolling back, but the previous image also fails: 1 failures on …/nginx:1.27` and `m241db-0` showed 1 restart, though nginx never exited. An exit, its exit reason and its restart count belong to the image the container ran, not the instance's recorded image; a new incarnation on another image starts with 0 restarts. Find where the per-image failure count reads it (B1 lifetime restarts per image) and fix both sides.
+  - Root cause, agent side: after the re-creation (which deleted `restarts`, `last_exit` and `created-at`), the agent recorded the mariadb exit against the new incarnation. `beginCrashLoopWait` wrote `last_exit` and the crash-loop-backoff state, and `publishInstanceStateToStore` wrote a new `created-at`. When the wait ended, `incrementRestartCountInStore` wrote `restarts = 1` on the nginx incarnation.
+  - Root cause, rollout side: `classifyRolloutInstances` counted every new instance's restarts and `failed` state. The instance was new because its recorded image is nginx, and it counted because its fresh `created-at` was after the rollback's `started_at` (D13). That gave `rolling back, but the previous image also fails: 1 failures on nginx`.
+  - Fix, agent: the 2f.1 rule. No exit, back-off, last exit or restart is recorded for a new incarnation on another image, so its count starts at 0.
+  - Fix, rollout: `isStartedOnRecordedImage` (rollout_plan.go) is now shared by the health rule (2e.1b) and the failure count. An instance whose observed image differs from its recorded image adds no failures: its restarts and state are still its previous image's. This also covers an agent older than this change and the window before the agent acts.
+  - Fix, re-creation: `observed/instance/{id}/exit-reason` joins the stale incarnation facts deleted by `buildInstanceIncarnationChanges`, so an earlier incarnation's exit reason does not stay on the new one until its first running cycle.
+  - No new store key. Lifetime restarts are still kept per instance, not per image. Because the agent never attributes another image's exit to an incarnation, the count is the recorded image's own.
+- [x] 2f.3 Failing tests first (agent: exited container on another image than recorded starts at once without counting; loop/rollout: an exit of the old image during a rollback never counts as a failure of the target image). Record red, then green.
+  - New tests: agent/incarnation_backoff_test.go `TestAgentStartsNewIncarnationWithoutOldBackoff` covers three cases, all with an hour-long base delay so only the fix can start the instance in time: an exit recorded before the re-creation, an exit right after it (re-creation and kill in one `RunInAgentLoop` hook, the testbed order), and a process start failure of the old image. Each asserts, inside `waitFor`, that the instance runs the new recorded image with no `restarts` and no `last_exit`. controllers/rollout_round3_test.go `TestRolloutNeverCountsOldImageExitsAgainstTarget` covers a rollback b→a and a rollout a→b. In both, the re-created ordinal still shows the previous image (observed ≠ recorded) in `crash-loop-backoff` with 3 restarts.
+  - Red run, 2026-11-18, before the fixes:
+    ```
+    $ go test ./controllers/ -run TestRolloutNeverCountsOldImageExitsAgainstTarget -count=1
+    --- FAIL: TestRolloutNeverCountsOldImageExitsAgainstTarget/rollback_from_b_to_a
+        rollout_round3_test.go:207: rollout/reason "rolling back, but the previous image also fails: 3 failures on app:a" counts the old image's exit against app:a
+    --- FAIL: TestRolloutNeverCountsOldImageExitsAgainstTarget/rolling_from_a_to_b
+        rollout_round3_test.go:200: desired image reverted to "app:a", want no rollback for the old image's exits
+        rollout_round3_test.go:203: rollout/failures = "3", want 0
+    $ go test ./agent/ -run TestAgentStartsNewIncarnationWithoutOldBackoff -count=1
+    --- FAIL: TestAgentStartsNewIncarnationWithoutOldBackoff/exit_recorded_before_the_re-creation (5.04s)
+        incarnation_backoff_test.go:67: timed out waiting for: db-0 started at once on nginx:1.28, nothing of the old image counted
+    --- FAIL: TestAgentStartsNewIncarnationWithoutOldBackoff/exit_right_after_the_re-creation (5.03s)
+        incarnation_backoff_test.go:81: timed out waiting for: db-0 started at once on nginx:1.28, nothing of the old image counted
+    --- FAIL: TestAgentStartsNewIncarnationWithoutOldBackoff/start_failure_of_the_old_image (5.03s)
+        incarnation_backoff_test.go:98: timed out waiting for: db-0 started at once on nginx:1.28, nothing of the old image counted
+    ```
+  - Green: `--- PASS: TestRolloutNeverCountsOldImageExitsAgainstTarget` (both cases); `go test ./agent/ -run 'TestAgentStartsNewIncarnationWithoutOldBackoff|TestAgentReplacesContainerOnAnotherImageThanRecorded' -count=1` → `ok github.com/boyadzhievb/ccattler/agent 0.168s`.
+  - No loop-harness test: the fake agent has no exit or back-off model. The rule is pinned on the rollout side by the unit test, and on the agent side by the real agent with its real back-off.
+- [x] 2f.4 Docs and graphs (INSTANCE_LIFECYCLE_GRAPH.md exited path, runtime-invariant-flows Flow 34); checks as in 3.1, paste results.
+  - Docs:
+    - INSTANCE_LIFECYCLE_GRAPH.md: §12b exited path (`forgetOldIncarnationBackoff`, why the config hash never ended the wait), the reverse index, and `exit-reason` in the §1 stale-key lists.
+    - Flow 34: the exited or start-failed mismatch, and failures counting only instances started on their recorded image.
+    - CONTROLLER_DATA_FLOW_GRAPH.md: `isStartedOnRecordedImage` in the failure count, `exit-reason` in the incarnation deletes.
+    - CALL_GRAPH.md: reverse index.
+    - etcd-schema.md: `exit-reason` is deleted at re-creation.
+    - Spec delta: scenarios "An exit of the previous image is not a failure of the target" and "Exited container of the previous image".
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ ./scheduler/ -count=1
+    ok  	github.com/boyadzhievb/ccattler/controllers	5.280s
+    ok  	github.com/boyadzhievb/ccattler/agent	28.376s
+    ok  	github.com/boyadzhievb/ccattler/types	0.076s
+    ok  	github.com/boyadzhievb/ccattler/api	9.013s
+    ok  	github.com/boyadzhievb/ccattler/integration	8.174s
+    ok  	github.com/boyadzhievb/ccattler/lang	0.131s
+    ok  	github.com/boyadzhievb/ccattler/tenant	0.036s
+    ok  	github.com/boyadzhievb/ccattler/cmd/cca	7.211s
+    ok  	github.com/boyadzhievb/ccattler/cmd/k8s-to-cca	0.014s
+    ok  	github.com/boyadzhievb/ccattler/store	1.607s
+    ok  	github.com/boyadzhievb/ccattler/scheduler	0.022s
+    $ go test ./agent/ -race -count=3 -run "TestAgentStartsNewIncarnationWithoutOldBackoff|TestAgentReplacesContainerOnAnotherImageThanRecorded|TestAgentBacksOff|TestAgentCountsRestarts|TestAgentKeepsLastExitAfterRestart|TestAgentRecordsStartedAtOnEveryStart"
+    ok  	github.com/boyadzhievb/ccattler/agent	8.390s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController|TestFailure"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.356s
+    $ go test ./integration/ -race -count=3 -run "TestPerNodeRolloutReplacesEveryNode|TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage|TestRollingUpdateGraduallyReplacesInstances|TestRollbackOnHealthFailure"
+    ok  	github.com/boyadzhievb/ccattler/integration	2.173s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    20 packages ok, 0 failures
+    ```
 
 ## 4. Testbed and review (main session)
 

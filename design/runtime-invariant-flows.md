@@ -1757,7 +1757,7 @@ apply image b (was a)  → desired/service/{svc}/image = b
 InstanceController creating an instance, FailureController replacing one   [D1, D2, D13, B1, B4]
   instance-create/{id} | replace/{failed id} group: observed marker/service/state=pending
         + derived/instance/{id}/image = desired image (buildInstanceIncarnationChanges)
-        + DELETE observed/instance/{id}/{restarts,created-at,started_at,last_exit,probe/*}
+        + DELETE observed/instance/{id}/{restarts,created-at,started_at,last_exit,exit-reason,probe/*}
           left by an earlier instance with the same ID (re-created stateful ordinal)
 Agent start / in-place restart (Flow 33)
   image = derived/instance/{id}/image; missing → desired/service/{svc}/image (pre-M241
@@ -1770,6 +1770,10 @@ Agent start / in-place restart (Flow 33)
         ≠ derived/instance/{id}/image → stop it, the next cycle starts the recorded
         image (the ID was re-created while the old container ran: a stateful ordinal
         whose stop the agent never saw because the re-creation overwrote it)      [2e.1]
+  exited or start-failed container with the same mismatch: the exit is the old image's,
+        so no exit, back-off or restart is recorded; the back-off entry is dropped and
+        the recorded image starts at once (the config hash has no image input and
+        never ended that wait)                                                     [2f.1]
 Scheduler, per-node service: a node is taken only by a placed instance that is not
         stopped; a stopped one keeps its placement until GC, which waits for the
         replacement, so it must not block the replacement's node                  [2e.2]
@@ -1780,6 +1784,8 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
   unavailable = failed | crash-loop-backoff | image-pull-backoff | node_failure
   failures = Σ restarts(new) + count(new failed), node_failure skipped, only new instances
         created since rollout/started_at (− 30 s clock skew; no created-at → counted) [D13]
+        and started on their recorded image (observed image = recorded image): until
+        then the restarts and state are the previous image's                       [2f.2]
   threshold = clamp(ceil(desired instances / 2), 3, 200)
   healthy(instance) = running ∧ observed image = recorded image (when one is recorded:
         the agent started this incarnation, 2e.1) ∧ now − started_at ≥ update {

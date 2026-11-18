@@ -1226,21 +1226,34 @@ func (nodeAgent *Agent) lookupInstanceImageFromStore(ctx context.Context, instan
 // ran, so it is stopped and the next cycle starts the recorded image. Returns
 // true when it stopped the container; a missing fact or read error changes nothing.
 func (nodeAgent *Agent) replaceContainerOnAnotherImage(ctx context.Context, instanceInfo placedInstanceInfo) bool {
-	recordedImageFact, recordedError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceImage(instanceInfo.id))
-	startedImageFact, startedError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceImage(instanceInfo.id))
-	if recordedError != nil || startedError != nil || len(recordedImageFact.Value) == 0 || len(startedImageFact.Value) == 0 ||
-		string(recordedImageFact.Value) == string(startedImageFact.Value) {
+	startedImage, recordedImage, isNewIncarnation := nodeAgent.findNewIncarnationOnAnotherImage(ctx, instanceInfo)
+	if !isNewIncarnation {
 		return false
 	}
 	logging.Default().Info("container runs another image than recorded, replacing it",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,
-		"running_image", string(startedImageFact.Value), "recorded_image", string(recordedImageFact.Value))
+		"running_image", startedImage, "recorded_image", recordedImage)
 	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "pre_stop")
 	if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceInfo.id, instanceInfo.service); stopError != nil {
 		logging.Default().Error("failed to stop instance on another image", "instance", instanceInfo.id, "error", stopError.Error())
 	}
 	delete(nodeAgent.crashLoopBackoffs, instanceInfo.id) // a new incarnation starts without the old one's back-off
 	return true
+}
+
+// findNewIncarnationOnAnotherImage returns the image this agent last started
+// for the instance (observed image), its recorded image, and whether they
+// differ: the ID got a new incarnation on another image, so the container's
+// exits, back-off and restarts are not the new incarnation's (M241 2e.1, 2f).
+// A missing fact or a read error is no new incarnation.
+func (nodeAgent *Agent) findNewIncarnationOnAnotherImage(ctx context.Context, instanceInfo placedInstanceInfo) (string, string, bool) {
+	recordedImageFact, recordedError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceImage(instanceInfo.id))
+	startedImageFact, startedError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceImage(instanceInfo.id))
+	if recordedError != nil || startedError != nil || len(recordedImageFact.Value) == 0 || len(startedImageFact.Value) == 0 {
+		return "", "", false
+	}
+	startedImage, recordedImage := string(startedImageFact.Value), string(recordedImageFact.Value)
+	return startedImage, recordedImage, startedImage != recordedImage
 }
 
 // cleanupStaleImageFallbackLogs forgets the logged image fallback of instances

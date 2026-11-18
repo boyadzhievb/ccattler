@@ -224,7 +224,7 @@ RolloutController.Reconcile(ctx, facts)                      :82
 │   │   └── parseUpdatePolicyInteger                         :277  explicit max_unavailable / max_extra (nil = unset)
 │   ├── extractInstancesByService                            :290  sorted by ID
 │   │   ├── observed/instance/{id}/{service,state,image,restarts,status-reason,exit-reason,
-│   │   │   started_at,created-at,last_exit,probe/readiness}
+│   │   │   started_at,created-at,last_exit,exit-reason,probe/readiness}
 │   │   │   derived/instance/{id}/{image (shadows observed image),node_failure,controller_stopped}
 │   │   └── parseInstanceTimestamp                           :321  started_at, created-at; zero when missing or corrupt
 │   ├── extractRolloutFields                                 :395  derived/service/{svc}/rollout/* (history excluded)
@@ -299,7 +299,7 @@ All rollout bookkeeping of a service goes through `rolloutFactWriter` (rollout_f
 
 The surge itself is the instance controller's (INSTANCE_LIFECYCLE_GRAPH.md §1): `InstanceController.Reconcile` (instance.go:80) adds `rollout/surge_allowance` to a service's count only when it is neither stateful nor per-node, and never more than `countOldImageInstances` (instance.go:349), the active instances still on another image (D14, review round 3 M1): new instances never outnumber the expected count once the old ones stop, so none is scaled down.
 
-A new instance counts as healthy only once the agent started it on its recorded image: `rolloutHealthRule.evaluate` (rollout_plan.go:48) refuses a running instance whose `observed/instance/{id}/image` differs from `derived/instance/{id}/image` (`extractInstancesByService` keeps both, rollout_facts.go:293), with or without `started_at` (testbed T1, 2e.1). The older-agent rule (no `started_at` = healthy) applies only once the images match.
+A new instance counts as healthy only once the agent started it on its recorded image: `rolloutHealthRule.evaluate` (rollout_plan.go:48) refuses a running instance whose `observed/instance/{id}/image` differs from `derived/instance/{id}/image` (`extractInstancesByService` keeps both, rollout_facts.go:293), with or without `started_at` (testbed T1, 2e.1). The older-agent rule (no `started_at` = healthy) applies only once the images match. The same check, `isStartedOnRecordedImage` (rollout_plan.go), keeps such an instance out of the failure count in `classifyRolloutInstances`: its restarts and state are still its previous image's (2f.2).
 
 **Read side (API and CLI):**
 ```

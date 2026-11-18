@@ -56,7 +56,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}/started_at     # RFC 3339 (with fractions) of the last container start, rewritten at every start incl. in-place restarts, before the state; rollout min_healthy_time runs from it (M241 D10)
 │   ├── instance/{instance-id}/hostport       # legacy single host port
 │   ├── instance/{instance-id}/hostport/{port}  # per-container-port host port mapping
-│   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"
+│   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"; deleted by the instance controller when it creates the ID again (M241 2f)
 │   ├── instance/{instance-id}/last_exit      # how the container last exited ("exited with code 1"); kept after the restart, for the rollback reason (M241)
 │   ├── instance/{instance-id}/restarts       # in-place restart count (integer), written by the agent from the first restart (M233); deleted by the instance controller when it creates the ID again (M241)
 │   ├── instance/{instance-id}/config-hash    # SHA256 of config inputs

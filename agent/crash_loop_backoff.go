@@ -44,6 +44,9 @@ type crashLoopBackoffEntry struct {
 func (nodeAgent *Agent) reconcileInstanceWithoutRunningContainer(ctx context.Context, instanceInfo placedInstanceInfo, runtimeStatus runtime.Status, containerExited bool) {
 	backoffEntry, isTracked := nodeAgent.crashLoopBackoffs[instanceInfo.id]
 	retryAfterStartFailure := isTracked && backoffEntry.startFailed
+	if (containerExited || retryAfterStartFailure) && nodeAgent.forgetOldIncarnationBackoff(ctx, instanceInfo) {
+		containerExited, retryAfterStartFailure = false, false
+	}
 	if containerExited || retryAfterStartFailure {
 		if !nodeAgent.isExitedInstanceDueForRestart(ctx, instanceInfo, runtimeStatus) {
 			return
@@ -61,6 +64,21 @@ func (nodeAgent *Agent) reconcileInstanceWithoutRunningContainer(ctx context.Con
 	if containerExited || retryAfterStartFailure {
 		nodeAgent.incrementRestartCountInStore(ctx, instanceInfo.id)
 	}
+}
+
+// forgetOldIncarnationBackoff reports whether the exited (or start-failed)
+// container ran another image than the instance's recorded one: the ID was
+// re-created on another image (M241 2f). Its exit, back-off and restart belong
+// to the old image, so the back-off entry is dropped and the start is not counted.
+func (nodeAgent *Agent) forgetOldIncarnationBackoff(ctx context.Context, instanceInfo placedInstanceInfo) bool {
+	startedImage, recordedImage, isNewIncarnation := nodeAgent.findNewIncarnationOnAnotherImage(ctx, instanceInfo)
+	if !isNewIncarnation {
+		return false
+	}
+	logging.Default().Info("exited container ran another image than recorded, starting the recorded image at once",
+		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "exited_image", startedImage, "recorded_image", recordedImage)
+	delete(nodeAgent.crashLoopBackoffs, instanceInfo.id)
+	return true
 }
 
 // isExitedInstanceDueForRestart reports whether the exited container of an

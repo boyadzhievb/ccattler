@@ -80,6 +80,12 @@ The rollout controller SHALL count new-image failures as the sum of restarts of 
 - **THEN** `rollout/failures` is 0 and the desired image is not reverted
 - Test: `TestRolloutIgnoresNodeFailureForRollback`
 
+#### Scenario: An exit of the previous image is not a failure of the target
+- **GIVEN** a rollout or rollback whose re-created ordinal still shows its previous image's container (observed image ≠ recorded image) in `crash-loop-backoff` with 3 restarts
+- **WHEN** the rollout controller reconciles
+- **THEN** the failures stay 0, nothing is rolled back, and the reason does not say the previous image also fails
+- Test: `TestRolloutNeverCountsOldImageExitsAgainstTarget`
+
 ### Requirement: A broken new image is rolled back
 When new-image failures reach half the service's desired instance count (rounded up), kept between 3 and 200, the rollout controller SHALL write the previous image to `desired/service/{svc}/image`, set the rollout state to `rollback`, and record in `rollout/rollback_reason` the failure count, the threshold and the latest exit reason of a failing instance. It SHALL NOT start another rollback while one is in progress.
 
@@ -152,6 +158,12 @@ The agent SHALL replace a running container whose image (the observed image it w
 - **WHEN** the agent reconciles
 - **THEN** it replaces the container and starts the recorded image, with a new `started_at` and no restart counted
 - Test: `TestAgentReplacesContainerOnAnotherImageThanRecorded`
+
+#### Scenario: Exited container of the previous image
+- **GIVEN** an instance re-created on another image whose old container has exited or failed to start, before or after the re-creation, with a back-off wait running
+- **WHEN** the agent reconciles
+- **THEN** it starts the recorded image at once, records no exit, last exit or restart for the new incarnation, and drops the old back-off
+- Test: `TestAgentStartsNewIncarnationWithoutOldBackoff`
 
 ### Requirement: Rollout state ends and is reset
 When no old-image instance is left and the new-image instances are healthy (at least the expected count), the rollout controller SHALL set the state to `complete` after a rollout and to `rolled-back` after a rollback (also from `stalled`), and SHALL delete `previous_image`, `failures`, `reason` and the surge allowance; `rollback_reason` stays until the next rollout. The next image change SHALL record its own previous image, revision and history entry.

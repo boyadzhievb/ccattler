@@ -15,10 +15,11 @@ import (
 // one incarnation of an instance ID to their keys; a new incarnation of the
 // same ID (a recreated stateful ordinal) must not inherit them.
 var staleIncarnationFieldKeys = map[string]func(string) string{
-	"restarts":   types.KeyObservedInstanceRestarts,  // restart count (M241 D2)
-	"created-at": types.KeyObservedInstanceCreatedAt, // creation time, compared with rollout/started_at (D13)
-	"started_at": types.KeyObservedInstanceStartedAt, // last start, the min_healthy_time window (D10)
-	"last_exit":  types.KeyObservedInstanceLastExit,  // last exit, the rollback reason
+	"restarts":    types.KeyObservedInstanceRestarts,   // restart count (M241 D2)
+	"created-at":  types.KeyObservedInstanceCreatedAt,  // creation time, compared with rollout/started_at (D13)
+	"started_at":  types.KeyObservedInstanceStartedAt,  // last start, the min_healthy_time window (D10)
+	"last_exit":   types.KeyObservedInstanceLastExit,   // last exit, the rollback reason
+	"exit-reason": types.KeyObservedInstanceExitReason, // exit reason of the previous image's container (2f.2)
 }
 
 // probeFieldPrefix is the prefix of an instance's observed probe results in

@@ -49,7 +49,7 @@ func (healthRule rolloutHealthRule) evaluate(instanceInfo rolloutInstanceInfo) (
 	if instanceInfo.state != types.InstanceRunning {
 		return false, ""
 	}
-	if instanceInfo.recordedImage != "" && instanceInfo.observedImage != instanceInfo.recordedImage {
+	if !instanceInfo.isStartedOnRecordedImage() {
 		// A recreated ID whose old container still runs: the agent has not
 		// started this incarnation yet, whatever its state says (testbed T1).
 		return false, fmt.Sprintf("still runs %q, not yet started on %s", instanceInfo.observedImage, instanceInfo.recordedImage)
@@ -108,13 +108,22 @@ func classifyRolloutInstances(instances []rolloutInstanceInfo, desiredImage stri
 		} else {
 			classification.notHealthyIDs = append(classification.notHealthyIDs, instanceInfo.id)
 		}
-		if instanceInfo.nodeFailure || !isCreatedSince(instanceInfo, failuresSince) || instanceInfo.failureWeight() == 0 {
+		if instanceInfo.nodeFailure || !isCreatedSince(instanceInfo, failuresSince) || !instanceInfo.isStartedOnRecordedImage() ||
+			instanceInfo.failureWeight() == 0 {
 			continue
 		}
 		classification.failureCount += instanceInfo.failureWeight()
 		classification.failingInstances = append(classification.failingInstances, instanceInfo)
 	}
 	return classification
+}
+
+// isStartedOnRecordedImage reports whether the agent last started the instance
+// on its recorded image (no recorded image: an older server, always true).
+// Until then its state, restarts and exits are its previous image's: it is
+// neither healthy nor failing on the recorded image (M241 2e.1, 2f.2).
+func (instanceInfo rolloutInstanceInfo) isStartedOnRecordedImage() bool {
+	return instanceInfo.recordedImage == "" || instanceInfo.observedImage == instanceInfo.recordedImage
 }
 
 // isCreatedSince reports whether the instance belongs to the rollout that

@@ -54,7 +54,7 @@ InstanceController.Reconcile(ctx, facts)                     :80
 │       ├── stateful → createNextStatefulInstance             :442
 │       │   └── ordered startup: N+1 only after N is running
 │       │       clears stale controller_stopped / node_failure and the previous
-│       │       incarnation's restarts, created-at, started_at, last_exit, probe/*
+│       │       incarnation's restarts, created-at, started_at, last_exit, exit-reason, probe/*
 │       └── stateless → deficit = wantCount - haveCount
 │
 └── allocateCreationsFairly(deficits, ...)                   :216
@@ -73,7 +73,7 @@ InstanceController.Reconcile(ctx, facts)                     :80
                     └── buildInstanceIncarnationChanges       [instance_incarnation.go:34]
                         ├── derived/instance/{id}/image = desired/service/{svc}/image (when set)
                         └── DELETE stale observed/instance/{id}/{restarts,created-at,started_at,
-                            last_exit,probe/*} (sorted; only those present)
+                            last_exit,exit-reason,probe/*} (sorted; only those present)
 
 Both creation paths, and the failure controller's replacements (§5), record the
 image through buildInstanceIncarnationChanges.
@@ -96,7 +96,7 @@ counts the instance healthy only once they match (M241 2e.1).
 | `derived/instance/{id}/node_failure` | Node failure marker |
 | `derived/service/{svc}/rollout/surge_allowance` | Rollout surge |
 | `desired/service/{svc}/image` | Image recorded for a new instance (M241) |
-| `observed/instance/{id}/{restarts,created-at,started_at,last_exit,probe/*}` | Stale facts of a re-created ID (M241 D2, D13, B4) |
+| `observed/instance/{id}/{restarts,created-at,started_at,last_exit,exit-reason,probe/*}` | Stale facts of a re-created ID (M241 D2, D13, B4) |
 
 ### Store Key Writes
 | Key Pattern | Value | Condition |
@@ -109,7 +109,7 @@ counts the instance healthy only once they match (M241 2e.1).
 | DELETE `derived/instance/{id}/controller_stopped` | — | Stateful re-create |
 | DELETE `derived/instance/{id}/node_failure` | — | Stateful re-create |
 | `derived/instance/{id}/image` | desired image | Every creation, when the service has an image (M241 D1) |
-| DELETE `observed/instance/{id}/{restarts,created-at,started_at,last_exit,probe/*}` | — | Creation of an ID that has them from an earlier incarnation (M241 D2, D13, B4) |
+| DELETE `observed/instance/{id}/{restarts,created-at,started_at,last_exit,exit-reason,probe/*}` | — | Creation of an ID that has them from an earlier incarnation (M241 D2, D13, B4) |
 
 ### Constants
 | Name | Value | File:Line |
@@ -688,6 +688,12 @@ Flow 33 in design/runtime-invariant-flows.md. Called from `executeReconciliation
 ```
 reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerExited)
 ├── retryAfterStartFailure = entry exists && entry.startFailed   [last attempt's process could not start, M238]
+├── (containerExited || retryAfterStartFailure) && forgetOldIncarnationBackoff   [M241 2f]
+│   └── findNewIncarnationOnAnotherImage [agent.go]: observed image (last started) ≠ recorded
+│       image → the ID was re-created on another image: drop the back-off entry, treat as a
+│       missing container (start the recorded image at once, no exit recorded, no restart
+│       counted). The config hash has no image input, so hasConfigChangedSinceStart never
+│       ended this wait before (testbed: 1m20s, up to the 5 min cap)
 ├── containerExited || retryAfterStartFailure:
 │   └── isExitedInstanceDueForRestart  [false → return]
 │       ├── no crashLoopBackoffs entry → true (agent restarted: restart once)
@@ -766,6 +772,8 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `observeInstanceState` | executeReconciliationCycle (running path), startInstanceAndPublishState |
 | `reconcileInstanceWithoutRunningContainer` | executeReconciliationCycle (no running container) |
 | `isExitedInstanceDueForRestart` | reconcileInstanceWithoutRunningContainer |
+| `forgetOldIncarnationBackoff` | reconcileInstanceWithoutRunningContainer (exited or start-failed container, M241 2f) |
+| `findNewIncarnationOnAnotherImage` | replaceContainerOnAnotherImage, forgetOldIncarnationBackoff |
 | `recordInstanceExit` | isExitedInstanceDueForRestart |
 | `recordInstanceStartFailure` | handleInstanceStartError (StartError.ProcessFailed, M238) |
 | `beginCrashLoopWait` | recordInstanceExit, recordInstanceStartFailure |

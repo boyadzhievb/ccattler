@@ -270,6 +270,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |
 | `publishExitReasonFromStatus` | `recordInstanceExit` (agent, exitCode != 0) |
 | `replaceContainerOnAnotherImage` | `executeReconciliationCycle` (if running, M241 2e.1) |
+| `forgetOldIncarnationBackoff` | `reconcileInstanceWithoutRunningContainer` (exited / start-failed on another image than recorded, M241 2f) |
+| `findNewIncarnationOnAnotherImage` | `replaceContainerOnAnotherImage`, `forgetOldIncarnationBackoff` |
 | `detectConfigChange` | `executeReconciliationCycle` (if running) |
 | `hasConfigChangedSinceStart` | `detectConfigChange`, `isExitedInstanceDueForRestart` (M233) |
 | `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |
