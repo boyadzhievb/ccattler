@@ -211,14 +211,40 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
     exit 0 (20 packages ok, 0 failures)
     ```
 
+## 2c. Rework after review 4.2 and testbed 4.1 (design D11–D13, added 2026-11-18)
+
+- [ ] 2c.0 Failing tests first (red run recorded here): `TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable`, `TestRolloutDefaultsSurgeSingleInstanceService`, `TestRolloutRevertToPreviousImageNeverRollsBack`, plus a test per fix below.
+- [ ] 2c.1 B1: the failure controller's replacement group (`stopAndReplace`, controllers/failure.go) records `derived/instance/{id}/image` and deletes stale restarts like the instance controller (shared helper; watch `desired/service/`).
+- [ ] 2c.2 B2 + D11: availability-based budget (expected − healthy of any image); old instances on a lost node are left to the failure controller; an instance already `stopped` is not proposed again and is not progress. Test: an 11-min-old `progress_at` with a node-failed old instance still rolls back on the deadline.
+- [ ] 2c.3 D12: defaults 25 % / 25 % (down / up), both 0 → max_unavailable 1; replaces `rolloutDefaultMaxUnavailable`; describe shows effective values and that they are defaults. Check existing tests and `integration/` that assume max_unavailable 1, and test/e2e scripts that time rollouts.
+- [ ] 2c.4 B3 + D13: `rollout/started_at`; failures count only new instances created at or after it; a rollout to the stored `previous_image` has no previous image and cannot roll back.
+- [ ] 2c.5 B4: stateful recreation deletes `observed/instance/{id}/probe/*`; the agent resets readiness at every start.
+- [ ] 2c.6 B5: the agent uses the service image only on `store.ErrKeyNotFound`; any other read error skips the start this cycle.
+- [ ] 2c.7 Testbed (a): the rollback reason names the last exit (`exited with code 1`), not the state, when the failing instance has just restarted — keep/prefer the exit reason. Testbed (c): the waiting reason's remaining time is current (or drop the number and show the time the instance becomes healthy).
+- [ ] 2c.8 L1: a stored `rollback` with no `target_image` (older server) finishes as `complete` without a rollback reason. L3: INSTANCE_LIFECYCLE_GRAPH.md §3 line numbers; graphs and etcd-schema.md say both creation paths record the image. L4: one shared "get fact value or empty" helper for the three copies (api/apply_rollback_warning.go, api/describe.go, cmd/cca/command_server.go). Docs for D11–D13 (Flow 34, CONTROLLER_DATA_FLOW_GRAPH.md, etcd-schema.md, dsl-reference.md defaults).
+- [ ] 2c.9 Checks as in 3.1; paste results.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
   - First attempt 2026-11-18 on `abe4d19` (deploy cluster, service `m241roll`, `max_unavailable 1`, `progress_deadline 2m`):
     - Crash-looping image (whoami → `mariadb:11`, no password): **FAILED** — `rollout started … revision=1` 10:15:29, `rollout finished state=complete image=…/mariadb:11` 10:15:52; the instance then crash-looped (41 restarts) under a `complete` rollout. Cause: a new instance that reports `running` for 1–2 s counted as done. Fixed by D10 (group 2b); rerun after it.
     - Image tag that does not exist (`whoami:nosuchtag`): **PASSED** — at t+30 s `rolling`, reason `waiting for 66dbc0be92 image-pull-backoff: pulling image …:nosuchtag (attempt 2): … not found`; at t+150 s `rolled-back`, rollback reason `no progress for 2m: waiting for 66dbc0be92 image-pull-backoff: … not found`, whoami running again.
+    - Rerun 2026-11-18 on `9a60a15` after group 2b (fresh deploy, `cluster_test.sh --env deploy --skip-build --workload whoami --skip-checks gate-tls,node-failure,multiport,warmzero` → TEST PASSED; controller binary sha256 matches the local build). whoami → `mariadb:11`, `progress_deadline 5m`: t+30 s `rolling`, failures 2, reason `waiting for 208b5404da crash-loop-backoff: exited with code 1; restarting in 20s`; t+90 s `rolled-back`, whoami running again, stayed so through t+270 s. **PASSED.** Findings: (a) rollback reason was `3 failures ≥ 3 on …/mariadb:11: running` — `describeWorstFailingInstance` falls back to the state name when the failing instance has just restarted (status reason empty); should name `exited with code 1`. (b) The old whoami was stopped before any new instance existed (D4 "none created yet" with `max_unavailable 1` on 1 instance) — about 40 s with nothing running; as configured, not a D10 regression.
+    - Good second image (whoami → `nginx:1.27`): +5 s `rolling`, reason `waiting for 2326b112ac to stay healthy (10s)`; +30 s `complete`, `Previous image` gone. **PASSED.** Finding (c): the remaining time in the reason is not refreshed (still `(10s)` at age 21 s).
     - Capacity (`cpu 8`, then `memory 64Gi`): **BLOCKED by M243** — both placed on nodes with 2 CPU / 3 GiB because the scheduler reads unit-suffixed requests as 0 (milestones.md Phase 243). Checked after M243.
 - [ ] 4.2 Independent review: `code-reviewer` (Opus, effort high) on the milestone diff against this design and the specs. Record each finding as fixed or rejected, with one line of reasoning.
+  - Round 1, 2026-11-18, on `a15384c..9a60a15` (REQUEST CHANGES). Verified by the main session in the code; all accepted → group 2c:
+    - B1 failure-controller replacements unpinned — real (`stopAndReplace` group has no image put) → 2c.1.
+    - B2 node-failed old instance stopped every pass, write loop, deadline renewed — real (`planOldInstanceStops` stops every unavailable old one; stop never changes effective state) → 2c.2.
+    - B3 pre-rollout restarts counted; manual revert "rolls back" a→a — real (reviewer probe; D2 resets only on create) → 2c.4, D13.
+    - B4 stale readiness result counts — real (no `probe/*` delete on recreation) → 2c.5.
+    - B5 fallback on any read error — real (`lookupInstanceImageFromStore` ignores error kind) → 2c.6.
+    - D-a "no outage" row wrong for defaults — real; user chose Kubernetes defaults (D12) → 2c.3, row corrected.
+    - D-b max_unavailable not enforced once one new instance is healthy — real, pre-existing; user chose to fix in M241 (D11) → 2c.2.
+    - 2b.1 `started_at` put separate from state put — accepted as is: low risk, a failed put is retried with the next start.
+    - Integration test sets `min_healthy_time 0s` — accepted: D10 covered by unit tests and testbed 4.1.
+    - L1 → 2c.8; L2 per-cycle cap ordering — rejected: converges next cycle, no wrong state; L3, L4 → 2c.8; L5 `executeReconciliationCycle` 114 lines — pre-existing, not in this milestone's scope.
 - [ ] 4.3 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 
 ## 5. Release

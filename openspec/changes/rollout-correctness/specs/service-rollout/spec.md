@@ -6,13 +6,25 @@ States how a change of a service's image reaches its instances: paced within `ma
 ## ADDED Requirements
 
 ### Requirement: Old instances are replaced within max_unavailable
-When a service's desired image differs from the image of some of its instances, the rollout controller SHALL stop old-image instances so that the instances unavailable for any reason never exceed `max_unavailable` (1 when unset, capped by the disruption budget). It SHALL stop healthy old instances only while at least one new-image instance is healthy (see "A new instance counts only once it stays healthy"), or while none has been created yet, and SHALL pick them in instance-ID order.
+When a service's desired image differs from the image of some of its instances, the rollout controller SHALL stop old-image instances so that expected minus healthy instances never exceeds `max_unavailable` (unset: 25 % down; unset `max_extra`: 25 % up). It SHALL stop healthy old instances only while at least one new-image instance is healthy (see "A new instance counts only once it stays healthy"), or while none has been created yet, and SHALL pick them in instance-ID order.
 
 #### Scenario: Paced and deterministic
 - **GIVEN** a service with 4 running instances on image `a`, `max_unavailable 1`, whose desired image changes to `b`
 - **WHEN** the rollout controller reconciles twice on the same facts
 - **THEN** both times it proposes stopping exactly one instance, the one with the lowest instance ID
 - Test: `TestRolloutStopsOldInstancesInIDOrder`
+
+#### Scenario: Stopped and not-yet-healthy instances count against the budget
+- **GIVEN** a service with 4 expected instances, `max_unavailable 1`, two old instances already stopped and two new instances pending
+- **WHEN** the rollout controller reconciles
+- **THEN** it stops no further old instance
+- Test: `TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable`
+
+#### Scenario: Defaults surge a one-instance service
+- **GIVEN** a 1-instance service with no `update` block whose desired image changes
+- **WHEN** the rollout controller reconciles before the new instance is healthy
+- **THEN** a surge of one instance is allowed and the old instance is not stopped; once the new instance is healthy the old one is stopped
+- Test: `TestRolloutDefaultsSurgeSingleInstanceService`
 
 #### Scenario: Unavailable instances use up the budget
 - **GIVEN** a rollout with `max_unavailable 2` where one instance of the new image is in `crash-loop-backoff` and a healthy new-image instance is running
@@ -37,6 +49,12 @@ The rollout controller SHALL count new-image failures as the sum of restarts of 
 - **WHEN** the rollout controller reconciles
 - **THEN** `rollout/failures` is 3
 - Test: `TestRolloutCountsNewImageRestartsAndFailures`
+
+#### Scenario: Restarts from before the rollout do not count
+- **GIVEN** a rollout from `b` back to `a` (the stored previous image) whose `a` instances restarted 2 and 1 times before the rollout started
+- **WHEN** the rollout controller reconciles
+- **THEN** it does not roll back and `rollout/failures` is 0
+- Test: `TestRolloutRevertToPreviousImageNeverRollsBack`
 
 #### Scenario: Node loss is not a failure of the image
 - **GIVEN** a rollout to image `b` whose `b` instances are all on a node marked failed (`node_failure`)

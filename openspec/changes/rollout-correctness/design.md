@@ -75,6 +75,15 @@ Found by testbed task 4.1: rolling `m241roll` from whoami to `mariadb:11` (exits
 - Clocks: the agent stamps and the controller compares, as with Kubernetes' `minReadySeconds` (kubelet condition time vs controller-manager). Skew of a few seconds only shifts the window; the cluster already relies on NTP for leases.
 - Compared with others: Nomad `min_healthy_time` default 10 s (the model), Kubernetes `minReadySeconds` default 0 (same gap as before D10 unless a readiness probe is set), ECS needs health checks with its circuit breaker.
 
+### D11 — max_unavailable counts unavailable capacity (user, 2026-11-18, review 4.2 D-b)
+Before, stopped old instances and new instances not yet healthy were not counted, so once one new instance was healthy each pass stopped one more old instance and a service of N lost about N−1 within seconds (pre-existing, contradicts the spec). Now, as Kubernetes' Deployment controller and Nomad's `max_parallel`: `unavailable = expected − healthy instances of any image` (healthy old = running and not unavailable per D4; healthy new per D10; `expected` as in D5 Finished). Healthy old instances may be stopped up to `max_unavailable − unavailable`, never below 0, in ID order. Unavailable old instances (D4 step 1) are still stopped without budget. A stop already written (observed state `stopped`) is not proposed again and is not progress (review B2); old instances on a lost node are left to the failure controller.
+
+### D12 — Kubernetes defaults when update {} leaves them unset (user, 2026-11-18, review 4.2 D-a)
+Unset `max_unavailable` = floor(25 % of expected), unset `max_extra` = ceil(25 % of expected), each defaulted on its own; if both end up 0, `max_unavailable` = 1 (Kubernetes refuses that combination; here it would deadlock). A 1-instance service therefore surges: new instance first, old stopped once the new one is healthy. Explicit values keep their meaning (an explicit `max_unavailable 1` on a 1-instance service accepts the outage). Replaces `rolloutDefaultMaxUnavailable` = 1. The disruption-budget cap still applies. `cca describe service` shows the effective values and whether they are defaults.
+
+### D13 — Failures count only this rollout's instances; re-applying the previous image is a revert (review 4.2 B3)
+New-image failures (D3) count only new-image instances created at or after the rollout started (new key `rollout/started_at`, RFC 3339, set with `progress_at` when tracking starts, deleted at finish; instance `created_at` compared). Instances that already ran the target image before the rollout do not add their old restarts. When the desired image changes to the stored `previous_image` during `rolling`, the new rollout has no `previous_image` (nothing to roll back to) and so can never roll back; it finishes as `complete`.
+
 ### D6 — Determinism
 Services are processed in sorted name order, and instances are sorted by ID before classification. The proposed changes are then the same for the same facts (CLAUDE.md: deterministic iteration).
 
@@ -89,7 +98,7 @@ Services are processed in sorted name order, and instances are sorted by ID befo
 | Case | What happens |
 |---|---|
 | New image crash-loops (1 instance, max_unavailable 1) | The new instance restarts. Failures reach 3 after the third restart, which takes about 70 s with back-off. Desired reverts to the previous image, the bad instance becomes "old" and unavailable and is stopped first, a replacement starts on the previous image, and the state becomes `rolled-back`. |
-| New image runs ~2 s, then exits (1 instance) | The new instance is never healthy (D10), so the old instance keeps running. Restarts reach 3, the rollout rolls back, the bad instance is stopped. No outage. |
+| New image runs ~2 s, then exits (1 instance, `update` unset) | Defaults (D12) give max_unavailable 0, max_extra 1: the new instance starts beside the old one, is never healthy (D10), restarts reach 3, the rollout rolls back. No outage. With an explicit `max_unavailable 1` and no `max_extra`, the old instance is stopped at once and the service is down until the rollback's replacement is healthy (testbed 4.1 rerun: about 40 s); that is the configured trade-off. |
 | Agent older than the server (no `started_at`) | A running new instance counts as healthy at once, as before D10. |
 | New image crash-loops (10 instances) | One old instance is stopped and one new instance created. It crash-loops, so no healthy new instance exists and no further old instance is stopped. Its restarts reach 5, then the rollout rolls back. |
 | Node lost during a rollout | Instances on it are unavailable (budget) and are not failures, so no rollback. The node-failure controller replaces them. |
