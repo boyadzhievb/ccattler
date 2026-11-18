@@ -15,31 +15,48 @@ func intPointer(value int) *int {
 func TestResolveRolloutPacing(t *testing.T) {
 	testCases := []struct {
 		name                   string        // name describes the case.
+		workloadKind           WorkloadKind  // workloadKind is the service's kind.
 		expectedCount          int           // expectedCount is the service's expected instance count.
 		explicitMaxUnavailable *int          // explicitMaxUnavailable is update { max_unavailable }, nil when unset.
 		explicitMaxExtra       *int          // explicitMaxExtra is update { max_extra }, nil when unset.
 		wantPacing             RolloutPacing // wantPacing is the effective pace.
 	}{
-		{name: "1 instance, defaults surge", expectedCount: 1,
+		{name: "1 instance, defaults surge", workloadKind: WorkloadStateless, expectedCount: 1,
 			wantPacing: RolloutPacing{MaxUnavailable: 0, MaxExtra: 1, MaxUnavailableIsDefault: true, MaxExtraIsDefault: true}},
-		{name: "4 instances, defaults", expectedCount: 4,
+		{name: "4 instances, defaults", workloadKind: WorkloadStateless, expectedCount: 4,
 			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 1, MaxUnavailableIsDefault: true, MaxExtraIsDefault: true}},
-		{name: "10 instances, defaults round down and up", expectedCount: 10,
+		{name: "10 instances, defaults round down and up", workloadKind: WorkloadStateless, expectedCount: 10,
 			wantPacing: RolloutPacing{MaxUnavailable: 2, MaxExtra: 3, MaxUnavailableIsDefault: true, MaxExtraIsDefault: true}},
-		{name: "explicit max_unavailable 1 on 1 instance keeps its meaning", expectedCount: 1, explicitMaxUnavailable: intPointer(1),
-			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 1, MaxExtraIsDefault: true}},
-		{name: "explicit max_extra 0 and default max_unavailable 0 → 1", expectedCount: 2, explicitMaxExtra: intPointer(0),
-			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableIsDefault: true}},
-		{name: "both explicit 0 → max_unavailable 1", expectedCount: 4, explicitMaxUnavailable: intPointer(0), explicitMaxExtra: intPointer(0),
-			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 0}},
-		{name: "no instances yet", expectedCount: 0,
+		{name: "explicit max_unavailable 1 on 1 instance keeps its meaning", workloadKind: WorkloadStateless, expectedCount: 1,
+			explicitMaxUnavailable: intPointer(1),
+			wantPacing:             RolloutPacing{MaxUnavailable: 1, MaxExtra: 1, MaxExtraIsDefault: true}},
+		{name: "explicit max_extra 0 and default max_unavailable 0 → 1", workloadKind: WorkloadStateless, expectedCount: 2,
+			explicitMaxExtra: intPointer(0),
+			wantPacing:       RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableIsDefault: true, MaxUnavailableForced: true}},
+		{name: "both explicit 0 → max_unavailable 1", workloadKind: WorkloadStateless, expectedCount: 4,
+			explicitMaxUnavailable: intPointer(0), explicitMaxExtra: intPointer(0),
+			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableForced: true}},
+		{name: "no instances yet", workloadKind: WorkloadStateless, expectedCount: 0,
+			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableIsDefault: true, MaxExtraIsDefault: true, MaxUnavailableForced: true}},
+		{name: "stateful defaults replace in place", workloadKind: WorkloadStateful, expectedCount: 1,
 			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableIsDefault: true, MaxExtraIsDefault: true}},
+		{name: "per-node defaults replace in place", workloadKind: WorkloadPerNode, expectedCount: 8,
+			wantPacing: RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableIsDefault: true, MaxExtraIsDefault: true}},
+		{name: "stateful ignores an explicit max_extra", workloadKind: WorkloadStateful, expectedCount: 3,
+			explicitMaxExtra: intPointer(2),
+			wantPacing:       RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxUnavailableIsDefault: true, MaxExtraIgnored: true}},
+		{name: "per-node explicit max_unavailable 0 is forced to 1", workloadKind: WorkloadPerNode, expectedCount: 3,
+			explicitMaxUnavailable: intPointer(0),
+			wantPacing:             RolloutPacing{MaxUnavailable: 1, MaxExtra: 0, MaxExtraIsDefault: true, MaxUnavailableForced: true}},
+		{name: "per-node explicit max_unavailable 2 kept", workloadKind: WorkloadPerNode, expectedCount: 8,
+			explicitMaxUnavailable: intPointer(2),
+			wantPacing:             RolloutPacing{MaxUnavailable: 2, MaxExtra: 0, MaxExtraIsDefault: true}},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			gotPacing := ResolveRolloutPacing(testCase.expectedCount, testCase.explicitMaxUnavailable, testCase.explicitMaxExtra)
+			gotPacing := ResolveRolloutPacing(testCase.workloadKind, testCase.expectedCount, testCase.explicitMaxUnavailable, testCase.explicitMaxExtra)
 			if gotPacing != testCase.wantPacing {
-				t.Errorf("ResolveRolloutPacing(%d) = %+v, want %+v", testCase.expectedCount, gotPacing, testCase.wantPacing)
+				t.Errorf("ResolveRolloutPacing(%s, %d) = %+v, want %+v", testCase.workloadKind, testCase.expectedCount, gotPacing, testCase.wantPacing)
 			}
 		})
 	}

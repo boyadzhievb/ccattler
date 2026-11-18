@@ -929,13 +929,12 @@ func printServiceDescribeScalingAndRollout(serviceDetail api.ServiceDescribe) {
 	if serviceDetail.UpdateStrategy != nil {
 		fmt.Println()
 		fmt.Println("Update Strategy:")
-		if serviceDetail.UpdateStrategy.MaxUnavailable != "" {
-			fmt.Printf("  Max unavailable:  %s%s\n", serviceDetail.UpdateStrategy.MaxUnavailable,
-				describePacingDefaultNote(serviceDetail.UpdateStrategy.MaxUnavailableIsDefault, types.RolloutDefaultMaxUnavailablePercent, "down"))
+		updateStrategy := serviceDetail.UpdateStrategy
+		if updateStrategy.MaxUnavailable != "" {
+			fmt.Printf("  Max unavailable:  %s%s\n", updateStrategy.MaxUnavailable, describeMaxUnavailableNote(*updateStrategy))
 		}
-		if serviceDetail.UpdateStrategy.MaxExtra != "" {
-			fmt.Printf("  Max extra:        %s%s\n", serviceDetail.UpdateStrategy.MaxExtra,
-				describePacingDefaultNote(serviceDetail.UpdateStrategy.MaxExtraIsDefault, types.RolloutDefaultMaxExtraPercent, "up"))
+		if updateStrategy.MaxExtra != "" {
+			fmt.Printf("  Max extra:        %s%s\n", updateStrategy.MaxExtra, describeMaxExtraNote(*updateStrategy))
 		}
 	}
 
@@ -2300,12 +2299,34 @@ func postSecretAdminRequest(apiPath string, requestBody []byte) {
 	}
 }
 
-// describePacingDefaultNote returns " (default: 25% of instances, rounded
-// down)" for a rollout pace value the update block leaves unset, "" otherwise
-// (M241 D12).
-func describePacingDefaultNote(isDefault bool, defaultPercent int, roundingDirection string) string {
-	if !isDefault {
+// describeMaxUnavailableNote explains where a describe max_unavailable comes
+// from: raised to 1 so the rollout can move, the default of the service's
+// kind, or nothing for a value set in update {} (M241 D12, D14).
+func describeMaxUnavailableNote(updateStrategy api.DescribeUpdateStrategy) string {
+	switch {
+	case updateStrategy.MaxUnavailableForced:
+		return " (raised to 1: with max_extra 0 the rollout could not move)"
+	case !updateStrategy.MaxUnavailableIsDefault:
 		return ""
+	case updateStrategy.WorkloadKind != string(types.WorkloadStateless):
+		return fmt.Sprintf(" (default for %s services)", updateStrategy.WorkloadKind)
+	default:
+		return fmt.Sprintf(" (default: %d%% of instances, rounded down)", types.RolloutDefaultMaxUnavailablePercent)
 	}
-	return fmt.Sprintf(" (default: %d%% of instances, rounded %s)", defaultPercent, roundingDirection)
+}
+
+// describeMaxExtraNote explains where a describe max_extra comes from:
+// ignored (stateful and per-node services never surge), the default of the
+// service's kind, or nothing for a value set in update {} (M241 D12, D14).
+func describeMaxExtraNote(updateStrategy api.DescribeUpdateStrategy) string {
+	switch {
+	case updateStrategy.MaxExtraIgnored:
+		return fmt.Sprintf(" (update { max_extra } ignored: %s services never surge)", updateStrategy.WorkloadKind)
+	case !updateStrategy.MaxExtraIsDefault:
+		return ""
+	case updateStrategy.WorkloadKind != string(types.WorkloadStateless):
+		return fmt.Sprintf(" (default for %s services)", updateStrategy.WorkloadKind)
+	default:
+		return fmt.Sprintf(" (default: %d%% of instances, rounded up)", types.RolloutDefaultMaxExtraPercent)
+	}
 }

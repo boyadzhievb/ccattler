@@ -26,7 +26,6 @@ type rolloutInstanceInfo struct {
 	startedAt    time.Time           // startedAt is observed/instance/{id}/started_at; zero when absent or unreadable.
 	createdAt    time.Time           // createdAt is observed/instance/{id}/created-at; zero when absent or unreadable (D13).
 	lastExit     string              // lastExit is observed/instance/{id}/last_exit, kept across restarts.
-	stopWritten  bool                // stopWritten is true when observed/instance/{id}/state already says stopped (B2).
 	readiness    string              // readiness is observed/instance/{id}/probe/readiness; "" when absent.
 	healthy      bool                // healthy is set by classification: running long enough, and ready when probed (D10).
 	healthWait   string              // healthWait says what a running, not yet healthy instance waits for ("8s", "readiness not-ready").
@@ -153,6 +152,7 @@ type rolloutClusterFacts struct {
 	effectiveCounts    map[string]int                     // effectiveCounts maps service to effective instance count.
 	pausedServices     map[string]bool                    // pausedServices holds services with a paused rollout.
 	readinessProbed    map[string]bool                    // readinessProbed holds services that declare a readiness probe.
+	workloadKinds      map[string]types.WorkloadKind      // workloadKinds maps service to stateless, stateful or per-node (D14).
 	unplacedInstances  map[string]*unplacedDemandEntry    // unplacedInstances maps instance ID to the scheduler's unplaced reason.
 }
 
@@ -168,6 +168,7 @@ func extractRolloutClusterFacts(facts []store.Fact) rolloutClusterFacts {
 		effectiveCounts:    collectIntValuesBySuffix(facts, types.ScanEffectiveServices, "instances"),
 		pausedServices:     extractRolloutPausedServices(facts),
 		readinessProbed:    extractReadinessProbedServices(facts),
+		workloadKinds:      extractWorkloadKinds(facts),
 		unplacedInstances:  extractUnplacedDemand(facts),
 	}
 }
@@ -185,7 +186,7 @@ func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, no
 		expectedCount = clusterFacts.desiredCounts[serviceName]
 	}
 	disruptionBudget := clusterFacts.disruptionBudgets[serviceName]
-	pacing := types.ResolveRolloutPacing(expectedCount, updatePolicy.explicitMaxUnavailable, updatePolicy.explicitMaxExtra).
+	pacing := types.ResolveRolloutPacing(clusterFacts.workloadKinds[serviceName], expectedCount, updatePolicy.explicitMaxUnavailable, updatePolicy.explicitMaxExtra).
 		CappedByDisruptionBudget(disruptionBudget.minAvailable, disruptionBudget.maxUnavailable, clusterFacts.desiredCounts[serviceName])
 	healthRule := rolloutHealthRule{
 		minHealthyTime:   updatePolicy.minHealthyTime,
@@ -308,7 +309,6 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 			startedAt:    parseInstanceTimestamp(instanceID, "started_at", fields["started_at"]),
 			createdAt:    parseInstanceTimestamp(instanceID, "created-at", fields["created-at"]),
 			lastExit:     fields["last_exit"],
-			stopWritten:  types.InstanceState(fields["state"]) == types.InstanceStopped,
 			readiness:    fields["probe/"+string(types.ProbeReadiness)],
 		})
 	}
@@ -409,6 +409,23 @@ func extractRolloutFields(facts []store.Fact) map[string]map[string]string {
 		fieldsByService[serviceName][rolloutFieldName] = string(fact.Value)
 	}
 	return fieldsByService
+}
+
+// extractWorkloadKinds returns the kind of every service with effective
+// stateful or placement_mode facts; others are stateless (zero value: the
+// lookup of a missing service gives "", which ResolveRolloutPacing treats as
+// stateless).
+func extractWorkloadKinds(facts []store.Fact) map[string]types.WorkloadKind {
+	statefulServices := collectStringValuesBySuffix(facts, types.ScanEffectiveServices, "stateful")
+	placementModes := collectStringValuesBySuffix(facts, types.ScanEffectiveServices, "placement_mode")
+	workloadKinds := make(map[string]types.WorkloadKind)
+	for _, serviceName := range sortedMapKeys(statefulServices) {
+		workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", placementModes[serviceName])
+	}
+	for _, serviceName := range sortedMapKeys(placementModes) {
+		workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", placementModes[serviceName])
+	}
+	return workloadKinds
 }
 
 // extractRolloutPausedServices returns a set of service names with paused rollouts.

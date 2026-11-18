@@ -168,8 +168,8 @@ type rolloutStopPlan struct {
 }
 
 // planOldInstanceStops stops every unavailable old instance without budget,
-// except those on a lost node (the failure controller's) or already stopped
-// (B2), then healthy old instances while expected − healthy stays within
+// except those on a lost node (the failure controller's, B2; stopped ones
+// are not old instances any more), then healthy old instances while expected − healthy stays within
 // max_unavailable (D11), only while a new instance is healthy or none exists.
 func planOldInstanceStops(classification rolloutClassification, maxUnavailable int, expectedCount int) rolloutStopPlan {
 	if expectedCount <= 0 {
@@ -180,7 +180,7 @@ func planOldInstanceStops(classification rolloutClassification, maxUnavailable i
 	var healthyOldIDs []string
 	for _, instanceInfo := range classification.oldInstances {
 		switch {
-		case instanceInfo.nodeFailure || instanceInfo.stopWritten:
+		case instanceInfo.nodeFailure:
 			continue
 		case isUnavailableForRollout(instanceInfo):
 			plan.stoppedIDs = append(plan.stoppedIDs, instanceInfo.id)
@@ -204,7 +204,8 @@ func planOldInstanceStops(classification rolloutClassification, maxUnavailable i
 // buildRolloutReason returns what the rollout waits for, the first match of:
 // paused; a rollback whose image also fails; the lowest-ID new instance not
 // healthy yet (its state, status or scheduler reason, or what a running one
-// still waits for, D10); max_unavailable used up (D11).
+// still waits for, D10); max_unavailable used up (D11; at 0 by configuration
+// it waits for an extra instance, D14).
 // Otherwise it says how many old instances are left to replace (D7).
 func buildRolloutReason(serviceInput rolloutServiceInput, classification rolloutClassification, stopPlan rolloutStopPlan, currentState types.RolloutState) string {
 	if serviceInput.paused {
@@ -226,6 +227,9 @@ func buildRolloutReason(serviceInput rolloutServiceInput, classification rollout
 	if stopPlan.budgetUsedUp && len(classification.newInstances) == 0 {
 		return fmt.Sprintf("waiting for the first new-image instance (max_unavailable %d, max_extra %d)",
 			stopPlan.maxUnavailable, serviceInput.maxExtra)
+	}
+	if stopPlan.budgetUsedUp && stopPlan.maxUnavailable == 0 {
+		return "max_unavailable 0: waiting for an extra instance to become healthy"
 	}
 	if stopPlan.budgetUsedUp {
 		return fmt.Sprintf("max_unavailable %d used up: %d of %d expected instances not healthy (%s)", stopPlan.maxUnavailable,

@@ -1778,15 +1778,21 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
         no started_at → counts at once) ∧ probe/readiness = ready when the service has a
         readiness probe                                                              [D10]
 
-  pace: max_unavailable / max_extra from update {}, unset → 25 % of expected (down: floor,
-        up: ceil), both 0 → max_unavailable 1; capped by the disruption budget      [D12]
+  pace: max_unavailable / max_extra from update {}; unset, stateless: 25 % of expected
+        (down: floor, up: ceil) [D12]; stateful and per-node: 1 / 0, never a surge, an
+        explicit max_extra ignored (apply warns) [D14]; both 0 → max_unavailable 1;
+        capped by the disruption budget; rollback / stalled: max_unavailable ≥ 1   [D14]
+  surge: InstanceController adds rollout/surge_allowance to the count only for a
+        stateless service that still has old-image instances; the pass that stops the
+        last old instance deletes surge_allowance                                    [D14]
   state none/complete/rolled-back and old exists
       → rolling: previous_image = most common old image, target_image = b, revision+1,
         history/{rev} = previous, surge_allowance = max_extra, progress_at = started_at = now,
         DELETE rollback_reason, rolled_back_image, rolled_back_at, failures
   state rolling/rollback/stalled and desired ≠ target_image (image changed mid-rollout)
-      → same, previous_image kept (the last known-good image); desired = previous_image
-        (a revert) → no previous_image: it can never roll back                       [D13]
+      → same, previous_image kept (the last known-good image; after a revert, the
+        revert's target) [D14]; desired = previous_image (a revert) → no
+        previous_image: it can never roll back                                       [D13]
   no old instance, ≥ expected count healthy, every new instance healthy
       → rolling: complete;  rollback/stalled: rolled-back (complete when no rollback_reason:
         a rollback stored by an older server, L1)
@@ -1813,14 +1819,16 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
         | waiting for <id> (<state>: <status reason>, or "unplaced: insufficient_capacity
           (cpu …m, memory …Mi)" from derived/scheduler/unplaced/{id}/*)
         | waiting for <id> to stay healthy (until HH:MM:SS UTC | readiness <state>)
-        | waiting for the first new-image instance | max_unavailable N used up: U of E
-          expected instances not healthy (<ids>) | replacing N old-image instances
+        | waiting for the first new-image instance | max_unavailable 0: waiting for an
+          extra instance to become healthy | max_unavailable N used up: U of E expected
+          instances not healthy (<ids>) | replacing N old-image instances
 ```
 
 - Desired and observed stay separate: the rollback writes `desired/service/{svc}/image` (as Nomad's `auto_revert`); re-applying the configuration starts a new rollout and warns.
 - `max_unavailable` bounds unavailable capacity, as in Kubernetes: stopped old instances and new ones not yet healthy count against it, so a service never has more than `max_unavailable` of its expected instances down at once (D11). The 25 % defaults make a small service surge first: a 1-instance service gets `max_unavailable 0`, `max_extra 1` (D12).
 - The failure count is current facts only: a `failed` instance the failure controller replaces drops out of it; crash loops stay on the same instance and keep counting.
 - A new instance counts only once it stays healthy (D10): an image that exits a second or two after start never replaces an old instance or finishes the rollout; its restarts roll it back. No fact changes when the window ends, so the runner's periodic resync (30 s) gives the pass that counts it.
+- Kinds (D14): a stateful service replaces its ordinals in place (no extra ordinal, like a StatefulSet) and a per-node service one node at a time (no room for a surge, like a DaemonSet). A rollback has no surge, so it always gets `max_unavailable` ≥ 1.
 - A rollback never rolls back again; without progress it becomes `stalled` and clears itself once it progresses or completes.
 - `cca describe service` shows state, failures, reason and rollback reason; the status API carries `rollout_state`, `rollout_reason`, `rollout_rollback_reason`; `cca status` RUNTIME HEALTH and `test/e2e/health_check.sh` Check 6 list stalled and rolled-back services (D8).
 - Behaviour: `openspec/specs/service-rollout`, `openspec/specs/instance-restart`. Functions and keys: CONTROLLER_DATA_FLOW_GRAPH.md § rollout, INSTANCE_LIFECYCLE_GRAPH.md.

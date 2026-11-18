@@ -79,14 +79,17 @@ func (instanceController *InstanceController) Watch() []string {
 // ordinal IDs and ordered startup; stateless services use random IDs.
 func (instanceController *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	desiredCounts, statefulServices, perNodeServices := parseEffectiveServiceFacts(facts)
-	surgeAllowances := extractSurgeAllowances(facts)
-	for serviceName, surgeCount := range surgeAllowances {
-		desiredCounts[serviceName] += surgeCount
-	}
 	fieldsByInstanceID := parseInstanceFieldsFromFacts(facts)
 	creation := instanceCreationFacts{desiredImages: extractDesiredImages(facts), fieldsByInstanceID: fieldsByInstanceID}
 	stateByInstanceID, serviceByInstanceID := buildInstanceMapsFromFields(fieldsByInstanceID)
 	activeInstanceIDs := buildActiveInstanceIDsByService(serviceByInstanceID, stateByInstanceID)
+	for serviceName, surgeCount := range extractSurgeAllowances(facts) {
+		if statefulServices[serviceName] || perNodeServices[serviceName] ||
+			!hasOldImageInstances(activeInstanceIDs[serviceName], creation.fieldsByInstanceID, creation.desiredImages[serviceName]) {
+			continue
+		}
+		desiredCounts[serviceName] += surgeCount
+	}
 
 	var changes []Change
 	creationsRemaining := instanceController.MaxCreationsPerCycle
@@ -337,6 +340,18 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 	}
 
 	return desiredCounts, statefulServices, perNodeServices
+}
+
+// hasOldImageInstances reports whether any of the active instances runs (or
+// was recorded with) another image than desiredImage: a rollout's surge
+// applies only while such instances remain (M241 D14).
+func hasOldImageInstances(activeIDs []string, fieldsByInstanceID map[string]map[string]string, desiredImage string) bool {
+	for _, instanceID := range activeIDs {
+		if instanceImage := fieldsByInstanceID[instanceID]["image"]; instanceImage != "" && instanceImage != desiredImage {
+			return true
+		}
+	}
+	return false
 }
 
 // extractSurgeAllowances reads rollout surge allowance facts emitted by the

@@ -429,7 +429,7 @@ FailureController.Reconcile(ctx, facts)              (controllers/failure.go:161
 ├── scan instance states, probe states, drain states
 ├── FOR EACH instance:
 │   ├── IF state="failed" OR startup probe="failed":
-│   │   └── stopAndReplace(instanceID, serviceName)    (:403)
+│   │   └── stopAndReplace(instanceID, serviceName, image)  (:409)
 │   │       ├── PUT observed/instance/{old}/state = "stopped"  [→ controller_stopped]
 │   │       └── PUT observed/instance/{new}/state = "pending"  [replacement]
 │   │
@@ -721,7 +721,7 @@ A lookup outside every loaded prefix panics (`requireCoveredKey`): add the prefi
 | `observed/node/{id}/state` = "unreachable" | NodeFailureController | `identifyUnreachableNodes` | `nodefailure.go:205` |
 | `observed/node/{id}/state` = "alive" | NodeFailureController | `identifyUnreachableNodes` | `nodefailure.go:190` |
 | `derived/instance/{id}/node_failure` | NodeFailureController | `markInstancesOnUnreachableNodesAsFailed` | `nodefailure.go:258` |
-| `derived/instance/{id}/controller_stopped` | FailureController | `stopAndReplace` | `failure.go:403` |
+| `derived/instance/{id}/controller_stopped` | FailureController | `stopAndReplace` | `failure.go:409` |
 | `derived/instance/{id}/drain_readiness` | FailureController | `handleUnhealthyLiveness` | `failure.go:318` |
 | `derived/instance/{id}/drain_since` | FailureController | `handleUnhealthyLiveness` | `failure.go:318` |
 | `derived/crashloop/{svc}` | FailureController | crash-loop backoff | `failure.go:161` |

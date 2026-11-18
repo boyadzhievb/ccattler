@@ -81,7 +81,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/rollout/target_image   # image the rollout (or rollback) moves to (M241)
 │   ├── service/{name}/rollout/revision       # rollout counter
 │   ├── service/{name}/rollout/history/{rev}  # previous image of rollout {rev}
-│   ├── service/{name}/rollout/surge_allowance  # max_extra while rolling
+│   ├── service/{name}/rollout/surge_allowance  # max_extra while rolling, deleted with the last old instance; never for stateful or per-node services (M241 D14)
 │   ├── service/{name}/rollout/failures       # new-image restarts + failed instances while rolling (M241)
 │   ├── service/{name}/rollout/reason         # what a rollout in progress waits for (M241)
 │   ├── service/{name}/rollout/rollback_reason  # why the last rollback happened; kept until the next rollout (M241)

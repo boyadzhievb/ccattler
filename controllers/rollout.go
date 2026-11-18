@@ -26,6 +26,11 @@ const rolloutDefaultProgressDeadline = 10 * time.Minute
 // the pass that counts the instance.
 const rolloutDefaultMinHealthyTime = 10 * time.Second
 
+// rolloutMinimumRollbackMaxUnavailable is the least max_unavailable of a
+// rollback (or stalled rollback): it has no surge, so at 0 it could never
+// replace an instance (M241 D14).
+const rolloutMinimumRollbackMaxUnavailable = 1
+
 // rolloutMinimumFailureThreshold is the lowest number of new-image failures that
 // rolls a rollout back, whatever the service size (ECS circuit breaker, M241 D3).
 const rolloutMinimumFailureThreshold = 3
@@ -109,7 +114,9 @@ func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
 	case writer.value(rolloutFieldTargetImage) != serviceInput.desiredImage:
 		knownGoodImage := writer.value(rolloutFieldPreviousImage)
 		if knownGoodImage == "" {
-			knownGoodImage = mostCommonImage(classification.oldInstances)
+			// After a revert there is no previous image: the revert's target is
+			// the known-good one, never the old instances' (maybe bad) image (D14).
+			knownGoodImage = writer.value(rolloutFieldTargetImage)
 		}
 		beginRolloutTowardDesiredImage(serviceInput, classification, knownGoodImage)
 		currentState = types.RolloutRolling
@@ -134,14 +141,22 @@ func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
 	return advanceRollout(serviceInput, classification, currentState)
 }
 
-// advanceRollout stops old instances (unless paused), records progress, applies
-// the progress deadline (rollback from rolling, stalled from rollback) and
-// writes the reason the rollout waits. Returns all changes of the pass.
+// advanceRollout stops old instances (unless paused), ends the surge with the
+// last old instance (D14), records progress, applies the progress deadline
+// (rollback from rolling, stalled from rollback) and writes the reason the
+// rollout waits. A rollback moves even at max_unavailable 0 (D14).
 func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClassification, currentState types.RolloutState) []Change {
 	writer := serviceInput.writer
 	var stopPlan rolloutStopPlan
 	if !serviceInput.paused {
-		stopPlan = planOldInstanceStops(classification, serviceInput.maxUnavailable, serviceInput.expectedInstanceCount)
+		maxUnavailable := serviceInput.maxUnavailable
+		if currentState != types.RolloutRolling {
+			maxUnavailable = max(maxUnavailable, rolloutMinimumRollbackMaxUnavailable)
+		}
+		stopPlan = planOldInstanceStops(classification, maxUnavailable, serviceInput.expectedInstanceCount)
+	}
+	if countOldInstancesLeftAfterStops(classification, stopPlan) == 0 {
+		writer.remove(rolloutFieldSurgeAllowance)
 	}
 	storedRunningNew, _ := strconv.Atoi(writer.value(rolloutFieldRunningNew))
 	progressed := len(stopPlan.stoppedIDs) > 0 || classification.healthyNewCount > storedRunningNew
@@ -165,6 +180,19 @@ func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClas
 	recordRolloutProgress(serviceInput, classification.healthyNewCount, progressed)
 	writer.put(rolloutFieldReason, truncateRolloutReason(waitingReason))
 	return append(writer.changes, buildInstanceStopChanges(stopPlan.stoppedIDs)...)
+}
+
+// countOldInstancesLeftAfterStops counts the old instances the rollout still
+// has to replace once this pass's stops are written; old instances on a lost
+// node are the failure controller's and do not count.
+func countOldInstancesLeftAfterStops(classification rolloutClassification, stopPlan rolloutStopPlan) int {
+	var oldInstancesLeft int
+	for _, instanceInfo := range classification.oldInstances {
+		if !instanceInfo.nodeFailure {
+			oldInstancesLeft++
+		}
+	}
+	return oldInstancesLeft - len(stopPlan.stoppedIDs)
 }
 
 // recordRolloutProgress keeps rollout/progress_at and rollout/running_new: a

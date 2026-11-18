@@ -175,7 +175,8 @@ type applyInstanceLimitCheck struct {
 
 // inspect checks every compiled service's largest count; the first refusal
 // stops the apply (lang.ServiceInstanceCountsFromFacts sorts by name). An
-// accepted apply also warns for images that were rolled back (M241 D9).
+// accepted apply also warns for images that were rolled back (M241 D9) and
+// for a max_extra that stateful and per-node services ignore (D14).
 func (limitCheck *applyInstanceLimitCheck) inspect(facts []lang.Fact) error {
 	for _, serviceCount := range lang.ServiceInstanceCountsFromFacts(facts) {
 		countCheck := limitCheck.apiServer.checkInstanceCountApproval(limitCheck.requestContext,
@@ -192,6 +193,7 @@ func (limitCheck *applyInstanceLimitCheck) inspect(facts []lang.Fact) error {
 		}
 	}
 	limitCheck.warnings = append(limitCheck.warnings, limitCheck.apiServer.collectRolledBackImageWarnings(limitCheck.requestContext, facts)...)
+	limitCheck.warnings = append(limitCheck.warnings, collectIgnoredMaxExtraWarnings(facts)...)
 	return nil
 }
 

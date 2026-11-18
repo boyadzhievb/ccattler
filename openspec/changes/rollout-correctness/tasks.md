@@ -325,13 +325,146 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
 
 ## 2d. Rework after review round 2 (design D14, added 2026-11-18)
 
-- [ ] 2d.0 Failing tests first, with the instance controller in the loop (controller + instance controller + fake agent/placement, as the reviewer's probes did): `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`, `TestRolloutRollbackWithDefaultPacingCompletes`, `TestRolloutSurgeEndsWithLastOldInstance`, plus an 8-node per-node rollout that completes (not rolled back by the deadline). Record the red run.
-- [ ] 2d.1 H2/H3: pacing defaults by kind (stateful, per-node: 1/0, never surge; explicit `max_extra` ignored with an apply warning); `ResolveRolloutPacing` gets the kind; the instance controller adds no surge for these kinds.
-- [ ] 2d.2 H1: in `rollback`/`stalled` the effective max_unavailable is at least 1 and no surge is used.
-- [ ] 2d.3 M1: surge only while old-image instances remain; `surge_allowance` deleted when the last old instance is stopped.
-- [ ] 2d.4 L1 remove dead `stopWritten`; L5 budget-reason and describe wording; L6 retarget after revert uses the current target as known good; L3 k8s-to-cca keeps explicit zeros (percentages stay as they are, pre-existing, note it); L2 document in dsl-reference.md; L4 graphs (OBSERVABILITY_GRAPH.md `stopAndReplace`, INSTANCE_LIFECYCLE_GRAPH.md calls, `ReadValueOrEmpty`, `readOptionalIntegerFact`, `describePacingDefaultNote`); L7 move the agent test assertions into `waitFor`.
-- [ ] 2d.5 Docs: D14 in Flow 34, CONTROLLER_DATA_FLOW_GRAPH.md, dsl-reference.md defaults table by kind.
-- [ ] 2d.6 Checks as in 3.1; paste results.
+- [x] 2d.0 Failing tests first, with the instance controller in the loop (controller + instance controller + fake agent/placement, as the reviewer's probes did): `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`, `TestRolloutRollbackWithDefaultPacingCompletes`, `TestRolloutSurgeEndsWithLastOldInstance`, plus an 8-node per-node rollout that completes (not rolled back by the deadline). Record the red run.
+  - Red run, 2026-11-18, before the fixes. To make the tests compile, only these were added: `types.WorkloadKind` with its constants, `types.PlacementModePerNode`, the `workloadKind` parameter of `ResolveRolloutPacing` (not yet used), and the `MaxUnavailableForced` / `MaxExtraIgnored` / `WorkloadKind` fields.
+    - The loop tests are in controllers/rollout_loop_test.go: a `rolloutLoopCluster` runs the real InstanceController and RolloutController, plus a fake agent that starts pending instances within a placement capacity (per-node: the node count), with 15 s per pass. They follow the reviewer's probes.
+    - Besides the three spec scenarios, there is `TestRolloutPerNodeEightNodesCompletes` (8 nodes, 60 passes = 15 min). Unit tests were added for each remaining fix: surge delete, the max_unavailable 0 reason, retarget after a revert, instance-controller surge by kind and old instances, describe kind pacing, the apply warning, and k8s-to-cca zeros.
+    ```
+    $ go test ./controllers/ -run 'TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace|TestRolloutPerNodeEightNodesCompletes|TestRolloutRollbackWithDefaultPacingCompletes|TestRolloutSurgeEndsWithLastOldInstance|TestRolloutDeletesSurgeWhenLastOldInstanceStops|TestRolloutBudgetReasonWhenMaxUnavailableIsZero|TestRolloutRetargetAfterRevertKeepsTargetAsKnownGood|TestInstanceControllerSurgesOnlyStatelessWithOldInstances' -count=1
+    --- FAIL: TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace (0.00s)
+        --- FAIL: TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace/stateful,_1_instance (0.00s)
+            rollout_loop_test.go:198: up to 2 active instances, want at most 1 (no extra ordinal)
+            rollout_loop_test.go:201: extra ordinal db-1 created, want db-0 replaced in place
+            rollout_loop_test.go:203: 2 active instances at the end, want 1
+        --- FAIL: TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace/per-node,_3_nodes (0.00s)
+            rollout_loop_test.go:210: rollout/state = "rolling" after 20 passes, want complete
+            rollout_loop_test.go:213: up to 4 active instances, want at most 3 (no surge instance)
+            rollout_loop_test.go:215: 4 active instances at the end, want 3
+            rollout_loop_test.go:215: instance agentd-old-1 is running on "app:a" at the end, want running on app:b
+            rollout_loop_test.go:215: instance agentd-old-2 is running on "app:a" at the end, want running on app:b
+            rollout_loop_test.go:215: instance agentd-new-00 is pending on "app:b" at the end, want running on app:b
+            rollout_loop_test.go:215: instance agentd-old-0 is running on "app:a" at the end, want running on app:b
+    --- FAIL: TestRolloutPerNodeEightNodesCompletes (0.02s)
+        rollout_loop_test.go:227: rollout/state = "rolled-back", desired image "app:a", want complete on app:b
+        rollout_loop_test.go:230: instance agentd-new-13 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-11 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-17 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-14 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-15 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-16 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-10 is running on "app:a" at the end, want running on app:b
+        rollout_loop_test.go:230: instance agentd-new-12 is running on "app:a" at the end, want running on app:b
+    --- FAIL: TestRolloutRollbackWithDefaultPacingCompletes (0.00s)
+        rollout_loop_test.go:256: rollout/state = "rollback" after 20 passes, want rolled-back
+        rollout_loop_test.go:258: instance web-b-1 is running on "app:b" at the end, want running on app:a
+        rollout_loop_test.go:258: instance web-b-2 is running on "app:b" at the end, want running on app:a
+    --- FAIL: TestRolloutSurgeEndsWithLastOldInstance (0.00s)
+        rollout_loop_test.go:272: instance controller created [web-new-00 web-new-01], want exactly one new instance
+        rollout_loop_test.go:276: new instance web-new-00 scaled down after the rollout
+    --- FAIL: TestRolloutDeletesSurgeWhenLastOldInstanceStops (0.00s)
+        rollout_round2_test.go:29: surge_allowance kept when the last old instance is stopped, want it deleted
+    --- FAIL: TestRolloutBudgetReasonWhenMaxUnavailableIsZero (0.00s)
+        rollout_round2_test.go:48: rollout/reason "max_unavailable 0 used up: 0 of 3 expected instances not healthy ()" does not contain "waiting for an extra instance to become healthy"
+    --- FAIL: TestRolloutRetargetAfterRevertKeepsTargetAsKnownGood (0.00s)
+        rollout_round2_test.go:66: previous_image = "app:b" after a retarget from the revert target app:a, want app:a
+    --- FAIL: TestInstanceControllerSurgesOnlyStatelessWithOldInstances (0.00s)
+        --- FAIL: TestInstanceControllerSurgesOnlyStatelessWithOldInstances/stateless_without_old_instances (0.00s)
+            rollout_round2_test.go:96: surge instance created = true ([web-new-00]), want false
+        --- FAIL: TestInstanceControllerSurgesOnlyStatelessWithOldInstances/per-node_never_surges (0.00s)
+            rollout_round2_test.go:96: surge instance created = true ([web-new-00]), want false
+        --- FAIL: TestInstanceControllerSurgesOnlyStatelessWithOldInstances/stateful_never_surges (0.00s)
+            rollout_round2_test.go:96: surge instance created = true ([]), want false
+    $ go test ./types/ -run TestResolveRolloutPacing -count=1
+    --- FAIL: TestResolveRolloutPacing (0.00s)
+        --- FAIL: TestResolveRolloutPacing/explicit_max_extra_0_and_default_max_unavailable_0_→_1 (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(stateless, 2) = {MaxUnavailable:1 MaxExtra:0 MaxUnavailableIsDefault:true MaxExtraIsDefault:false MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavai
+        --- FAIL: TestResolveRolloutPacing/both_explicit_0_→_max_unavailable_1 (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(stateless, 4) = {MaxUnavailable:1 MaxExtra:0 MaxUnavailableIsDefault:false MaxExtraIsDefault:false MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnava
+        --- FAIL: TestResolveRolloutPacing/no_instances_yet (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(stateless, 0) = {MaxUnavailable:1 MaxExtra:0 MaxUnavailableIsDefault:true MaxExtraIsDefault:true MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavail
+        --- FAIL: TestResolveRolloutPacing/stateful_defaults_replace_in_place (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(stateful, 1) = {MaxUnavailable:0 MaxExtra:1 MaxUnavailableIsDefault:true MaxExtraIsDefault:true MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavaila
+        --- FAIL: TestResolveRolloutPacing/per-node_defaults_replace_in_place (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(per-node, 8) = {MaxUnavailable:2 MaxExtra:2 MaxUnavailableIsDefault:true MaxExtraIsDefault:true MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavaila
+        --- FAIL: TestResolveRolloutPacing/stateful_ignores_an_explicit_max_extra (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(stateful, 3) = {MaxUnavailable:0 MaxExtra:2 MaxUnavailableIsDefault:true MaxExtraIsDefault:false MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavail
+        --- FAIL: TestResolveRolloutPacing/per-node_explicit_max_unavailable_0_is_forced_to_1 (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(per-node, 3) = {MaxUnavailable:0 MaxExtra:1 MaxUnavailableIsDefault:false MaxExtraIsDefault:true MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavail
+        --- FAIL: TestResolveRolloutPacing/per-node_explicit_max_unavailable_2_kept (0.00s)
+            rollout_pacing_test.go:59: ResolveRolloutPacing(per-node, 8) = {MaxUnavailable:2 MaxExtra:2 MaxUnavailableIsDefault:false MaxExtraIsDefault:true MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavail
+    $ go test ./api/ -run 'TestDescribeServiceShowsKindPacing|TestApplyWarnsForIgnoredMaxExtra' -count=1
+    --- FAIL: TestApplyWarnsForIgnoredMaxExtra (0.00s)
+        apply_max_extra_warning_test.go:24: direct: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: direct: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: direct: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: direct: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: policy-gate: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: policy-gate: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: policy-gate: apply answer {"ok":true,"facts_set":8}
+        apply_max_extra_warning_test.go:24: policy-gate: apply answer {"ok":true,"facts_set":8}
+    --- FAIL: TestDescribeServiceShowsKindPacing (0.00s)
+        describe_pacing_kind_test.go:40: update strategy = &{MaxUnavailable:0 MaxExtra:2 MaxUnavailableIsDefault:false MaxExtraIsDefault:false MaxUnavailableForced:false MaxExtraIgnored:false}, want {MaxUnavailable:1 MaxExtra:0 MaxUnavailableIsDefault:false MaxExt
+    $ go test ./cmd/k8s-to-cca/ -run TestConvertRollingUpdateKeepsExplicitZero -count=1
+    --- FAIL: TestConvertRollingUpdateKeepsExplicitZero (0.00s)
+        rolling_update_zero_test.go:37: max_unavailable = &{MaxUnavailable:<nil> MaxExtra:0x11f7b03ddbf8 ProgressDeadline: MinHealthyTime:}, want an explicit 0
+    ```
+    The red run confirms each finding: H3 created ordinal `db-1`; H2 left a 4th instance pending forever, and with 8 nodes the deadline rolled the good image back; H1's rollback stayed in `rollback` with both b instances; M1 created a second instance and scaled the first down.
+    Already passing before the fix, as expected: the instance-controller case "stateless with old instances surges" and the pre-existing stateless pacing cases.
+- [x] 2d.1 H2/H3: pacing defaults by kind (stateful, per-node: 1/0, never surge; explicit `max_extra` ignored with an apply warning); `ResolveRolloutPacing` gets the kind; the instance controller adds no surge for these kinds.
+  - `ResolveRolloutPacing(kind, …)`: for stateful and per-node services the defaults are 1/0. `max_extra` is always 0 for them, and `MaxExtraIgnored` is set for an explicit non-zero value. An explicit `max_unavailable` keeps its value. Both 0 → 1, now marked `MaxUnavailableForced`.
+    - `types.WorkloadKindOf(stateful, placementMode)` decides the kind, with stateful winning when both are set. The rollout controller reads it with `extractWorkloadKinds`, from effective `stateful` and `placement_mode`. Describe reads it with `readServiceWorkloadKind`, using the effective placement mode, else the desired one.
+    - The instance controller adds no surge for stateful or per-node services (see 2d.3 for the old-instance condition).
+    - `cca apply` warns with `collectIgnoredMaxExtraWarnings` (api/apply_max_extra_warning.go, called from `applyInstanceLimitCheck.inspect`, on both apply paths): `service db: update { max_extra 2 } is ignored: stateful services never surge, they replace one instance at a time`.
+- [x] 2d.2 H1: in `rollback`/`stalled` the effective max_unavailable is at least 1 and no surge is used.
+  - `advanceRollout` raises the stop budget to `rolloutMinimumRollbackMaxUnavailable` (1) when the state is not `rolling`. The rollback already deletes `surge_allowance`, and the instance controller no longer adds one once no old instance remains.
+- [x] 2d.3 M1: surge only while old-image instances remain; `surge_allowance` deleted when the last old instance is stopped.
+  - Instance controller: the surge is added only when `hasOldImageInstances` (instance.go) finds an active instance whose merged image (recorded, else observed) differs from the desired image.
+    - Rollout: `countOldInstancesLeftAfterStops == 0` deletes `surge_allowance` in the pass that stops the last old instance, and in any later pass where it is still stored. Old instances on a lost node do not count, since the failure controller replaces them.
+    - `TestInstanceControllerRespectsSurgeAllowance` (existing): its instances had no image, so they are not old instances under D14. They now run `nginx:1.27` with the desired image `nginx:1.28`, deliberately.
+- [x] 2d.4 L1 remove dead `stopWritten`; L5 budget-reason and describe wording; L6 retarget after revert uses the current target as known good; L3 k8s-to-cca keeps explicit zeros (percentages stay as they are, pre-existing, note it); L2 document in dsl-reference.md; L4 graphs (OBSERVABILITY_GRAPH.md `stopAndReplace`, INSTANCE_LIFECYCLE_GRAPH.md calls, `ReadValueOrEmpty`, `readOptionalIntegerFact`, `describePacingDefaultNote`); L7 move the agent test assertions into `waitFor`.
+  - L1: `stopWritten` removed (field, extraction, stop-plan case).
+    - L5: the reason is `max_unavailable 0: waiting for an extra instance to become healthy` when the budget is 0 by configuration. `cca describe service` says `(raised to 1: with max_extra 0 the rollout could not move)`, `(update { max_extra } ignored: stateful services never surge)`, or `(default for stateful services)` / `(default: 25% …)`, via `describeMaxUnavailableNote` and `describeMaxExtraNote`, which replace `describePacingDefaultNote`.
+    - L6: a retarget without `previous_image` uses the stored `target_image` as known good.
+    - L3: k8s-to-cca keeps any `maxUnavailable` / `maxSurge` present in the YAML, 0 included. Percentages still convert to their bare number (pre-existing bug, left as is, noted in a comment).
+    - L2: documented in dsl-reference.md. **Deviation from D14's wording:** the code does not do what D14 says. `cca apply` (`WriteCompiledFacts`) writes facts and prunes only gate facts, so removing a field from `update {}` never restores its default on a later apply. The stored value stays until the service is deleted and applied again, and the same holds for the implicit 1/1 that older servers compiled for every `update` block. The doc says so; the design note should be corrected (main session).
+    - L4: OBSERVABILITY_GRAPH.md `stopAndReplace` (:409, image argument) and INSTANCE_LIFECYCLE_GRAPH.md (both other `stopAndReplace` calls, all §1 instance-controller line numbers, the surge condition) are updated. The CONTROLLER_DATA_FLOW_GRAPH.md rollout section has a new "Read side (API and CLI)" block with `ReadValueOrEmpty`, `readServiceWorkloadKind`, `readOptionalIntegerFact`, the describe note functions and both apply warnings.
+    - L7: the three agent tests assert inside `waitFor`. The no-start check fails at once inside the condition.
+- [x] 2d.5 Docs: D14 in Flow 34, CONTROLLER_DATA_FLOW_GRAPH.md, dsl-reference.md defaults table by kind.
+  - Flow 34: pacing by kind, rollback ≥ 1, the surge rule, retarget after a revert, the `max_unavailable 0` reason, and a "Kinds" bullet. CONTROLLER_DATA_FLOW_GRAPH.md: rollout section rewritten (kinds, rollback minimum, surge delete, line numbers, read side, the instance controller's surge condition). dsl-reference.md: defaults table by kind, rollback, surge lifetime, removed fields. etcd-schema.md: `surge_allowance` lifetime.
+- [x] 2d.6 Checks as in 3.1; paste results.
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ -count=1
+    ok  	github.com/boyadzhievb/ccattler/controllers	5.243s
+    ok  	github.com/boyadzhievb/ccattler/agent	28.249s
+    ok  	github.com/boyadzhievb/ccattler/types	0.061s
+    ok  	github.com/boyadzhievb/ccattler/api	9.190s
+    ok  	github.com/boyadzhievb/ccattler/integration	8.213s
+    ok  	github.com/boyadzhievb/ccattler/lang	0.061s
+    ok  	github.com/boyadzhievb/ccattler/tenant	0.074s
+    ok  	github.com/boyadzhievb/ccattler/cmd/cca	6.804s
+    ok  	github.com/boyadzhievb/ccattler/cmd/k8s-to-cca	0.010s
+    ok  	github.com/boyadzhievb/ccattler/store	1.622s
+    $ go test ./agent/ -race -count=3 -run "TestAgentSkipsStartWhenRecordedImageUnreadable|TestAgentResetsReadinessOnStart|TestAgentKeepsLastExitAfterRestart|TestAgentRecordsStartedAtOnEveryStart"
+    ok  	github.com/boyadzhievb/ccattler/agent	2.165s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController|TestFailure"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.244s
+    $ go test ./integration/ -race -count=3 -run "TestRollingUpdateGraduallyReplacesInstances|TestRollbackOnHealthFailure"
+    ok  	github.com/boyadzhievb/ccattler/integration	1.741s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    exit 0 (20 packages ok, 0 failures)
+    (gofmt and golangci-lint rerun after `gofmt -w controllers/rollout_loop_test.go`, a whitespace-only fix the first run found; the controller package tests were run again after it:)
+    $ go test ./controllers/ -count=1
+    ok  	github.com/boyadzhievb/ccattler/controllers	5.218s
+    ```
 
 ## 4. Testbed and review (main session)
 

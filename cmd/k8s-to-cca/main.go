@@ -422,13 +422,16 @@ func extractRollingUpdateStrategy(deploymentSpec map[string]interface{}) *lang.U
 	if !isMap {
 		return nil
 	}
+	// A value given in the YAML, 0 included, stays explicit; a missing one is
+	// left unset for the rollout defaults (M241 D12). A percentage still
+	// converts to its number, as before.
 	updateDecl := &lang.UpdateDecl{}
-	maxUnavailable := extractIntOrPercentAsInt(rollingMap, "maxUnavailable")
-	maxSurge := extractIntOrPercentAsInt(rollingMap, "maxSurge")
-	if maxUnavailable > 0 {
+	if _, hasMaxUnavailable := rollingMap["maxUnavailable"]; hasMaxUnavailable {
+		maxUnavailable := extractIntOrPercentAsInt(rollingMap, "maxUnavailable")
 		updateDecl.MaxUnavailable = &maxUnavailable
 	}
-	if maxSurge > 0 {
+	if _, hasMaxSurge := rollingMap["maxSurge"]; hasMaxSurge {
+		maxSurge := extractIntOrPercentAsInt(rollingMap, "maxSurge")
 		updateDecl.MaxExtra = &maxSurge
 	}
 	if updateDecl.MaxUnavailable == nil && updateDecl.MaxExtra == nil {

@@ -40,12 +40,12 @@ func TestAgentSkipsStartWhenRecordedImageUnreadable(t *testing.T) {
 	failingStore.failGets.Store(true)
 	ctx := startImageTestAgent(t, failingStore, "skip1")
 
-	waitFor(t, crashLoopTestTimeout, "three cycles with an unreadable recorded image, or a start", func() bool {
-		return failingStore.failedGetCount.Load() >= 3 || readFactValue(ctx, memoryStore, types.KeyObservedInstanceImage("skip1")) != ""
+	waitFor(t, crashLoopTestTimeout, "three cycles with an unreadable recorded image and no start", func() bool {
+		if startedImage := readFactValue(ctx, memoryStore, types.KeyObservedInstanceImage("skip1")); startedImage != "" {
+			t.Fatalf("agent started %q while the recorded image could not be read, want no start", startedImage)
+		}
+		return failingStore.failedGetCount.Load() >= 3
 	})
-	if startedImage := readFactValue(ctx, memoryStore, types.KeyObservedInstanceImage("skip1")); startedImage != "" {
-		t.Fatalf("agent started %q while the recorded image could not be read, want no start", startedImage)
-	}
 	failingStore.failGets.Store(false)
 	waitFor(t, crashLoopTestTimeout, "instance running with its recorded image", func() bool {
 		return readFactValue(ctx, memoryStore, types.KeyObservedInstanceState("skip1")) == string(types.InstanceRunning) &&
@@ -63,12 +63,10 @@ func TestAgentResetsReadinessOnStart(t *testing.T) {
 		t.Fatal(putError)
 	}
 	ctx := startImageTestAgent(t, factStore, "ready1")
-	waitFor(t, crashLoopTestTimeout, "instance running", func() bool {
-		return readFactValue(ctx, factStore, types.KeyObservedInstanceState("ready1")) == string(types.InstanceRunning)
+	waitFor(t, crashLoopTestTimeout, "instance running without the readiness result from before its start", func() bool {
+		return readFactValue(ctx, factStore, types.KeyObservedInstanceState("ready1")) == string(types.InstanceRunning) &&
+			readFactValue(ctx, factStore, readinessKey) == ""
 	})
-	if readiness := readFactValue(ctx, factStore, readinessKey); readiness != "" {
-		t.Errorf("readiness after the start = %q, want none until the probe passes again", readiness)
-	}
 }
 
 // TestAgentKeepsLastExitAfterRestart: testbed 4.1 finding (a). The last exit
@@ -77,11 +75,9 @@ func TestAgentKeepsLastExitAfterRestart(t *testing.T) {
 	crashRuntime := newCrashingRuntime()
 	crashRuntime.stableFromStartNumber = 2
 	_, factStore, ctx := startCrashLoopTestAgent(t, "exit1", crashLoopTestBaseDelay, crashRuntime)
-	waitFor(t, crashLoopTestTimeout, "instance running again after one exit", func() bool {
+	waitFor(t, crashLoopTestTimeout, "instance running again after one exit, last_exit still \"exited with code 1\"", func() bool {
 		return len(crashRuntime.startsOf("exit1")) >= 2 &&
-			readFactValue(ctx, factStore, types.KeyObservedInstanceState("exit1")) == string(types.InstanceRunning)
+			readFactValue(ctx, factStore, types.KeyObservedInstanceState("exit1")) == string(types.InstanceRunning) &&
+			readFactValue(ctx, factStore, types.KeyObservedInstanceLastExit("exit1")) == "exited with code 1"
 	})
-	if lastExit := readFactValue(ctx, factStore, types.KeyObservedInstanceLastExit("exit1")); lastExit != "exited with code 1" {
-		t.Errorf("last_exit after the restart = %q, want \"exited with code 1\"", lastExit)
-	}
 }

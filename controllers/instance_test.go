@@ -550,14 +550,20 @@ func TestInstanceControllerRespectsSurgeAllowance(t *testing.T) {
 	instanceController := NewInstanceController()
 	instanceController.NewID = func() string { return "new-inst" }
 
+	// The instances still run the old image: a surge applies only while old
+	// instances remain (M241 D14).
 	inputFacts := []store.Fact{
 		{Key: types.KeyEffectiveServiceInstances("web"), Value: []byte("3")},
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
 		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
 		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-1"), Value: []byte("nginx:1.27")},
 		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
 		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-2"), Value: []byte("nginx:1.27")},
 		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
 		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-3"), Value: []byte("nginx:1.27")},
 		// Surge allowance of 2 from rolling update.
 		{Key: types.KeyDerivedServiceRolloutSurgeAllowance("web"), Value: []byte("2")},
 	}

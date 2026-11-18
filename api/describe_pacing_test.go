@@ -35,7 +35,7 @@ func TestDescribeServiceShowsEffectivePacing(t *testing.T) {
 	if serviceDescribe.UpdateStrategy == nil {
 		t.Fatal("describe has no update strategy")
 	}
-	wantStrategy := DescribeUpdateStrategy{MaxUnavailable: "3", MaxExtra: "2", MaxExtraIsDefault: true}
+	wantStrategy := DescribeUpdateStrategy{MaxUnavailable: "3", MaxExtra: "2", MaxExtraIsDefault: true, WorkloadKind: "stateless"}
 	if *serviceDescribe.UpdateStrategy != wantStrategy {
 		t.Errorf("update strategy = %+v, want %+v", *serviceDescribe.UpdateStrategy, wantStrategy)
 	}

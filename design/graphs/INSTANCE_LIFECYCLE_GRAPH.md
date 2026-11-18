@@ -9,15 +9,11 @@ why an instance is stuck in any state without reading source.
 ### InstanceController.Reconcile → entry point
 ```
 InstanceController.Reconcile(ctx, facts)                     :80
-├── parseEffectiveServiceFacts(facts)                        :314
+├── parseEffectiveServiceFacts(facts)                        :317
 │   └── FOR EACH effective/service/{svc}/ fact:
 │       ├── suffix "instances" → desiredCounts[svc]
 │       ├── suffix "stateful"  → statefulServices[svc]
 │       └── suffix "placement_mode" → perNodeServices[svc]
-│
-├── extractSurgeAllowances(facts)                            :344
-│   └── reads derived/service/{svc}/rollout/surge_allowance
-│       → desiredCounts[svc] += surgeCount
 │
 ├── parseInstanceFieldsFromFacts(facts)                      [helpers.go:160]
 │   └── scans observed/instance/ + derived/instance/
@@ -26,47 +22,52 @@ InstanceController.Reconcile(ctx, facts)                     :80
 ├── instanceCreationFacts{extractDesiredImages(facts), fields}  [M241 D1, D2]
 │   └── reads desired/service/{svc}/image  [rollout_facts.go]
 │
-├── buildInstanceMapsFromFields(fieldsByInstanceID)           :363
+├── extractSurgeAllowances(facts)                            :359
+│   └── reads derived/service/{svc}/rollout/surge_allowance
+│       → desiredCounts[svc] += surgeCount, only for a service that is neither
+│         stateful nor per-node and hasOldImageInstances :348 (M241 D14)
+│
+├── buildInstanceMapsFromFields(fieldsByInstanceID)           :378
 │   ├── effectiveInstanceState(fields)                       [helpers.go:198]
 │   │   ├── controller_stopped == "true" → InstanceStopped
 │   │   ├── node_failure == "true"       → InstanceFailed
 │   │   └── else                         → observed state
 │   └── → stateByInstanceID, serviceByInstanceID
 │
-├── buildActiveInstanceIDsByService(...)                      :379
+├── buildActiveInstanceIDsByService(...)                      :394
 │   └── groups non-stopped IDs by service, sorted
 │
-├── reconcileScaleDowns(...)                                 :135
+├── reconcileScaleDowns(...)                                 :138
 │   └── FOR EACH service where haveCount > wantCount:
-│       ├── perNodeServices → markPerNodeExcessInstancesAsStopped  :562
+│       ├── perNodeServices → markPerNodeExcessInstancesAsStopped  :565
 │       │   └── priority: failedNode > pending > running
-│       ├── statefulServices → stopHighestOrdinalInstances         :471
+│       ├── statefulServices → stopHighestOrdinalInstances         :486
 │       │   └── reverse ordinal order, writes controller_stopped
-│       └── default → markExcessStatelessInstancesAsStopped        :535
-│           └── selectInstancesForRemoval(pending first)           :604
+│       └── default → markExcessStatelessInstancesAsStopped        :538
+│           └── selectInstancesForRemoval(pending first)           :607
 │               → writes derived/instance/{id}/controller_stopped
 │
-├── computeServiceDeficits(...)                              :178
+├── computeServiceDeficits(...)                              :181
 │   └── FOR EACH service where haveCount < wantCount:
-│       ├── stateful → createNextStatefulInstance             :425
+│       ├── stateful → createNextStatefulInstance             :440
 │       │   └── ordered startup: N+1 only after N is running
 │       │       clears stale controller_stopped / node_failure and the previous
 │       │       incarnation's restarts, created-at, started_at, last_exit, probe/*
 │       └── stateless → deficit = wantCount - haveCount
 │
-└── allocateCreationsFairly(deficits, ...)                   :213
+└── allocateCreationsFairly(deficits, ...)                   :216
     ├── baseShare = budget / serviceCount, cap at deficit
     ├── remainder slots → largest unmet demand first
-    ├── stateful → createNextStatefulInstance                 :425
+    ├── stateful → createNextStatefulInstance                 :440
     │   ├── writes observed/instance/{svc}-{ord}/*
-    │   └── buildIncarnationChanges                          :513  (same group)
-    └── stateless → createPendingInstances                   :488
+    │   └── buildIncarnationChanges                          :528  (same group)
+    └── stateless → createPendingInstances                   :503
         └── FOR EACH count:
             └── writes grouped (instance-create/{id}):
                 ├── observed/instance/{id}        = ""
                 ├── observed/instance/{id}/service = serviceName
                 ├── observed/instance/{id}/state   = "pending"
-                └── buildIncarnationChanges                   :513  [M241 D1, D2, D13, B4]
+                └── buildIncarnationChanges                   :528  [M241 D1, D2, D13, B4]
                     └── buildInstanceIncarnationChanges       [instance_incarnation.go:34]
                         ├── derived/instance/{id}/image = desired/service/{svc}/image (when set)
                         └── DELETE stale observed/instance/{id}/{restarts,created-at,started_at,
@@ -418,7 +419,7 @@ FailureController.Reconcile(ctx, facts)                      :163
 │       │   └── stopAndReplace(instanceID, serviceName, image) :409
 │       │
 │       ├── IF state == Running AND startup == "failed":
-│       │   └── stopAndReplace(instanceID, serviceName)
+│       │   └── stopAndReplace(instanceID, serviceName, image) :409
 │       │
 │       ├── IF draining AND liveness recovered:
 │       │   └── clearDrainState(instanceID)                  :399
@@ -431,7 +432,7 @@ FailureController.Reconcile(ctx, facts)                      :163
 │               │       ├── PUT drain_readiness = "not-ready"
 │               │       └── PUT drain_since = now.UnixMilli
 │               └── IF drain_since + grace period elapsed:
-│                   └── stopAndReplace(instanceID, svc)
+│                   └── stopAndReplace(instanceID, svc, image) :409
 │
 ├── FOR EACH service with replacements this cycle:
 │   └── PUT derived/crash-loop/{svc} = {count+N, since=now}

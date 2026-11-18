@@ -153,6 +153,9 @@ type DescribeUpdateStrategy struct {
 	MaxExtra                string `json:"max_extra"`                         // MaxExtra is the effective max_extra.
 	MaxUnavailableIsDefault bool   `json:"max_unavailable_default,omitempty"` // MaxUnavailableIsDefault is true when update { max_unavailable } is unset (M241 D12).
 	MaxExtraIsDefault       bool   `json:"max_extra_default,omitempty"`       // MaxExtraIsDefault is true when update { max_extra } is unset (M241 D12).
+	MaxUnavailableForced    bool   `json:"max_unavailable_forced,omitempty"`  // MaxUnavailableForced is true when max_unavailable was raised to 1 so a rollout can move (D14).
+	WorkloadKind            string `json:"workload_kind"`                     // WorkloadKind is stateless, stateful or per-node, which decides the defaults (D14).
+	MaxExtraIgnored         bool   `json:"max_extra_ignored,omitempty"`       // MaxExtraIgnored is true when an explicit max_extra is ignored: stateful and per-node services never surge (D14).
 }
 
 // DescribeRollout shows the current rollout state for a service.
@@ -498,8 +501,9 @@ func buildServiceAutoscaling(ctx context.Context, factStore store.StateStore, se
 }
 
 // buildServiceUpdateStrategy returns the effective rollout pace: the update
-// block's max_unavailable and max_extra, or their 25 % defaults for the
-// expected instance count, capped by the disruption budget (M241 D12).
+// block's max_unavailable and max_extra, or the defaults of the service's kind
+// for the expected instance count, capped by the disruption budget (M241 D12,
+// D14), with the forced and ignored values marked.
 func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore, serviceName string) *DescribeUpdateStrategy {
 	desiredCount, _ := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServiceInstances(serviceName)))
 	expectedCount := desiredCount
@@ -508,7 +512,8 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 	}
 	budgetMinAvailable, _ := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServiceDisruptionMinAvailable(serviceName)))
 	budgetMaxUnavailable, _ := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServiceDisruptionMaxUnavailable(serviceName)))
-	pacing := types.ResolveRolloutPacing(expectedCount,
+	workloadKind := readServiceWorkloadKind(ctx, factStore, serviceName)
+	pacing := types.ResolveRolloutPacing(workloadKind, expectedCount,
 		readOptionalIntegerFact(ctx, factStore, types.KeyDesiredServiceUpdateMaxUnavailable(serviceName)),
 		readOptionalIntegerFact(ctx, factStore, types.KeyDesiredServiceUpdateMaxExtra(serviceName)),
 	).CappedByDisruptionBudget(budgetMinAvailable, budgetMaxUnavailable, desiredCount)
@@ -517,7 +522,22 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 		MaxExtra:                strconv.Itoa(pacing.MaxExtra),
 		MaxUnavailableIsDefault: pacing.MaxUnavailableIsDefault,
 		MaxExtraIsDefault:       pacing.MaxExtraIsDefault,
+		MaxUnavailableForced:    pacing.MaxUnavailableForced,
+		WorkloadKind:            string(workloadKind),
+		MaxExtraIgnored:         pacing.MaxExtraIgnored,
 	}
+}
+
+// readServiceWorkloadKind returns the service's kind from its effective
+// stateful flag and placement mode (the desired mode when no effective one is
+// stored yet), which decides its rollout defaults (M241 D14).
+func readServiceWorkloadKind(ctx context.Context, factStore store.StateStore, serviceName string) types.WorkloadKind {
+	placementMode := store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServicePlacementMode(serviceName))
+	if placementMode == "" {
+		placementMode = store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServicePlacementMode(serviceName))
+	}
+	isStateful := store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServiceStateful(serviceName)) == "true"
+	return types.WorkloadKindOf(isStateful, placementMode)
 }
 
 // readOptionalIntegerFact returns the integer stored at factKey, or nil when it
