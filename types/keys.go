@@ -363,6 +363,14 @@ func KeyObservedInstanceExitReason(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/exit-reason", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstanceLastExit returns the store path for how the instance's
+// container last exited ("exited with code 1", or the process start error).
+// Unlike exit-reason it is kept after the restart, for the rollback reason (M241).
+// Path: observed/instance/{instanceID}/last_exit
+func KeyObservedInstanceLastExit(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/last_exit", PrefixObserved, instanceID)
+}
+
 // KeyObservedInstanceIP returns the store path for an instance's assigned IP address.
 // Path: observed/instance/{instanceID}/ip
 func KeyObservedInstanceIP(instanceID string) string {
@@ -1693,6 +1701,14 @@ func KeyDerivedServiceRolloutRollbackReason(name string) string {
 // Path: derived/service/{name}/rollout/progress_at
 func KeyDerivedServiceRolloutProgressAt(name string) string {
 	return fmt.Sprintf("%s/service/%s/rollout/progress_at", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutStartedAt returns the store path for the RFC 3339 time
+// the rollout (or its rollback) started: only new-image instances created from
+// then on count as its failures (M241 D13).
+// Path: derived/service/{name}/rollout/started_at
+func KeyDerivedServiceRolloutStartedAt(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/started_at", PrefixDerived, name)
 }
 
 // KeyDerivedServiceRolloutRunningNew returns the store path for the number of

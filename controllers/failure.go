@@ -45,10 +45,11 @@ type crashLoopCounter struct {
 
 // defaultMaxReplacementsPerCycle limits how many failed instances the
 // FailureController replaces in a single reconciliation cycle. Each
-// replacement emits 4 store operations, so 14 replacements = 56 ops —
-// near the 58-change hard cap. Remaining failures converge in
-// subsequent cycles via watch re-trigger.
-const defaultMaxReplacementsPerCycle = 14
+// replacement emits 5 store operations (stop marker, replacement marker,
+// service, state, recorded image), so 11 replacements = 55 ops — near the
+// 58-change hard cap. Remaining failures converge in subsequent cycles via
+// watch re-trigger.
+const defaultMaxReplacementsPerCycle = 11
 
 // defaultMaxDrainsPerCycle limits how many instances the FailureController
 // begins draining in a single reconciliation cycle. Each drain emits 2
@@ -142,11 +143,12 @@ func NewFailureController() *FailureController {
 // bookkeeping.
 func (failureController *FailureController) Name() string { return "failure" }
 
-// Watch returns the fact prefix for observed instances, which is the only
-// prefix the failure controller needs to detect failed instances and drain
-// timestamps.
+// Watch returns the fact prefixes the failure controller needs: observed and
+// derived instances (failed instances, drain timestamps), crash-loop counters,
+// and desired services (the image each replacement records, M241 D1).
 func (failureController *FailureController) Watch() []string {
 	return []string{
+		types.ScanDesiredServices,
 		types.ScanObservedInstances,
 		types.ScanDerivedInstances,
 		types.ScanDerivedCrashLoops,
@@ -166,6 +168,7 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	var changes []Change
 	cycleCounters := &failureCycleCounters{
 		replacedServices: make(map[string]int),
+		desiredImages:    extractDesiredImages(facts),
 	}
 
 	failedServiceNames := make(map[string]bool)
@@ -219,12 +222,14 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 }
 
 // failureCycleCounters tracks how many of each action type have been emitted
-// in the current reconciliation cycle to enforce per-type caps.
+// in the current reconciliation cycle to enforce per-type caps, and carries
+// the desired images every replacement of the cycle records.
 type failureCycleCounters struct {
-	replacements     int
-	drains           int
-	recoveries       int
-	replacedServices map[string]int // per-service replacement count for crash-loop tracking
+	replacements     int               // replacements counts the replacements of the cycle.
+	drains           int               // drains counts the drains begun in the cycle.
+	recoveries       int               // recoveries counts the drains cleared in the cycle.
+	replacedServices map[string]int    // replacedServices is the per-service replacement count for crash-loop tracking.
+	desiredImages    map[string]string // desiredImages maps service name to desired image, recorded on each replacement (M241 D1).
 }
 
 // processInstanceForRecovery evaluates a single instance and returns changes
@@ -276,7 +281,7 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 		counters.replacedServices[serviceName]++
 		logging.Default().Info("replacing failed instance",
 			"instance", instanceID, "service", serviceName, "reason", "runtime_crash")
-		return failureController.stopAndReplace(instanceID, serviceName)
+		return failureController.stopAndReplace(instanceID, serviceName, counters.desiredImages[serviceName])
 	}
 
 	if instanceState != types.InstanceRunning {
@@ -291,7 +296,7 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 		counters.replacedServices[serviceName]++
 		logging.Default().Warn("replacing instance with failed startup probe",
 			"instance", instanceID, "service", serviceName, "reason", "startup_probe_failed")
-		return failureController.stopAndReplace(instanceID, serviceName)
+		return failureController.stopAndReplace(instanceID, serviceName, counters.desiredImages[serviceName])
 	}
 
 	drainSince := fields["drain_since"]
@@ -335,7 +340,7 @@ func (failureController *FailureController) handleUnhealthyLiveness(instanceID s
 		counters.replacements++
 		logging.Default().Warn("replacing instance with corrupt drain timestamp",
 			"instance", instanceID, "service", serviceName)
-		return failureController.stopAndReplace(instanceID, serviceName)
+		return failureController.stopAndReplace(instanceID, serviceName, counters.desiredImages[serviceName])
 	}
 	drainStartTime := time.UnixMilli(drainStartMillis)
 	drainDuration := now.Sub(drainStartTime)
@@ -347,7 +352,7 @@ func (failureController *FailureController) handleUnhealthyLiveness(instanceID s
 		logging.Default().Info("drain grace period elapsed, replacing instance",
 			"instance", instanceID, "service", serviceName,
 			"drained_for", drainDuration.String())
-		return failureController.stopAndReplace(instanceID, serviceName)
+		return failureController.stopAndReplace(instanceID, serviceName, counters.desiredImages[serviceName])
 	}
 	return nil
 }
@@ -399,15 +404,18 @@ func (failureController *FailureController) clearDrainState(instanceID string) [
 }
 
 // stopAndReplace marks a failed instance via derived/ and creates a grouped
-// pending replacement in observed/ for the same service.
-func (failureController *FailureController) stopAndReplace(instanceID string, serviceName string) []Change {
+// pending replacement in observed/ for the same service, recording the
+// service's desired image for it as the instance controller does (M241 D1).
+func (failureController *FailureController) stopAndReplace(instanceID string, serviceName string, desiredImage string) []Change {
 	replacementID := failureController.NewID()
-	return groupedChanges("replace/"+instanceID,
+	groupID := "replace/" + instanceID
+	replacementChanges := groupedChanges(groupID,
 		Change{Type: store.OpPut, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Value: []byte("true")},
 		Change{Type: store.OpPut, Key: types.KeyObservedInstance(replacementID), Value: []byte("")},
 		Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(replacementID), Value: []byte(serviceName)},
 		Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(replacementID), Value: []byte(string(types.InstancePending))},
 	)
+	return append(replacementChanges, buildInstanceIncarnationChanges(groupID, replacementID, desiredImage, nil)...)
 }
 
 // calculateCrashLoopBackoff returns the backoff delay for a given crash count.

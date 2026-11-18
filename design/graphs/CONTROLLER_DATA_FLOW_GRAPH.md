@@ -188,8 +188,8 @@ EndpointController.Reconcile(ctx, facts)                     :54
 
 See INSTANCE_LIFECYCLE_GRAPH.md §5 for full call tree.
 
-**Watch:** `observed/instance/`, `derived/instance/`, `derived/crash-loop/`
-**Writes:** `derived/instance/{id}/controller_stopped`, `derived/instance/{id}/drain_readiness`, `derived/instance/{id}/drain_since`, `derived/crash-loop/{svc}`, `observed/instance/{replacementID}/*`
+**Watch:** `desired/service/` (the image a replacement records, M241 B1), `observed/instance/`, `derived/instance/`, `derived/crash-loop/`
+**Writes:** `derived/instance/{id}/controller_stopped`, `derived/instance/{id}/drain_readiness`, `derived/instance/{id}/drain_since`, `derived/crash-loop/{svc}`, `observed/instance/{replacementID}/*`, `derived/instance/{replacementID}/image`
 
 ---
 
@@ -216,76 +216,84 @@ See INSTANCE_LIFECYCLE_GRAPH.md §7 for full call tree.
 Flow 34 (M241). Behaviour: `openspec/specs/service-rollout`.
 
 ```
-RolloutController.Reconcile(ctx, facts)                      :81
-├── extractRolloutClusterFacts(facts)                        [rollout_facts.go:155]
-│   ├── extractDesiredImages                                 :214  desired/service/{svc}/image
-│   ├── extractUpdatePolicies                                :235  update/{max_unavailable,max_extra,progress_deadline,min_healthy_time}
-│   │   ├── newDefaultUpdatePolicy                           :228  10m deadline, 10s min_healthy_time
-│   │   └── parseUpdatePolicyInteger                         :273
-│   ├── extractInstancesByService                            :286  sorted by ID
+RolloutController.Reconcile(ctx, facts)                      :77
+├── extractRolloutClusterFacts(facts)                        [rollout_facts.go:160]
+│   ├── extractDesiredImages                                 :217  desired/service/{svc}/image
+│   ├── extractUpdatePolicies                                :238  update/{max_unavailable,max_extra,progress_deadline,min_healthy_time}
+│   │   ├── newDefaultUpdatePolicy                           :231  10m deadline, 10s min_healthy_time, pace unset
+│   │   └── parseUpdatePolicyInteger                         :276  explicit max_unavailable / max_extra (nil = unset)
+│   ├── extractInstancesByService                            :289  sorted by ID
 │   │   ├── observed/instance/{id}/{service,state,image,restarts,status-reason,exit-reason,
-│   │   │   started_at,probe/readiness}
+│   │   │   started_at,created-at,last_exit,probe/readiness}
 │   │   │   derived/instance/{id}/{image (shadows observed image),node_failure,controller_stopped}
-│   │   └── parseInstanceStartedAt                           :315  zero when missing or corrupt
-│   ├── extractRolloutFields                                 :413  derived/service/{svc}/rollout/* (history excluded)
-│   ├── extractRolloutDisruptionBudgets                      :350
-│   ├── extractDesiredInstanceCounts                         :383  desired/service/{svc}/instances
-│   ├── effective/service/{svc}/instances (completion count)
-│   ├── extractRolloutPausedServices                         :433  desired/service/{svc}/rollout/paused
-│   ├── extractReadinessProbedServices                       :329  desired/service/{svc}/probe/readiness/*
+│   │   └── parseInstanceTimestamp                           :321  started_at, created-at; zero when missing or corrupt
+│   ├── extractRolloutFields                                 :395  derived/service/{svc}/rollout/* (history excluded)
+│   ├── extractRolloutDisruptionBudgets                      :356
+│   ├── extractDesiredInstanceCounts                         :389  desired/service/{svc}/instances
+│   ├── effective/service/{svc}/instances (expected count)
+│   ├── extractRolloutPausedServices                         :415  desired/service/{svc}/rollout/paused
+│   ├── extractReadinessProbedServices                       :335  desired/service/{svc}/probe/readiness/*
 │   └── extractUnplacedDemand                                [clusterscale.go]  derived/scheduler/unplaced/{id}/{reason,requirements}
 │
 └── FOR EACH service (sorted) with instances:
-    buildServiceInput(svc, now)                              [rollout_facts.go:172]
-    │   ├── applyDisruptionBudgetToUpdatePolicy              :390
+    buildServiceInput(svc, now)                              [rollout_facts.go:178]
+    │   ├── expected = effective instances, else desired
+    │   ├── types.ResolveRolloutPacing(expected, explicit…)  [types/rollout_pacing.go]  unset: 25 % down (floor),
+    │   │   25 % up (ceil); both 0 → max_unavailable 1 (D12)
+    │   ├── RolloutPacing.CappedByDisruptionBudget           [types/rollout_pacing.go]
     │   └── healthRule = {min_healthy_time, readiness probe declared, now}
-    reconcileServiceRollout(input)                           :97
-    ├── classifyRolloutInstances(instances, desiredImage, healthRule) [rollout_plan.go:69]
-    │   ├── rolloutHealthRule.evaluate(instance)             [rollout_plan.go:36]
+    reconcileServiceRollout(input)                           :95
+    ├── classifyRolloutInstances(…, rollout/started_at)      [rollout_plan.go:81]  (again after tracking starts)
+    │   ├── rolloutHealthRule.evaluate(instance)             [rollout_plan.go:47]
     │   │   → healthy = running ∧ now − started_at ≥ min_healthy_time (no started_at: ok)
-    │   │     ∧ (no readiness probe ∨ probe/readiness = ready); else what it waits for (D10)
-    │   → old / new, healthyNew, failures (restarts + failed, node_failure skipped),
-    │     unavailable new IDs (isUnavailableForRollout :123)
+    │   │     ∧ (no readiness probe ∨ probe/readiness = ready); else "until HH:MM:SS UTC" or readiness (D10)
+    │   ├── old healthy = running (D11)
+    │   └── isCreatedSince(instance, started_at)             [rollout_plan.go:117]
+    │       → failures = Σ weight of new instances created since started_at − 30 s
+    │         (no started_at or created-at: counted), node_failure skipped (D3, D13)
     ├── state none/complete/rolled-back + old exists, or desired ≠ target_image:
-    │   └── beginRolloutTowardDesiredImage                   :204
-    │       ├── mostCommonImage(old)                         [rollout_plan.go:253]
-    │       └── PUT state=rolling, previous_image, target_image, revision+1,
-    │           history/{rev}, surge_allowance | DELETE rollback_reason, rolled_back_*, failures;
-    │           progress_at=now, running_new (healthy new)
-    ├── classification.isFinished(expected count)           [rollout_plan.go:101]
+    │   └── beginRolloutTowardDesiredImage                   :216
+    │       ├── mostCommonImage(old)                         [rollout_plan.go:292]
+    │       └── PUT state=rolling, previous_image (DELETE when desired = known-good: a revert, D13),
+    │           target_image, revision+1, history/{rev}, surge_allowance | DELETE rollback_reason,
+    │           rolled_back_*, failures; progress_at=now, started_at=now, running_new (healthy new)
+    ├── classification.isFinished(expected count)           [rollout_plan.go:127]
     │   │   no old left, every new healthy, ≥ expected count healthy
-    │   └── finishRollout                                    :250
-    │       └── PUT state=complete|rolled-back; DELETE previous_image, target_image,
-    │           failures, surge_allowance, reason, progress_at, running_new
-    ├── rolling: PUT failures; failures ≥ computeRolloutFailureThreshold :270
-    │   └── rollBackToPreviousImage                          :230
-    │       ├── describeWorstFailingInstance                 [rollout_plan.go:218]
-    │       ├── countHealthyOldOnImage(previous)             [rollout_plan.go:110]
+    │   └── finishRollout                                    :272
+    │       └── PUT state=complete (rolling, or no rollback_reason: older server, L1) | rolled-back;
+    │           DELETE previous_image, target_image, failures, surge_allowance, reason, progress_at,
+    │           running_new, started_at
+    ├── rolling: PUT failures; failures ≥ computeRolloutFailureThreshold :292 and previous_image set
+    │   └── rollBackToPreviousImage                          :250
+    │       ├── describeWorstFailingInstance(failing)        [rollout_plan.go:259]  last_exit first
+    │       ├── countHealthyOldOnImage(previous)             [rollout_plan.go:136]
     │       └── PUT desired/service/{svc}/image = previous_image, state=rollback,
     │           target_image, rollback_reason, rolled_back_image, rolled_back_at,
-    │           progress_at, running_new, reason | DELETE surge_allowance
-    └── advanceRollout                                       :139
-        ├── planOldInstanceStops (not paused)                [rollout_plan.go:146]
-        │   → unavailable old first (no budget), then healthy old in ID order
-        │     up to max_unavailable − unavailable new, only while a new one is healthy
-        ├── buildRolloutReason                               [rollout_plan.go:174]
-        │   ├── running, not healthy: "waiting for {id} to stay healthy ({remaining|readiness …})"
-        │   └── describeWaitingInstance                      [rollout_plan.go:200]
-        ├── isProgressDeadlineExceeded                       :186
+    │           progress_at, started_at, running_new, reason | DELETE surge_allowance
+    └── advanceRollout                                       :140
+        ├── planOldInstanceStops (not paused)                [rollout_plan.go:174]
+        │   → unavailable old first (no budget; not node_failure, not already stopped: B2),
+        │     then healthy old in ID order up to max_unavailable − (expected − healthy of any image),
+        │     only while a new one is healthy or none exists (D11)
+        ├── buildRolloutReason                               [rollout_plan.go:209]
+        │   ├── running, not healthy: "waiting for {id} to stay healthy (until HH:MM:SS UTC | readiness …)"
+        │   ├── describeWaitingInstance                      [rollout_plan.go:240]
+        │   └── budget: "max_unavailable N used up: U of E expected instances not healthy (ids)"
+        ├── isProgressDeadlineExceeded                       :187
         │   ├── rolling  → rollBackToPreviousImage("no progress for …")
         │   └── rollback → PUT state=stalled (progress → rollback)
-        ├── recordRolloutProgress                            :172  progress_at, running_new (healthy new)
-        ├── PUT reason (truncateRolloutReason [rollout_plan.go:269])
-        └── buildInstanceStopChanges                         :280
+        ├── recordRolloutProgress                            :173  progress_at, running_new (healthy new)
+        ├── PUT reason (truncateRolloutReason [rollout_plan.go:308])
+        └── buildInstanceStopChanges                         :302
             └── PUT observed/instance/{id}/state = "stopped"
 ```
 
-All rollout bookkeeping of a service goes through `rolloutFactWriter` (rollout_facts.go:78–121): one change group `rollout/{svc}`, a put only when the value changes, a delete only when the fact exists.
+All rollout bookkeeping of a service goes through `rolloutFactWriter` (rollout_facts.go:77–126): one change group `rollout/{svc}`, a put only when the value changes, a delete only when the fact exists.
 
 No fact changes when an instance's `min_healthy_time` ends; the runner's periodic resync (`defaultControllerResyncInterval`, 30 s, runner.go) gives the pass that counts it, as it does for the progress deadline, so a rollout step may count an instance up to 30 s after its window ends.
 
 **Watch:** `desired/service/`, `effective/service/`, `observed/instance/`, `derived/instance/`, `derived/service/`, `derived/scheduler/unplaced/`, `placement/instance/`
-**Writes:** `derived/service/{svc}/rollout/{state,previous_image,target_image,revision,history/{rev},failures,surge_allowance,reason,rollback_reason,progress_at,running_new,rolled_back_image,rolled_back_at}`, `observed/instance/{id}/state`, `desired/service/{svc}/image`
+**Writes:** `derived/service/{svc}/rollout/{state,previous_image,target_image,revision,history/{rev},failures,surge_allowance,reason,rollback_reason,progress_at,started_at,running_new,rolled_back_image,rolled_back_at}`, `observed/instance/{id}/state`, `desired/service/{svc}/image`
 
 ---
 
@@ -525,7 +533,7 @@ intent-resolver      → autoscale, node-failure, cloud-node-lifecycle
 instance             → intent-resolver, failure, node-failure, init, rollout
 scheduler            → instance, node-failure, cloud-node-lifecycle
 endpoint             → instance, failure, node-failure, cloud-node-lifecycle
-failure              → instance, init, node-failure
+failure              → instance, init, node-failure, rollout
 node-failure         → instance, scheduler
 drain                → instance, scheduler, node-failure, cloud-node-lifecycle
 network              → endpoint
@@ -575,7 +583,7 @@ Tier 7:
   Agent (reads all derived keys, programs the node)
 ```
 
-**Cyclic controllers:** instance ↔ failure ↔ node-failure. Kahn's algorithm
+**Cyclic controllers:** instance ↔ failure ↔ node-failure, and rollout ↔ instance, failure (both watch `desired/service/`, which a rollback writes, M241). Kahn's algorithm
 processes what it can, then reports cyclic nodes. These converge through
 multiple cycles: failure marks → instance sees marks → scheduler replaces.
 

@@ -61,8 +61,8 @@ service web {
     }
 
     update {
-        max_unavailable 1         # instances a rollout may take down at once
-        max_extra 1               # extra new-image instances created ahead of stops
+        max_unavailable 1         # expected instances that may be not healthy at once (default 25%, rounded down)
+        max_extra 1               # extra new-image instances created ahead of stops (default 25%, rounded up)
         progress_deadline 15m     # no progress this long → roll back (default 10m)
         min_healthy_time 30s      # a new instance counts once it ran this long (default 10s)
     }
@@ -140,7 +140,7 @@ gate web-public {
 
 ## Rolling Updates
 
-Changing a service's `image` starts a rollout: old-image instances are replaced within `update { max_unavailable }` (crash-looping or failed ones first, without using the budget), `max_extra` extra new-image instances may run meanwhile, and the rollout rolls back to the previous image when the new image fails (restarts plus failed instances reach half the desired count, between 3 and 200) or makes no progress for `progress_deadline` (a positive Go duration such as `10m` or `1h30m`; an invalid or zero value is a parse error). A new instance counts (for stopping old instances, progress and finishing) only once it has run for `min_healthy_time` since its last start and, when the service has a readiness probe, is ready (a Go duration of 0 or more, default `10s`; `0s` means running is enough; a negative or invalid value is a parse error). `update { progress_deadline }` compiles to `desired/service/{svc}/update/progress_deadline`. `update { min_healthy_time }` compiles to `desired/service/{svc}/update/min_healthy_time`. Behaviour: `openspec/specs/service-rollout`; the chain: Flow 34 of `runtime-invariant-flows.md`.
+Changing a service's `image` starts a rollout: old-image instances are replaced so that no more than `update { max_unavailable }` of the expected instances are not healthy at once (crash-looping or failed old ones are replaced first, without using the budget), `max_extra` extra new-image instances may run meanwhile, and the rollout rolls back to the previous image when the new image fails (restarts plus failed instances of the rollout's own new instances reach half the desired count, between 3 and 200) or makes no progress for `progress_deadline` (a positive Go duration such as `10m` or `1h30m`; an invalid or zero value is a parse error). A new instance counts (for stopping old instances, progress and finishing) only once it has run for `min_healthy_time` since its last start and, when the service has a readiness probe, is ready (a Go duration of 0 or more, default `10s`; `0s` means running is enough; a negative or invalid value is a parse error). `update { progress_deadline }` compiles to `desired/service/{svc}/update/progress_deadline`. `update { min_healthy_time }` compiles to `desired/service/{svc}/update/min_healthy_time`. Unset `max_unavailable` and `max_extra` take Kubernetes' defaults, 25 % of the expected instances (rounded down and up), each on its own; when both end up 0, `max_unavailable` is 1. So a 1-instance service starts its new instance before stopping the old one, while an explicit `max_unavailable 1` keeps its meaning (the old instance may be stopped first). Only fields written in the block compile to facts. `cca describe service` shows the effective values and which are defaults. Setting the image back to the previous image during a rollout is a revert: it has no previous image and never rolls back. Behaviour: `openspec/specs/service-rollout`; the chain: Flow 34 of `runtime-invariant-flows.md`.
 
 ## Instance Count Limits
 

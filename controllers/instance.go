@@ -449,7 +449,7 @@ func createNextStatefulInstance(
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceOrdinal(instanceID), Value: []byte(strconv.Itoa(nextOrdinal))},
 		)
 		previousFields := creation.fieldsByInstanceID[instanceID]
-		changes = append(changes, creation.buildImageAndRestartChanges(groupID, serviceName, instanceID)...)
+		changes = append(changes, creation.buildIncarnationChanges(groupID, serviceName, instanceID)...)
 		if previousFields["controller_stopped"] == "true" {
 			changes = append(changes, Change{
 				Type: store.OpDelete, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Group: groupID,
@@ -495,7 +495,7 @@ func (instanceController *InstanceController) createPendingInstances(service str
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(service)},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
 		)...)
-		changes = append(changes, creation.buildImageAndRestartChanges(groupID, service, instanceID)...)
+		changes = append(changes, creation.buildIncarnationChanges(groupID, service, instanceID)...)
 	}
 	return changes
 }
@@ -507,23 +507,11 @@ type instanceCreationFacts struct {
 	fieldsByInstanceID map[string]map[string]string // fieldsByInstanceID holds the observed and derived fields of existing instance IDs.
 }
 
-// buildImageAndRestartChanges returns the creation-group changes that record
-// the service's current image for the instance (D1) and delete a restart count
-// left by an earlier instance with the same ID (D2). No image, no image fact:
-// the agent then falls back to the service image.
-func (creation instanceCreationFacts) buildImageAndRestartChanges(groupID string, serviceName string, instanceID string) []Change {
-	var changes []Change
-	if desiredImage := creation.desiredImages[serviceName]; desiredImage != "" {
-		changes = append(changes, Change{
-			Type: store.OpPut, Key: types.KeyDerivedInstanceImage(instanceID), Value: []byte(desiredImage), Group: groupID,
-		})
-	}
-	if _, hasRestarts := creation.fieldsByInstanceID[instanceID]["restarts"]; hasRestarts {
-		changes = append(changes, Change{
-			Type: store.OpDelete, Key: types.KeyObservedInstanceRestarts(instanceID), Group: groupID,
-		})
-	}
-	return changes
+// buildIncarnationChanges returns the creation-group changes that record the
+// service's current image for the instance (D1) and delete the facts an earlier
+// instance with the same ID left (D2, D13, review B4).
+func (creation instanceCreationFacts) buildIncarnationChanges(groupID string, serviceName string, instanceID string) []Change {
+	return buildInstanceIncarnationChanges(groupID, instanceID, creation.desiredImages[serviceName], creation.fieldsByInstanceID[instanceID])
 }
 
 // markExcessStatelessInstancesAsStopped produces Change entries that mark

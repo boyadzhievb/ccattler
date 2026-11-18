@@ -129,6 +129,16 @@ func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo pla
 		"attempt", strconv.Itoa(backoffEntry.attempts), "wait", waitDelay.String(), "exit", backoffEntry.lastExitReason)
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceCrashLoopBackoff, "")
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, fmt.Sprintf("%s; restarting in %s", backoffEntry.lastExitReason, waitDelay))
+	nodeAgent.publishInstanceLastExit(ctx, instanceInfo.id, backoffEntry.lastExitReason)
+}
+
+// publishInstanceLastExit writes observed/instance/{id}/last_exit, how the
+// container last exited. It outlives the restart (the status reason becomes
+// "running"), so a rollback can still name the exit (M241, testbed 4.1 a).
+func (nodeAgent *Agent) publishInstanceLastExit(ctx context.Context, instanceID string, exitDescription string) {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceLastExit(instanceID), []byte(exitDescription)); putError != nil {
+		logging.Default().Error("failed to write last exit", "instance", instanceID, "error", putError.Error())
+	}
 }
 
 // describeContainerExit returns "exited with code N", followed by the runtime's

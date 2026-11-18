@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -35,28 +36,18 @@ func (apiServer *Server) collectRolledBackImageWarnings(requestContext context.C
 
 	var warnings []string
 	for _, serviceName := range serviceNames {
-		rolledBackImage := apiServer.readFactValueOrEmpty(requestContext, types.KeyDerivedServiceRolloutRolledBackImage(serviceName))
+		rolledBackImage := store.ReadValueOrEmpty(requestContext, apiServer.factStore, types.KeyDerivedServiceRolloutRolledBackImage(serviceName))
 		if rolledBackImage == "" || rolledBackImage != compiledImageByService[serviceName] {
 			continue
 		}
 		rolledBackWhen := "earlier"
-		rolledBackAt, parseError := time.Parse(time.RFC3339, apiServer.readFactValueOrEmpty(requestContext, types.KeyDerivedServiceRolloutRolledBackAt(serviceName)))
+		rolledBackAt, parseError := time.Parse(time.RFC3339, store.ReadValueOrEmpty(requestContext, apiServer.factStore, types.KeyDerivedServiceRolloutRolledBackAt(serviceName)))
 		if parseError == nil {
 			rolledBackWhen = types.FormatCompactDuration(time.Since(rolledBackAt)) + " ago"
 		}
 		warnings = append(warnings, fmt.Sprintf("service %s: image %s was rolled back %s (%s); applying it starts a new rollout",
 			serviceName, rolledBackImage, rolledBackWhen,
-			apiServer.readFactValueOrEmpty(requestContext, types.KeyDerivedServiceRolloutRollbackReason(serviceName))))
+			store.ReadValueOrEmpty(requestContext, apiServer.factStore, types.KeyDerivedServiceRolloutRollbackReason(serviceName))))
 	}
 	return warnings
-}
-
-// readFactValueOrEmpty returns the stored value of factKey, or "" when it is
-// missing or cannot be read.
-func (apiServer *Server) readFactValueOrEmpty(requestContext context.Context, factKey string) string {
-	fact, getError := apiServer.factStore.Get(requestContext, factKey)
-	if getError != nil {
-		return ""
-	}
-	return string(fact.Value)
 }

@@ -1249,22 +1249,12 @@ func collectServiceStatusEntries(ctx context.Context, factStore store.StateStore
 		serviceEntries = append(serviceEntries, serviceStatusEntry{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
 			RunningCount: runningInstanceCount, ExposedPorts: service.Ports,
-			RolloutState:          readFactValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutState(serviceName)),
-			RolloutReason:         readFactValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutReason(serviceName)),
-			RolloutRollbackReason: readFactValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
+			RolloutState:          store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutState(serviceName)),
+			RolloutReason:         store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutReason(serviceName)),
+			RolloutRollbackReason: store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
 		})
 	}
 	return serviceEntries
-}
-
-// readFactValueOrEmpty returns the value stored at factKey, or "" when it is
-// missing or cannot be read.
-func readFactValueOrEmpty(ctx context.Context, factStore store.StateStore, factKey string) string {
-	fact, getError := factStore.Get(ctx, factKey)
-	if getError != nil {
-		return ""
-	}
-	return string(fact.Value)
 }
 
 // collectInstanceStatusEntries builds status entries for all active (non-stopped)

@@ -197,8 +197,8 @@ type PlacementMatchDecl struct {
 
 // UpdateDecl holds the rolling update strategy for a service.
 type UpdateDecl struct {
-	MaxUnavailable   int    // maximum instances that can be unavailable during update
-	MaxExtra         int    // maximum extra instances allowed during surge
+	MaxUnavailable   *int   // maximum instances that can be unavailable during update; nil = 25 % default (M241 D12)
+	MaxExtra         *int   // maximum extra instances allowed during surge; nil = 25 % default (M241 D12)
 	ProgressDeadline string // time without progress before the rollout is rolled back (Go duration, "" = 10m default, M241)
 	MinHealthyTime   string // time a new instance must stay running (and ready) before it counts (Go duration, "" = 10s default, M241 D10)
 }

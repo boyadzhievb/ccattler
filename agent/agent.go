@@ -995,8 +995,10 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	}
 
 	// started_at goes before the state, so a controller that sees running also
-	// sees when this start happened (M241 D10).
+	// sees when this start happened (M241 D10); a readiness result from before
+	// this start no longer holds (review B4).
 	nodeAgent.publishInstanceStartedAt(ctx, instanceInfo.id)
+	nodeAgent.resetInstanceReadiness(ctx, instanceInfo.id)
 	// A container that has already exited is observed as starting and left to
 	// the next cycle, which records the exit and backs off in place (Flow 33, M238).
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
@@ -1051,6 +1053,16 @@ func (nodeAgent *Agent) publishInstanceStartedAt(ctx context.Context, instanceID
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceStartedAt(instanceID), []byte(startedAt)); putError != nil {
 		logging.Default().Error("failed to write instance started_at", "instance", instanceID, "error", putError.Error())
+	}
+}
+
+// resetInstanceReadiness deletes observed/instance/{id}/probe/readiness at a
+// start, so the instance counts as ready (endpoints, rollouts) only once its
+// readiness probe passes for this run (M241 review B4).
+func (nodeAgent *Agent) resetInstanceReadiness(ctx context.Context, instanceID string) {
+	readinessKey := types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness)
+	if deleteError := nodeAgent.store.Delete(ctx, readinessKey); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
+		logging.Default().Error("failed to reset readiness", "instance", instanceID, "error", deleteError.Error())
 	}
 }
 
@@ -1186,12 +1198,18 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 
 // lookupInstanceImageFromStore returns the image recorded for the instance when
 // it was created, so starts and in-place restarts never move it to another image
-// (M241 D1). An instance created before images were recorded falls back to the
-// service's desired image; the fallback is logged once per instance.
+// (M241 D1). Only an instance without a recorded image (created before images
+// were recorded) falls back to the service's desired image, logged once per
+// instance; any other read error returns "", skipping the start (review B5).
 func (nodeAgent *Agent) lookupInstanceImageFromStore(ctx context.Context, instanceInfo placedInstanceInfo) string {
 	recordedImageFact, getError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceImage(instanceInfo.id))
 	if getError == nil && len(recordedImageFact.Value) > 0 {
 		return string(recordedImageFact.Value)
+	}
+	if getError != nil && !errors.Is(getError, store.ErrKeyNotFound) {
+		logging.Default().Warn("cannot read the instance's recorded image, retrying next cycle",
+			"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", getError.Error())
+		return ""
 	}
 	serviceImage := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
 	if !nodeAgent.imageFallbackLogged[instanceInfo.id] {

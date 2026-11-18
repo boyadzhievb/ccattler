@@ -44,7 +44,7 @@ Node-pressure eviction controller (`controllers/eviction.go`) monitors per-node 
 ### 6. Pod Disruption Budgets — DONE (pre-existing)
 
 **K8s**: PDB minAvailable/maxUnavailable during voluntary disruption.
-**CCattler**: Already implemented. DSL `disruption { min_available N }` or `max_unavailable N`. Drain controller enforces budget during node drain (`canEvictUnderDisruptionBudget`). Rollout controller constrains maxUnavailable via `applyDisruptionBudgetToUpdatePolicy`. 14 tests in `drain_test.go`.
+**CCattler**: Already implemented. DSL `disruption { min_available N }` or `max_unavailable N`. Drain controller enforces budget during node drain (`canEvictUnderDisruptionBudget`). Rollout controller constrains maxUnavailable via `types.RolloutPacing.CappedByDisruptionBudget` (M241). 14 tests in `drain_test.go`.
 
 ## Nice-to-Have
 

@@ -728,11 +728,11 @@ func formatServiceUpdateFields(builder *strings.Builder, serviceDecl ServiceDecl
 	}
 	fmt.Fprintf(builder, "%supdate {\n", indentUnit)
 	indent2 := indentUnit + indentUnit
-	if serviceDecl.Update.MaxUnavailable != 0 {
-		fmt.Fprintf(builder, "%smax_unavailable %d\n", indent2, serviceDecl.Update.MaxUnavailable)
+	if serviceDecl.Update.MaxUnavailable != nil {
+		fmt.Fprintf(builder, "%smax_unavailable %d\n", indent2, *serviceDecl.Update.MaxUnavailable)
 	}
-	if serviceDecl.Update.MaxExtra != 0 {
-		fmt.Fprintf(builder, "%smax_extra %d\n", indent2, serviceDecl.Update.MaxExtra)
+	if serviceDecl.Update.MaxExtra != nil {
+		fmt.Fprintf(builder, "%smax_extra %d\n", indent2, *serviceDecl.Update.MaxExtra)
 	}
 	if serviceDecl.Update.ProgressDeadline != "" {
 		fmt.Fprintf(builder, "%sprogress_deadline %s\n", indent2, serviceDecl.Update.ProgressDeadline)

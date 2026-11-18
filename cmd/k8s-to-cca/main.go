@@ -426,12 +426,12 @@ func extractRollingUpdateStrategy(deploymentSpec map[string]interface{}) *lang.U
 	maxUnavailable := extractIntOrPercentAsInt(rollingMap, "maxUnavailable")
 	maxSurge := extractIntOrPercentAsInt(rollingMap, "maxSurge")
 	if maxUnavailable > 0 {
-		updateDecl.MaxUnavailable = maxUnavailable
+		updateDecl.MaxUnavailable = &maxUnavailable
 	}
 	if maxSurge > 0 {
-		updateDecl.MaxExtra = maxSurge
+		updateDecl.MaxExtra = &maxSurge
 	}
-	if updateDecl.MaxUnavailable == 0 && updateDecl.MaxExtra == 0 {
+	if updateDecl.MaxUnavailable == nil && updateDecl.MaxExtra == nil {
 		return nil
 	}
 	return updateDecl

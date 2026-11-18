@@ -50,7 +50,8 @@ InstanceController.Reconcile(ctx, facts)                     :80
 │   └── FOR EACH service where haveCount < wantCount:
 │       ├── stateful → createNextStatefulInstance             :425
 │       │   └── ordered startup: N+1 only after N is running
-│       │       clears stale controller_stopped / node_failure / restarts
+│       │       clears stale controller_stopped / node_failure and the previous
+│       │       incarnation's restarts, created-at, started_at, last_exit, probe/*
 │       └── stateless → deficit = wantCount - haveCount
 │
 └── allocateCreationsFairly(deficits, ...)                   :213
@@ -58,16 +59,21 @@ InstanceController.Reconcile(ctx, facts)                     :80
     ├── remainder slots → largest unmet demand first
     ├── stateful → createNextStatefulInstance                 :425
     │   ├── writes observed/instance/{svc}-{ord}/*
-    │   └── buildImageAndRestartChanges                      :514  (same group)
+    │   └── buildIncarnationChanges                          :513  (same group)
     └── stateless → createPendingInstances                   :488
         └── FOR EACH count:
             └── writes grouped (instance-create/{id}):
                 ├── observed/instance/{id}        = ""
                 ├── observed/instance/{id}/service = serviceName
                 ├── observed/instance/{id}/state   = "pending"
-                └── buildImageAndRestartChanges               :514  [M241 D1, D2]
-                    ├── derived/instance/{id}/image = desired/service/{svc}/image (when set)
-                    └── DELETE observed/instance/{id}/restarts (when a stale count exists)
+                └── buildIncarnationChanges                   :513  [M241 D1, D2, D13, B4]
+                    └── buildInstanceIncarnationChanges       [instance_incarnation.go:34]
+                        ├── derived/instance/{id}/image = desired/service/{svc}/image (when set)
+                        └── DELETE stale observed/instance/{id}/{restarts,created-at,started_at,
+                            last_exit,probe/*} (sorted; only those present)
+
+Both creation paths, and the failure controller's replacements (§5), record the
+image through buildInstanceIncarnationChanges.
 ```
 
 ### Store Key Reads
@@ -82,7 +88,7 @@ InstanceController.Reconcile(ctx, facts)                     :80
 | `derived/instance/{id}/node_failure` | Node failure marker |
 | `derived/service/{svc}/rollout/surge_allowance` | Rollout surge |
 | `desired/service/{svc}/image` | Image recorded for a new instance (M241) |
-| `observed/instance/{id}/restarts` | Stale restart count of a re-created ID (M241) |
+| `observed/instance/{id}/{restarts,created-at,started_at,last_exit,probe/*}` | Stale facts of a re-created ID (M241 D2, D13, B4) |
 
 ### Store Key Writes
 | Key Pattern | Value | Condition |
@@ -95,7 +101,7 @@ InstanceController.Reconcile(ctx, facts)                     :80
 | DELETE `derived/instance/{id}/controller_stopped` | — | Stateful re-create |
 | DELETE `derived/instance/{id}/node_failure` | — | Stateful re-create |
 | `derived/instance/{id}/image` | desired image | Every creation, when the service has an image (M241 D1) |
-| DELETE `observed/instance/{id}/restarts` | — | Creation of an ID with a stale count (M241 D2) |
+| DELETE `observed/instance/{id}/{restarts,created-at,started_at,last_exit,probe/*}` | — | Creation of an ID that has them from an earlier incarnation (M241 D2, D13, B4) |
 
 ### Constants
 | Name | Value | File:Line |
@@ -132,12 +138,13 @@ Scheduler.Reconcile
 ### reconcileDesiredInstance → full startup sequence
 ```
 reconcileDesiredInstance(instanceInfo)                        :736
-├── lookupInstanceImageFromStore(ctx, instanceInfo)          :1178  [M241 D1]
+├── lookupInstanceImageFromStore(ctx, instanceInfo)          :1204  [M241 D1]
 │   ├── store.Get(derived/instance/{id}/image)  → the image recorded at creation;
 │   │   used for every start and in-place restart (Flow 33, Flow 34)
-│   └── absent → lookupServiceImageFromStore(ctx, service)    :1205
+│   ├── read error other than ErrKeyNotFound → "" (no start this cycle, logged; review B5)
+│   └── absent → lookupServiceImageFromStore(ctx, service)    :1236
 │       ├── store.Get(desired/service/{svc}/image)  (instance created before M241)
-│       └── logged once per instance (imageFallbackLogged; cleanupStaleImageFallbackLogs :1194)
+│       └── logged once per instance (imageFallbackLogged; cleanupStaleImageFallbackLogs :1225)
 │       → BAIL if empty (silent return, no state change)
 │
 ├── computeServiceConfigHash(ctx, service)                   :744 (def :1490)  [configHashBeforeBuild, M235]
@@ -287,9 +294,11 @@ reconcileDesiredInstance(instanceInfo)                        :736
     ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1441
     ├── publishInstanceHostPorts(ctx, id, ...)
     ├── runtime.Status(id) → get IP
-    ├── publishInstanceStartedAt(id)                 :1050
+    ├── publishInstanceStartedAt(id)                 :1052
     │   └── PUT observed/instance/{id}/started_at = now (RFC 3339, fractions)
     │       [every start, in-place restarts included, before the state; rollout min_healthy_time, M241 D10]
+    ├── resetInstanceReadiness(id)                   :1062
+    │   └── DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
     ├── publishInstanceStateToStore(ctx, id, state, ip, node)
     │   ├── PUT observed/instance/{id}/state    = "running"|"starting"
@@ -388,36 +397,37 @@ ProbeScheduler.Run(ctx, findInstances)                       [probes.go:99]
 
 ### FailureController.Reconcile → entry point
 ```
-FailureController.Reconcile(ctx, facts)                      :161
+FailureController.Reconcile(ctx, facts)                      :163
 ├── parseInstanceFieldsFromFacts(facts)                      [helpers.go:160]
-├── parseCrashLoopCounters(facts)                            :425
+├── extractDesiredImages(facts) → counters.desiredImages     [rollout_facts.go]  (M241 B1)
+├── parseCrashLoopCounters(facts)                            :428
 │   └── reads derived/crash-loop/{svc} → {count, since}
 │
 ├── FOR EACH instance (sorted):
-│   └── processInstanceForRecovery(id, fields, now, ...)     :232
+│   └── processInstanceForRecovery(id, fields, now, ...)     :237
 │       │
 │       ├── IF effectiveState == Failed:
 │       │   ├── check crash-loop backoff:
 │       │   │   ├── count < threshold (10) → exponential backoff
-│       │   │   │   └── calculateCrashLoopBackoff(count)     :414
+│       │   │   │   └── calculateCrashLoopBackoff(count)     :422
 │       │   │   │       → 10s * 2^(count-1), cap 5min
 │       │   │   ├── count >= threshold → circuit breaker
 │       │   │   │   ├── now < since + cooldown → BLOCKED
 │       │   │   │   └── now >= since + cooldown → HALF-OPEN
 │       │   │   └── no backoff → proceed
-│       │   └── stopAndReplace(instanceID, serviceName)      :403
+│       │   └── stopAndReplace(instanceID, serviceName, image) :409
 │       │
 │       ├── IF state == Running AND startup == "failed":
 │       │   └── stopAndReplace(instanceID, serviceName)
 │       │
 │       ├── IF draining AND liveness recovered:
-│       │   └── clearDrainState(instanceID)                  :394
+│       │   └── clearDrainState(instanceID)                  :399
 │       │       └── DELETE drain_readiness, drain_since
 │       │
 │       └── IF liveness == "unhealthy":
-│           └── handleUnhealthyLiveness(id, svc, ...)        :318
+│           └── handleUnhealthyLiveness(id, svc, ...)        :323
 │               ├── IF no drain_since:
-│               │   └── beginDrain(instanceID, now)          :377
+│               │   └── beginDrain(instanceID, now)          :382
 │               │       ├── PUT drain_readiness = "not-ready"
 │               │       └── PUT drain_since = now.UnixMilli
 │               └── IF drain_since + grace period elapsed:
@@ -429,18 +439,20 @@ FailureController.Reconcile(ctx, facts)                      :161
 ├── FOR EACH service with NO failed instances:
 │   └── DELETE derived/crash-loop/{svc}
 │
-└── capOutputChanges(changes)                                :357
+└── capOutputChanges(changes)                                :362
     └── takeWholeGroups(changes, 58)                         [runner.go:726]
 ```
 
-### stopAndReplace (failure.go:403)
+### stopAndReplace (failure.go:409)
 ```
-stopAndReplace(instanceID, serviceName)
+stopAndReplace(instanceID, serviceName, desiredImage)
 └── grouped changes "replace/{id}":
     ├── PUT derived/instance/{id}/controller_stopped = "true"
     ├── PUT observed/instance/{replacementID}         = ""
     ├── PUT observed/instance/{replacementID}/service  = serviceName
-    └── PUT observed/instance/{replacementID}/state    = "pending"
+    ├── PUT observed/instance/{replacementID}/state    = "pending"
+    └── buildInstanceIncarnationChanges               [instance_incarnation.go:34]  (M241 B1)
+        └── PUT derived/instance/{replacementID}/image = desired/service/{svc}/image (when set)
 ```
 
 ### Constants
@@ -451,7 +463,7 @@ stopAndReplace(instanceID, serviceName)
 | `crashLoopMaxDelay` | 5min | failure.go:28 |
 | `defaultCircuitBreakerThreshold` | 10 | failure.go:33 |
 | `defaultCircuitBreakerCooldown` | 10min | failure.go:38 |
-| `defaultMaxReplacementsPerCycle` | 14 | failure.go:51 |
+| `defaultMaxReplacementsPerCycle` | 11 (5 ops per replacement since M241) | failure.go:52 |
 | `defaultMaxDrainsPerCycle` | 10 | failure.go:58 |
 | `defaultMaxRecoveriesPerCycle` | 10 | failure.go:65 |
 | `maxFailureControllerChangesPerCycle` | 58 | failure.go:71 |
@@ -684,7 +696,9 @@ beginCrashLoopWait(instanceInfo, entry, exitDescription)
 ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
 ├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts) ; waiting = true
 ├── publishInstanceStateToStore(crash-loop-backoff)
-└── publishStatusReason("{exitDescription}; restarting in 40s")
+├── publishStatusReason("{exitDescription}; restarting in 40s")
+└── publishInstanceLastExit(exitDescription)        [crash_loop_backoff.go:138]
+    └── PUT observed/instance/{id}/last_exit  [kept after the restart; rollback reason, M241]
 
 cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of instances not placed here]
 cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance image fallback log (M241)]
@@ -740,6 +754,8 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `handleInstanceStartError` | startInstanceAndPublishState |
 | `publishInstanceConfigHash` | startInstanceAndPublishState, handleInstanceStartError (ProcessFailed) |
 | `publishInstanceStartedAt` | startInstanceAndPublishState (start OK, M241 D10) |
+| `resetInstanceReadiness` | startInstanceAndPublishState (start OK, M241 review B4) |
+| `publishInstanceLastExit` | beginCrashLoopWait (M241) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |

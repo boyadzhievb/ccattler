@@ -22,8 +22,8 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/autoscale/max
 │   ├── service/{name}/placement/architecture
 │   ├── service/{name}/placement/zone
-│   ├── service/{name}/update/max_unavailable
-│   ├── service/{name}/update/max_extra
+│   ├── service/{name}/update/max_unavailable  # integer; only when set in update {} (unset: 25 % of expected, rounded down, M241 D12)
+│   ├── service/{name}/update/max_extra        # integer; only when set in update {} (unset: 25 % of expected, rounded up; both 0 → max_unavailable 1, M241 D12)
 │   ├── service/{name}/update/progress_deadline  # Go duration; no progress this long → rollback (default 10m, M241)
 │   ├── service/{name}/update/min_healthy_time   # Go duration ≥ 0; a new instance counts for a rollout once it ran this long since its last start (and is ready, when probed; default 10s, M241 D10)
 │   ├── service/{name}/rollout/paused         # "true" pauses the stops of a rollout
@@ -57,6 +57,7 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}/hostport       # legacy single host port
 │   ├── instance/{instance-id}/hostport/{port}  # per-container-port host port mapping
 │   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"
+│   ├── instance/{instance-id}/last_exit      # how the container last exited ("exited with code 1"); kept after the restart, for the rollback reason (M241)
 │   ├── instance/{instance-id}/restarts       # in-place restart count (integer), written by the agent from the first restart (M233); deleted by the instance controller when it creates the ID again (M241)
 │   ├── instance/{instance-id}/config-hash    # SHA256 of config inputs
 │   ├── instance/{instance-id}/pull-status    # JSON: {error, attempts, retryAfter, image}
@@ -85,10 +86,11 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/rollout/reason         # what a rollout in progress waits for (M241)
 │   ├── service/{name}/rollout/rollback_reason  # why the last rollback happened; kept until the next rollout (M241)
 │   ├── service/{name}/rollout/progress_at    # RFC 3339 time of the last progress; absent while paused (M241)
-│   ├── service/{name}/rollout/running_new    # running target-image instances last seen (M241)
+│   ├── service/{name}/rollout/running_new    # healthy target-image instances last seen (M241 D10)
+│   ├── service/{name}/rollout/started_at     # RFC 3339 time the rollout or its rollback started; failures count only new instances created since (M241 D13)
 │   ├── service/{name}/rollout/rolled_back_image  # image the last rollback moved away from; apply warns on it (M241 D9)
 │   ├── service/{name}/rollout/rolled_back_at # RFC 3339 time of the last rollback (M241 D9)
-│   ├── instance/{instance-id}/image          # image recorded at creation; the agent starts and restarts the instance only with it (M241)
+│   ├── instance/{instance-id}/image          # image recorded at creation (instance controller) or replacement (failure controller); the agent starts and restarts the instance only with it (M241)
 │   ├── instance/{instance-id}/init/phase     # pending | running | complete | failed
 │   ├── instance/{instance-id}/drain_since    # Unix millis when drain began
 │   ├── instance/{instance-id}/drain_readiness  # readiness override during drain

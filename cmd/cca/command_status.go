@@ -930,10 +930,12 @@ func printServiceDescribeScalingAndRollout(serviceDetail api.ServiceDescribe) {
 		fmt.Println()
 		fmt.Println("Update Strategy:")
 		if serviceDetail.UpdateStrategy.MaxUnavailable != "" {
-			fmt.Printf("  Max unavailable:  %s\n", serviceDetail.UpdateStrategy.MaxUnavailable)
+			fmt.Printf("  Max unavailable:  %s%s\n", serviceDetail.UpdateStrategy.MaxUnavailable,
+				describePacingDefaultNote(serviceDetail.UpdateStrategy.MaxUnavailableIsDefault, types.RolloutDefaultMaxUnavailablePercent, "down"))
 		}
 		if serviceDetail.UpdateStrategy.MaxExtra != "" {
-			fmt.Printf("  Max extra:        %s\n", serviceDetail.UpdateStrategy.MaxExtra)
+			fmt.Printf("  Max extra:        %s%s\n", serviceDetail.UpdateStrategy.MaxExtra,
+				describePacingDefaultNote(serviceDetail.UpdateStrategy.MaxExtraIsDefault, types.RolloutDefaultMaxExtraPercent, "up"))
 		}
 	}
 
@@ -2296,4 +2298,14 @@ func postSecretAdminRequest(apiPath string, requestBody []byte) {
 		fmt.Fprintf(os.Stderr, "error: %s\n", bytes.TrimSpace(responseBody))
 		os.Exit(1)
 	}
+}
+
+// describePacingDefaultNote returns " (default: 25% of instances, rounded
+// down)" for a rollout pace value the update block leaves unset, "" otherwise
+// (M241 D12).
+func describePacingDefaultNote(isDefault bool, defaultPercent int, roundingDirection string) string {
+	if !isDefault {
+		return ""
+	}
+	return fmt.Sprintf(" (default: %d%% of instances, rounded %s)", defaultPercent, roundingDirection)
 }

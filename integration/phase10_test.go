@@ -693,11 +693,11 @@ service web {
 	if service.Update == nil {
 		t.Fatal("expected update, got nil")
 	}
-	if service.Update.MaxUnavailable != 1 {
-		t.Errorf("update max_unavailable: expected 1, got %d", service.Update.MaxUnavailable)
+	if service.Update.MaxUnavailable == nil || *service.Update.MaxUnavailable != 1 {
+		t.Errorf("update max_unavailable: expected 1, got %v", service.Update.MaxUnavailable)
 	}
-	if service.Update.MaxExtra != 1 {
-		t.Errorf("update max_extra: expected 1, got %d", service.Update.MaxExtra)
+	if service.Update.MaxExtra == nil || *service.Update.MaxExtra != 1 {
+		t.Errorf("update max_extra: expected 1, got %v", service.Update.MaxExtra)
 	}
 
 	// Compile and check facts

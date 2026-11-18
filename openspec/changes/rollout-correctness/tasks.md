@@ -213,16 +213,115 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
 
 ## 2c. Rework after review 4.2 and testbed 4.1 (design D11–D13, added 2026-11-18)
 
-- [ ] 2c.0 Failing tests first (red run recorded here): `TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable`, `TestRolloutDefaultsSurgeSingleInstanceService`, `TestRolloutRevertToPreviousImageNeverRollsBack`, plus a test per fix below.
-- [ ] 2c.1 B1: the failure controller's replacement group (`stopAndReplace`, controllers/failure.go) records `derived/instance/{id}/image` and deletes stale restarts like the instance controller (shared helper; watch `desired/service/`).
-- [ ] 2c.2 B2 + D11: availability-based budget (expected − healthy of any image); old instances on a lost node are left to the failure controller; an instance already `stopped` is not proposed again and is not progress. Test: an 11-min-old `progress_at` with a node-failed old instance still rolls back on the deadline.
-- [ ] 2c.3 D12: defaults 25 % / 25 % (down / up), both 0 → max_unavailable 1; replaces `rolloutDefaultMaxUnavailable`; describe shows effective values and that they are defaults. Check existing tests and `integration/` that assume max_unavailable 1, and test/e2e scripts that time rollouts.
-- [ ] 2c.4 B3 + D13: `rollout/started_at`; failures count only new instances created at or after it; a rollout to the stored `previous_image` has no previous image and cannot roll back.
-- [ ] 2c.5 B4: stateful recreation deletes `observed/instance/{id}/probe/*`; the agent resets readiness at every start.
-- [ ] 2c.6 B5: the agent uses the service image only on `store.ErrKeyNotFound`; any other read error skips the start this cycle.
-- [ ] 2c.7 Testbed (a): the rollback reason names the last exit (`exited with code 1`), not the state, when the failing instance has just restarted — keep/prefer the exit reason. Testbed (c): the waiting reason's remaining time is current (or drop the number and show the time the instance becomes healthy).
-- [ ] 2c.8 L1: a stored `rollback` with no `target_image` (older server) finishes as `complete` without a rollback reason. L3: INSTANCE_LIFECYCLE_GRAPH.md §3 line numbers; graphs and etcd-schema.md say both creation paths record the image. L4: one shared "get fact value or empty" helper for the three copies (api/apply_rollback_warning.go, api/describe.go, cmd/cca/command_server.go). Docs for D11–D13 (Flow 34, CONTROLLER_DATA_FLOW_GRAPH.md, etcd-schema.md, dsl-reference.md defaults).
-- [ ] 2c.9 Checks as in 3.1; paste results.
+- [x] 2c.0 Failing tests first (red run recorded here): `TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable`, `TestRolloutDefaultsSurgeSingleInstanceService`, `TestRolloutRevertToPreviousImageNeverRollsBack`, plus a test per fix below.
+  - Red run, 2026-11-18, before the fixes. To make the tests compile, only these were added: `types.KeyDerivedServiceRolloutStartedAt`, `types.KeyObservedInstanceLastExit`, a zero-returning `types.ResolveRolloutPacing` stub and the two `…IsDefault` fields of `api.DescribeUpdateStrategy`. `TestRolloutDoesNotStopOldBeforeMinHealthyTime` now expects the reason format from (c).
+    ```
+    $ go test ./controllers/ -run 'TestRollout|TestInstanceControllerClearsStale|TestFailureControllerReplacementRecordsImage' -count=1
+    --- FAIL: TestInstanceControllerClearsStaleIncarnationFactsOnRecreate (0.00s)
+        instance_recreate_test.go:45: creation group of db-0 does not delete observed/instance/db-0/probe/readiness
+        instance_recreate_test.go:45: creation group of db-0 does not delete observed/instance/db-0/probe/liveness
+        instance_recreate_test.go:45: creation group of db-0 does not delete observed/instance/db-0/created-at
+        instance_recreate_test.go:45: creation group of db-0 does not delete observed/instance/db-0/started_at
+        instance_recreate_test.go:45: creation group of db-0 does not delete observed/instance/db-0/last_exit
+    --- FAIL: TestFailureControllerReplacementRecordsImage (0.00s)
+        instance_recreate_test.go:57: failure controller does not watch desired/service/ for the image it records
+        instance_recreate_test.go:85: replacement inst-001 has no recorded image
+    --- FAIL: TestRolloutDoesNotStopOldBeforeMinHealthyTime (0.00s)
+        rollout_min_healthy_test.go:38: rollout/reason "waiting for new-1 to stay healthy (8s)" does not contain "(until 12:00:08 UTC)"
+    --- FAIL: TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable (0.00s)
+        rollout_rework_test.go:34: stopped [old-3] with 1 of 4 expected instances not healthy and max_unavailable 1, want none
+    --- FAIL: TestRolloutDefaultsSurgeSingleInstanceService (0.00s)
+        rollout_rework_test.go:47: stopped [old-1] before any new instance exists, want none (default max_unavailable 0)
+        rollout_rework_test.go:50: surge_allowance = "", want 1 (default max_extra 25% rounded up)
+    --- FAIL: TestRolloutRevertToPreviousImageNeverRollsBack (0.00s)
+        rollout_rework_test.go:91: desired image reverted to "app:a", want no rollback
+        rollout_rework_test.go:93: rollout/failures = "3", want 0: restarts from before the rollout do not count
+        rollout_rework_test.go:96: previous_image kept on a revert to it, want it deleted (nothing to roll back to)
+        rollout_rework_test.go:99: rollout/started_at = "", want 2026-11-18T12:00:00Z
+    --- FAIL: TestRolloutLeavesNodeFailedOldInstanceToFailureController (0.00s)
+        rollout_rework_test.go:133: old-1 on a lost node proposed as stopped again, want it left to the failure controller
+        rollout_rework_test.go:137: desired image = "", want app:a (deadline passed without progress)
+    --- FAIL: TestRolloutRollbackReasonNamesLastExit (0.00s)
+        rollout_rework_test.go:155: rollback_reason "3 failures ≥ 3 on app:b: running" does not contain "exited with code 1"
+    --- FAIL: TestRolloutLegacyRollbackWithoutTargetFinishesComplete (0.00s)
+        rollout_rework_test.go:172: rollout/state = "rolled-back", want complete
+    $ go test ./agent/ -run 'TestAgentSkipsStartWhenRecordedImageUnreadable|TestAgentResetsReadinessOnStart|TestAgentKeepsLastExitAfterRestart' -count=1
+    --- FAIL: TestAgentSkipsStartWhenRecordedImageUnreadable (0.01s)
+        rollout_rework_test.go:47: agent started "nginx:1.28" while the recorded image could not be read, want no start
+    --- FAIL: TestAgentResetsReadinessOnStart (0.01s)
+        rollout_rework_test.go:70: readiness after the start = "ready", want none until the probe passes again
+    --- FAIL: TestAgentKeepsLastExitAfterRestart (0.19s)
+        rollout_rework_test.go:85: last_exit after the restart = "", want "exited with code 1"
+    $ go test ./lang/ -run TestCompileUpdateWritesOnlySetPacing -count=1
+    --- FAIL: TestCompileUpdateWritesOnlySetPacing (0.00s)
+        update_defaults_test.go:28: desired/service/web/update/max_unavailable = "1" without the field in the update block, want no fact
+        update_defaults_test.go:28: desired/service/web/update/max_extra = "1" without the field in the update block, want no fact
+        update_defaults_test.go:45: formatted configuration lost explicit pacing:
+        update_defaults_test.go:47: format is not idempotent:
+    $ go test ./api/ -run TestDescribeServiceShowsEffectivePacing -count=1
+    --- FAIL: TestDescribeServiceShowsEffectivePacing (0.00s)
+        describe_pacing_test.go:40: update strategy = {MaxUnavailable:3 MaxExtra: MaxUnavailableIsDefault:false MaxExtraIsDefault:false}, want {MaxUnavailable:3 MaxExtra:2 MaxUnavailableIsDefault:false MaxExtraIsDefault:true}
+    $ go test ./types/ -run TestResolveRolloutPacing -count=1
+    --- FAIL: TestResolveRolloutPacing (0.00s)
+            rollout_pacing_test.go:42: ResolveRolloutPacing(1) = {MaxUnavailable:0 MaxExtra:0 MaxUnavailableIsDefault:false MaxExtraIsDefault:false}, want {MaxUnavailable:0 MaxExtra:1 MaxUnavailableIsDefault:true MaxExtraIsDefault:true}
+        … (every case: the stub returned the zero pace)
+    ```
+    Spec deviation, `TestRolloutCountsUnavailableCapacityAgainstMaxUnavailable`: the scenario as written ("two old stopped, two new pending") has no running old instance to stop. With no healthy new instance, the old code stopped none either, so a literal test would not fail before the fix. The test therefore keeps 4 expected, 2 old stopped and `max_unavailable 1`, and adds two running old instances, one healthy new and one pending new. That is 3 of 4 healthy: the old code stopped `old-3`, D11 stops none. The scenario text could be updated to match (main session).
+    The second half of `TestRolloutRevertToPreviousImageNeverRollsBack` (a crash-looping instance created during the revert counts 5 failures and still does not roll back) passed before the fix: the old code also needed a `previous_image`. The node-failure part of `TestRolloutLeavesNodeFailedOldInstanceToFailureController` sets the old instance's observed state to `stopped` with `node_failure`, which is exactly the loop B2 describes.
+- [x] 2c.1 B1: the failure controller's replacement group (`stopAndReplace`, controllers/failure.go) records `derived/instance/{id}/image` and deletes stale restarts like the instance controller (shared helper; watch `desired/service/`).
+  - `buildInstanceIncarnationChanges` (controllers/instance_incarnation.go) is shared by the instance controller (`instanceCreationFacts.buildIncarnationChanges`, both creation paths) and `FailureController.stopAndReplace`. It writes the recorded image, then the sorted deletes of the stale incarnation's facts. The failure controller watches `desired/service/` and carries the desired images in `failureCycleCounters`. A replacement is now 5 changes, so `defaultMaxReplacementsPerCycle` 14 → 11 (55 ops ≤ 58). The new watch adds failure → rollout to the controller dependency graph (another cycle beside instance ↔ rollout, noted in CONTROLLER_DATA_FLOW_GRAPH.md §4).
+- [x] 2c.2 B2 + D11: availability-based budget (expected − healthy of any image); old instances on a lost node are left to the failure controller; an instance already `stopped` is not proposed again and is not progress. Test: an 11-min-old `progress_at` with a node-failed old instance still rolls back on the deadline.
+  - `planOldInstanceStops(classification, maxUnavailable, expectedCount)`: `unavailable = expected − healthy new − running old`. Healthy old instances are stopped up to `max(maxUnavailable − unavailable, 0)`. The value is not clamped below, as in Kubernetes: surplus healthy instances from a surge allow stops, which `max_unavailable 0` needs. Without an expected count (facts missing), the active instance count is used. Old instances with `node_failure`, or whose observed state already says `stopped` (`rolloutInstanceInfo.stopWritten`), are skipped: not stopped, not progress. The budget reason now reads `max_unavailable N used up: U of E expected instances not healthy (ids)`; before any new instance exists it reads `waiting for the first new-image instance (max_unavailable N, max_extra M)`. `unavailableNewIDs` is replaced by `notHealthyIDs` (any image).
+- [x] 2c.3 D12: defaults 25 % / 25 % (down / up), both 0 → max_unavailable 1; replaces `rolloutDefaultMaxUnavailable`; describe shows effective values and that they are defaults. Check existing tests and `integration/` that assume max_unavailable 1, and test/e2e scripts that time rollouts.
+  - `types.ResolveRolloutPacing` and `RolloutPacing.CappedByDisruptionBudget` (types/rollout_pacing.go) are used by the rollout controller and by describe. `rolloutDefaultMaxUnavailable` and `applyDisruptionBudgetToUpdatePolicy` are removed. Its three unit tests became `TestRolloutPacingCappedByDisruptionBudget` (types), which adds the case "the budget never raises a default 0": the old function raised an unset (0) value to the budget's limit.
+    - The DSL now compiles only the pacing fields written in the block. Before, `update {}` always wrote `max_unavailable 1`, `max_extra 1` from parser defaults. `UpdateDecl.MaxUnavailable` and `MaxExtra` are `*int`, so an explicit 0 formats and compiles. cmd/k8s-to-cca and two tests follow the pointer change.
+    - Behaviour change to note: an `update` block that sets only one of the two now gets the 25 % default for the other, instead of 1.
+    - Describe always shows the effective values. `cca describe service` adds `(default: 25% of instances, rounded down|up)`.
+    - Existing tests checked: the controller rollout tests without `update` facts now run on the defaults and pass unchanged. The integration rollouts (`TestRollingUpdateGraduallyReplacesInstances`, `TestRollbackOnHealthFailure`) set both values explicitly. The examples/*.cca update blocks set both. test/e2e has no rollout scenario (only `health_check.sh` Check 6 reads the state), so no script assumes `max_unavailable 1`.
+- [x] 2c.4 B3 + D13: `rollout/started_at`; failures count only new instances created at or after it; a rollout to the stored `previous_image` has no previous image and cannot roll back.
+  - `rollout/started_at` is written with `progress_at` when tracking starts, and again at a rollback, so "the previous image also fails" counts only the rollback's replacements. It is deleted at finish. Failures count new instances whose `created-at` is not earlier than `started_at − rolloutCreatedAtClockSkewAllowance` (30 s). Instances without `created-at` (not yet seen by an agent) count, and so does everything when no `started_at` is stored (a rollout begun by an older server). Instances are classified again after tracking starts in a pass.
+    - Deviation: the 30 s allowance. `created-at` is stamped by the agent and `started_at` by the controller, so a few seconds of skew could otherwise exclude the rollout's first new instance and leave only the deadline to catch a crash loop.
+    - A recreated stateful ordinal drops its stale `created-at` (2c.1 helper), otherwise it would never count.
+    - A revert to the stored `previous_image` deletes `previous_image`; its history entry records the image it reverts from.
+- [x] 2c.5 B4: stateful recreation deletes `observed/instance/{id}/probe/*`; the agent resets readiness at every start.
+  - The recreation side is in the shared helper (2c.1): it deletes `probe/*`, which covers both creation paths. The agent's `resetInstanceReadiness` deletes `observed/instance/{id}/probe/readiness` at every start, after `started_at` and before the state. The probe scheduler's in-memory counters are not reset: that map is not locked and is used from the probe goroutine. After a restart, one passing check writes `ready` again.
+- [x] 2c.6 B5: the agent uses the service image only on `store.ErrKeyNotFound`; any other read error skips the start this cycle.
+  - `lookupInstanceImageFromStore` falls back only on `store.ErrKeyNotFound` (or an empty value). Any other error is logged and returns "", and `reconcileDesiredInstance` then skips the start this cycle.
+- [x] 2c.7 Testbed (a): the rollback reason names the last exit (`exited with code 1`), not the state, when the failing instance has just restarted — keep/prefer the exit reason. Testbed (c): the waiting reason's remaining time is current (or drop the number and show the time the instance becomes healthy).
+  - (a): the agent writes `observed/instance/{id}/last_exit` in `beginCrashLoopWait` (exits and process start failures), and it is not deleted on restart. `describeWorstFailingInstance` takes the failing instances of the count (D13) and prefers `last_exit`. Next it uses the status reason, but not for a running instance, whose status reason is "running". Then the exit reason, then the state. (c): the reason shows when the instance becomes healthy, `waiting for <id> to stay healthy (until 12:00:08 UTC)`, which needs no refresh.
+- [x] 2c.8 L1: a stored `rollback` with no `target_image` (older server) finishes as `complete` without a rollback reason. L3: INSTANCE_LIFECYCLE_GRAPH.md §3 line numbers; graphs and etcd-schema.md say both creation paths record the image. L4: one shared "get fact value or empty" helper for the three copies (api/apply_rollback_warning.go, api/describe.go, cmd/cca/command_server.go). Docs for D11–D13 (Flow 34, CONTROLLER_DATA_FLOW_GRAPH.md, etcd-schema.md, dsl-reference.md defaults).
+  - L1: `finishRollout` ends as `rolled-back` only when the state is not `rolling` and a `rollback_reason` is stored; otherwise `complete`. L3: INSTANCE_LIFECYCLE_GRAPH.md §1 (both paths through `buildInstanceIncarnationChanges`), §3 (agent line numbers, `resetInstanceReadiness`, B5 path, `last_exit`) and §5 (failure controller line numbers, replacement image, cap 11) are updated, as are CALL_GRAPH.md and etcd-schema.md (the image is recorded at creation and at replacement). L4: `store.ReadValueOrEmpty` (store/store.go) replaces the copies in api/apply_rollback_warning.go, cmd/cca/command_server.go and the closure in api/describe.go. Docs for D11–D13 and the fixes: Flow 34, the CONTROLLER_DATA_FLOW_GRAPH.md rollout and failure sections and dependency list, etcd-schema.md (`update/max_*` defaults, `rollout/started_at`, `last_exit`), dsl-reference.md (defaults, revert), and design/k8s-parity-gaps.md (the renamed budget function).
+- [x] 2c.9 Checks as in 3.1; paste results.
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ -count=1
+    ok  	github.com/boyadzhievb/ccattler/controllers	5.230s
+    ok  	github.com/boyadzhievb/ccattler/agent	28.078s
+    ok  	github.com/boyadzhievb/ccattler/types	0.029s
+    ok  	github.com/boyadzhievb/ccattler/api	9.284s
+    ok  	github.com/boyadzhievb/ccattler/integration	10.412s
+    ok  	github.com/boyadzhievb/ccattler/lang	0.043s
+    ok  	github.com/boyadzhievb/ccattler/tenant	0.032s
+    ok  	github.com/boyadzhievb/ccattler/cmd/cca	6.422s
+    ok  	github.com/boyadzhievb/ccattler/cmd/k8s-to-cca	0.008s
+    ok  	github.com/boyadzhievb/ccattler/store	1.596s
+    $ go test ./agent/ -race -count=3 -run "TestAgentSkipsStartWhenRecordedImageUnreadable|TestAgentResetsReadinessOnStart|TestAgentKeepsLastExitAfterRestart|TestAgentRecordsStartedAtOnEveryStart|TestAgentRestartsInstanceWithItsOwnImage|TestAgentStartsInstanceWithRecordedImage|TestAgentBacksOff|TestAgentCountsRestarts"
+    ok  	github.com/boyadzhievb/ccattler/agent	8.861s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController|TestFailure"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.170s
+    $ go test ./integration/ -race -count=3 -run "TestRollingUpdateGraduallyReplacesInstances|TestRollbackOnHealthFailure"
+    ok  	github.com/boyadzhievb/ccattler/integration	1.668s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    exit 0 (20 packages ok, 0 failures)
+    ```
 
 ## 4. Testbed and review (main session)
 

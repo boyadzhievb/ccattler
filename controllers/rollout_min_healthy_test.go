@@ -35,7 +35,7 @@ func TestRolloutDoesNotStopOldBeforeMinHealthyTime(t *testing.T) {
 	}
 	assertRolloutStateNotChangedTo(t, changesByKey, types.RolloutComplete)
 	rolloutReason, _ := putValue(changesByKey, types.KeyDerivedServiceRolloutReason("web"))
-	assertContainsAll(t, "rollout/reason", rolloutReason, "waiting for new-1 to stay healthy", "(8s)")
+	assertContainsAll(t, "rollout/reason", rolloutReason, "waiting for new-1 to stay healthy", "(until 12:00:08 UTC)")
 }
 
 // TestRolloutDoesNotFinishBeforeMinHealthyTime: spec service-rollout, "Rollout

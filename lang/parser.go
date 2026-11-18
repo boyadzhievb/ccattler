@@ -935,7 +935,7 @@ func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 	}
 	parser.skipNewlineTokens()
 
-	updateDecl := &UpdateDecl{MaxUnavailable: 1, MaxExtra: 1}
+	updateDecl := &UpdateDecl{}
 	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
 		key, err := parser.expectIdentifier()
 		if err != nil {
@@ -944,9 +944,9 @@ func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 
 		switch key {
 		case "max_unavailable":
-			updateDecl.MaxUnavailable, err = parser.expectInteger()
+			updateDecl.MaxUnavailable, err = parser.expectIntegerPointer()
 		case "max_extra":
-			updateDecl.MaxExtra, err = parser.expectInteger()
+			updateDecl.MaxExtra, err = parser.expectIntegerPointer()
 		case "progress_deadline":
 			updateDecl.ProgressDeadline, err = parser.expectPositiveDuration(key)
 		case "min_healthy_time":
@@ -1382,6 +1382,16 @@ func (parser *Parser) expectInteger() (int, error) {
 		return 0, parser.parserErrorf("invalid integer %q", token.Value)
 	}
 	return parsedValue, nil
+}
+
+// expectIntegerPointer consumes an integer and returns a pointer to it, for
+// fields where unset (nil) and an explicit 0 differ.
+func (parser *Parser) expectIntegerPointer() (*int, error) {
+	parsedValue, parseError := parser.expectInteger()
+	if parseError != nil {
+		return nil, parseError
+	}
+	return &parsedValue, nil
 }
 
 // expectPositiveDuration consumes a Go duration (15m, 1h30m) for the named

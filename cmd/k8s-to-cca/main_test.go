@@ -351,11 +351,11 @@ spec:
 	if serviceDecl.Update == nil {
 		t.Fatal("expected update strategy, got nil")
 	}
-	if serviceDecl.Update.MaxUnavailable != 1 {
-		t.Errorf("expected max_unavailable 1, got %d", serviceDecl.Update.MaxUnavailable)
+	if serviceDecl.Update.MaxUnavailable == nil || *serviceDecl.Update.MaxUnavailable != 1 {
+		t.Errorf("expected max_unavailable 1, got %v", serviceDecl.Update.MaxUnavailable)
 	}
-	if serviceDecl.Update.MaxExtra != 2 {
-		t.Errorf("expected max_extra 2, got %d", serviceDecl.Update.MaxExtra)
+	if serviceDecl.Update.MaxExtra == nil || *serviceDecl.Update.MaxExtra != 2 {
+		t.Errorf("expected max_extra 2, got %v", serviceDecl.Update.MaxExtra)
 	}
 }
 

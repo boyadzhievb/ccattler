@@ -149,8 +149,10 @@ type DescribeScaleTarget struct {
 
 // DescribeUpdateStrategy shows rolling update parameters.
 type DescribeUpdateStrategy struct {
-	MaxUnavailable string `json:"max_unavailable"`
-	MaxExtra       string `json:"max_extra"`
+	MaxUnavailable          string `json:"max_unavailable"`                   // MaxUnavailable is the effective max_unavailable.
+	MaxExtra                string `json:"max_extra"`                         // MaxExtra is the effective max_extra.
+	MaxUnavailableIsDefault bool   `json:"max_unavailable_default,omitempty"` // MaxUnavailableIsDefault is true when update { max_unavailable } is unset (M241 D12).
+	MaxExtraIsDefault       bool   `json:"max_extra_default,omitempty"`       // MaxExtraIsDefault is true when update { max_extra } is unset (M241 D12).
 }
 
 // DescribeRollout shows the current rollout state for a service.
@@ -495,21 +497,37 @@ func buildServiceAutoscaling(ctx context.Context, factStore store.StateStore, se
 	return autoscaling
 }
 
-// buildServiceUpdateStrategy reads rolling update parameters.
+// buildServiceUpdateStrategy returns the effective rollout pace: the update
+// block's max_unavailable and max_extra, or their 25 % defaults for the
+// expected instance count, capped by the disruption budget (M241 D12).
 func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore, serviceName string) *DescribeUpdateStrategy {
-	maxUnavailableFact, unavailableErr := factStore.Get(ctx, types.KeyDesiredServiceUpdateMaxUnavailable(serviceName))
-	maxExtraFact, extraErr := factStore.Get(ctx, types.KeyDesiredServiceUpdateMaxExtra(serviceName))
-	if unavailableErr != nil && extraErr != nil {
+	desiredCount, _ := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServiceInstances(serviceName)))
+	expectedCount := desiredCount
+	if effectiveCount, parseError := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServiceInstances(serviceName))); parseError == nil {
+		expectedCount = effectiveCount
+	}
+	budgetMinAvailable, _ := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServiceDisruptionMinAvailable(serviceName)))
+	budgetMaxUnavailable, _ := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServiceDisruptionMaxUnavailable(serviceName)))
+	pacing := types.ResolveRolloutPacing(expectedCount,
+		readOptionalIntegerFact(ctx, factStore, types.KeyDesiredServiceUpdateMaxUnavailable(serviceName)),
+		readOptionalIntegerFact(ctx, factStore, types.KeyDesiredServiceUpdateMaxExtra(serviceName)),
+	).CappedByDisruptionBudget(budgetMinAvailable, budgetMaxUnavailable, desiredCount)
+	return &DescribeUpdateStrategy{
+		MaxUnavailable:          strconv.Itoa(pacing.MaxUnavailable),
+		MaxExtra:                strconv.Itoa(pacing.MaxExtra),
+		MaxUnavailableIsDefault: pacing.MaxUnavailableIsDefault,
+		MaxExtraIsDefault:       pacing.MaxExtraIsDefault,
+	}
+}
+
+// readOptionalIntegerFact returns the integer stored at factKey, or nil when it
+// is missing or not an integer (the default then applies).
+func readOptionalIntegerFact(ctx context.Context, factStore store.StateStore, factKey string) *int {
+	parsedValue, parseError := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, factKey))
+	if parseError != nil {
 		return nil
 	}
-	strategy := &DescribeUpdateStrategy{}
-	if unavailableErr == nil {
-		strategy.MaxUnavailable = string(maxUnavailableFact.Value)
-	}
-	if extraErr == nil {
-		strategy.MaxExtra = string(maxExtraFact.Value)
-	}
-	return strategy
+	return &parsedValue
 }
 
 // buildServiceRollout reads the current rollout state, previous image, failure
@@ -519,19 +537,12 @@ func buildServiceRollout(ctx context.Context, factStore store.StateStore, servic
 	if stateErr != nil {
 		return nil
 	}
-	readRolloutFact := func(factKey string) string {
-		fact, getError := factStore.Get(ctx, factKey)
-		if getError != nil {
-			return ""
-		}
-		return string(fact.Value)
-	}
 	return &DescribeRollout{
 		State:          string(stateFact.Value),
-		PreviousImage:  readRolloutFact(types.KeyDerivedServiceRolloutImage(serviceName)),
-		Failures:       readRolloutFact(types.KeyDerivedServiceRolloutFailures(serviceName)),
-		Reason:         readRolloutFact(types.KeyDerivedServiceRolloutReason(serviceName)),
-		RollbackReason: readRolloutFact(types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
+		PreviousImage:  store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutImage(serviceName)),
+		Failures:       store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutFailures(serviceName)),
+		Reason:         store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutReason(serviceName)),
+		RollbackReason: store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
 	}
 }
 

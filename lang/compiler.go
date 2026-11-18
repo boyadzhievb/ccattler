@@ -678,16 +678,20 @@ func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDe
 	return placementFacts
 }
 
-// compileServiceUpdateFacts produces rolling update strategy facts (max unavailable
-// and max extra instance counts, and the progress deadline and min healthy time
-// when set). Returns nil if no update strategy is declared.
+// compileServiceUpdateFacts produces the rolling update facts the update block
+// sets: max unavailable, max extra, progress deadline, min healthy time. An
+// unset field has no fact (the rollout controller's default, M241 D12).
+// Returns nil if no update strategy is declared.
 func compileServiceUpdateFacts(serviceName string, updateDecl *UpdateDecl) []Fact {
 	if updateDecl == nil {
 		return nil
 	}
-	updateFacts := []Fact{
-		{Key: types.KeyDesiredServiceUpdateMaxUnavailable(serviceName), Value: strconv.Itoa(updateDecl.MaxUnavailable)},
-		{Key: types.KeyDesiredServiceUpdateMaxExtra(serviceName), Value: strconv.Itoa(updateDecl.MaxExtra)},
+	var updateFacts []Fact
+	if updateDecl.MaxUnavailable != nil {
+		updateFacts = append(updateFacts, Fact{Key: types.KeyDesiredServiceUpdateMaxUnavailable(serviceName), Value: strconv.Itoa(*updateDecl.MaxUnavailable)})
+	}
+	if updateDecl.MaxExtra != nil {
+		updateFacts = append(updateFacts, Fact{Key: types.KeyDesiredServiceUpdateMaxExtra(serviceName), Value: strconv.Itoa(*updateDecl.MaxExtra)})
 	}
 	if updateDecl.ProgressDeadline != "" {
 		updateFacts = append(updateFacts, Fact{Key: types.KeyDesiredServiceUpdateProgressDeadline(serviceName), Value: updateDecl.ProgressDeadline})

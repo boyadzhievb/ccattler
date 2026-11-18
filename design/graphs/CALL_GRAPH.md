@@ -68,7 +68,7 @@ executeReconciliationCycle
 ### reconcileDesiredInstance → full instance startup sequence
 ```
 reconcileDesiredInstance(instanceInfo)
-├── lookupInstanceImageFromStore                 [M241 D1: derived/instance/{id}/image, else lookupServiceImageFromStore (logged once); BAIL if empty]
+├── lookupInstanceImageFromStore                 [M241 D1: derived/instance/{id}/image; missing → lookupServiceImageFromStore (logged once); other read error → "" (B5); BAIL if empty]
 ├── prepareInstanceSecretMaterial                [M174, Flow 27; BAIL → waiting-for-secrets]
 │   ├── loadServiceSecretRequirements            [desired grants, connection secrets (collectConnectionSecretNames), image_pull_secret; never secrets/; store error → BAIL, retry]
 │   ├── SecretMaterialStore.ReadInstanceSecrets  [material from this boot → reuse if materialMatchesRequirements]
@@ -158,6 +158,7 @@ reconcileDesiredInstance(instanceInfo)
     ├── HostPortsForInstance → publishInstanceHostPorts
     ├── runtime.Status → get IP
     ├── publishInstanceStartedAt                 [observed/instance/{id}/started_at, M241 D10]
+    ├── resetInstanceReadiness                   [DELETE observed/instance/{id}/probe/readiness, M241 B4]
     ├── publishInstanceStateToStore(running)
     └── store.Put(observed/instance/{id}/image)
 ```
@@ -234,6 +235,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/instance/{id}/created-at` | publishInstanceStateToStore (write-once) |
 | `observed/instance/{id}/image` | publishInstanceImage (startInstanceAndPublishState, handleInstanceStartError) |
 | `observed/instance/{id}/started_at` | publishInstanceStartedAt (startInstanceAndPublishState, every start; read by the rollout controller, M241 D10) |
+| `observed/instance/{id}/probe/readiness` | DELETE by resetInstanceReadiness at every start (M241 B4); PUT by the probe scheduler |
+| `observed/instance/{id}/last_exit` | publishInstanceLastExit (beginCrashLoopWait; read by the rollout controller's rollback reason, M241) |
 | `observed/instance/{id}/exit-reason` | publishExitReason (recordInstanceExit via publishExitReasonFromStatus, recordInstanceStartFailure); deleted by deleteExitReason |
 | `observed/instance/{id}/status_reason` | publishStatusReason |
 | `observed/instance/{id}/pull_status` | recordImagePullFailure |
@@ -359,7 +362,7 @@ LOG = swallowed and continues).
 ### reconcileDesiredInstance error paths
 ```
 reconcileDesiredInstance
-├── lookupInstanceImageFromStore → returns "" (no recorded image and no service image)
+├── lookupInstanceImageFromStore → returns "" (no recorded image and no service image, or the recorded image cannot be read: M241 B5)
 │   └── BAIL: silent return (no image yet, controller hasn't written it)
 │
 ├── ensureImageAvailable → returns false

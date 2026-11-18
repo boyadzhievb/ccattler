@@ -163,3 +163,14 @@ type StateStore interface {
 	// Close shuts down the store, closing all active watch channels and releasing resources.
 	Close() error
 }
+
+// ReadValueOrEmpty returns the value stored at key, or "" when it is missing
+// or cannot be read: for display and warnings, where an absent fact and an
+// unreadable one both mean "nothing to show".
+func ReadValueOrEmpty(ctx context.Context, stateStore StateStore, key string) string {
+	fact, getError := stateStore.Get(ctx, key)
+	if getError != nil {
+		return ""
+	}
+	return string(fact.Value)
+}

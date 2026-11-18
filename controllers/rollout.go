@@ -38,10 +38,6 @@ const rolloutMaximumFailureThreshold = 200
 // up) into the failure threshold: half the service (M241 D3).
 const rolloutFailureThresholdDivisor = 2
 
-// rolloutDefaultMaxUnavailable is the number of instances a rollout may take
-// down at once when the service sets no update { max_unavailable }.
-const rolloutDefaultMaxUnavailable = 1
-
 // RolloutController manages rolling updates when a service's desired image
 // changes. It stops old-image instances (unhealthy ones first, healthy ones
 // within max_unavailable), lets the InstanceController create replacements with
@@ -93,10 +89,13 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 
 // reconcileServiceRollout runs one pass of the rollout state machine (D5) for
 // one service: start or retarget tracking, finish, roll back on failures, stop
-// old instances, and track progress, the deadline and the reason (D7).
+// old instances, and track progress, the deadline and the reason (D7). The
+// instances are classified again after tracking starts, so failures count
+// from the new rollout/started_at (D13).
 func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
-	classification := classifyRolloutInstances(serviceInput.instances, serviceInput.desiredImage, serviceInput.healthRule)
 	writer := serviceInput.writer
+	classification := classifyRolloutInstances(serviceInput.instances, serviceInput.desiredImage, serviceInput.healthRule,
+		parseRolloutTimestamp(writer.value(rolloutFieldStartedAt)))
 	currentState := types.RolloutState(writer.value(rolloutFieldState))
 	switch {
 	case !isRolloutInProgress(currentState):
@@ -115,6 +114,8 @@ func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
 		beginRolloutTowardDesiredImage(serviceInput, classification, knownGoodImage)
 		currentState = types.RolloutRolling
 	}
+	classification = classifyRolloutInstances(serviceInput.instances, serviceInput.desiredImage, serviceInput.healthRule,
+		parseRolloutTimestamp(writer.value(rolloutFieldStartedAt)))
 
 	if classification.isFinished(serviceInput.expectedInstanceCount) {
 		finishRollout(serviceInput, currentState)
@@ -125,7 +126,7 @@ func reconcileServiceRollout(serviceInput rolloutServiceInput) []Change {
 		failureThreshold := computeRolloutFailureThreshold(serviceInput.desiredInstanceCount)
 		if classification.failureCount >= failureThreshold && writer.value(rolloutFieldPreviousImage) != "" {
 			rollbackReason := fmt.Sprintf("%d failures ≥ %d on %s: %s", classification.failureCount, failureThreshold,
-				serviceInput.desiredImage, describeWorstFailingInstance(classification.newInstances))
+				serviceInput.desiredImage, describeWorstFailingInstance(classification.failingInstances))
 			rollBackToPreviousImage(serviceInput, classification, rollbackReason)
 			return writer.changes
 		}
@@ -140,7 +141,7 @@ func advanceRollout(serviceInput rolloutServiceInput, classification rolloutClas
 	writer := serviceInput.writer
 	var stopPlan rolloutStopPlan
 	if !serviceInput.paused {
-		stopPlan = planOldInstanceStops(classification, serviceInput.maxUnavailable)
+		stopPlan = planOldInstanceStops(classification, serviceInput.maxUnavailable, serviceInput.expectedInstanceCount)
 	}
 	storedRunningNew, _ := strconv.Atoi(writer.value(rolloutFieldRunningNew))
 	progressed := len(stopPlan.stoppedIDs) > 0 || classification.healthyNewCount > storedRunningNew
@@ -184,11 +185,21 @@ func recordRolloutProgress(serviceInput rolloutServiceInput, healthyNewCount int
 // has passed since progressAt. A missing or unreadable time never exceeds it:
 // the deadline then starts at this pass.
 func isProgressDeadlineExceeded(progressAtText string, serviceInput rolloutServiceInput) bool {
-	progressAt, parseError := time.Parse(time.RFC3339, progressAtText)
-	if parseError != nil {
+	progressAt := parseRolloutTimestamp(progressAtText)
+	if progressAt.IsZero() {
 		return false
 	}
 	return serviceInput.now.Sub(progressAt) > serviceInput.progressDeadline
+}
+
+// parseRolloutTimestamp parses an RFC 3339 rollout field; a missing or
+// unreadable value is the zero time.
+func parseRolloutTimestamp(timestampText string) time.Time {
+	timestamp, parseError := time.Parse(time.RFC3339, timestampText)
+	if parseError != nil {
+		return time.Time{}
+	}
+	return timestamp
 }
 
 // isRolloutInProgress reports whether a rollout state is one the state machine
@@ -199,17 +210,24 @@ func isRolloutInProgress(rolloutState types.RolloutState) bool {
 
 // beginRolloutTowardDesiredImage starts tracking a rollout to the desired image
 // (D5 rows 1 and 2): rolling, the known-good previous image, the target, the
-// next revision with its history entry, the surge allowance and a fresh
-// deadline. The reason of an earlier rollback is deleted.
+// next revision with its history entry, the surge allowance, a fresh deadline
+// and started_at (D13). The reason of an earlier rollback is deleted. A revert
+// to the known-good image has no previous image and cannot roll back (D13).
 func beginRolloutTowardDesiredImage(serviceInput rolloutServiceInput, classification rolloutClassification, knownGoodImage string) {
 	writer := serviceInput.writer
 	currentRevision, _ := strconv.Atoi(writer.value(rolloutFieldRevision))
 	nextRevision := currentRevision + 1
+	historyImage := knownGoodImage
 	writer.put(rolloutFieldState, string(types.RolloutRolling))
-	writer.put(rolloutFieldPreviousImage, knownGoodImage)
+	if knownGoodImage == serviceInput.desiredImage {
+		historyImage = mostCommonImage(classification.oldInstances)
+		writer.remove(rolloutFieldPreviousImage)
+	} else {
+		writer.put(rolloutFieldPreviousImage, knownGoodImage)
+	}
 	writer.put(rolloutFieldTargetImage, serviceInput.desiredImage)
 	writer.put(rolloutFieldRevision, strconv.Itoa(nextRevision))
-	writer.putKey(types.KeyDerivedServiceRolloutHistory(serviceInput.serviceName, nextRevision), knownGoodImage)
+	writer.putKey(types.KeyDerivedServiceRolloutHistory(serviceInput.serviceName, nextRevision), historyImage)
 	if serviceInput.maxExtra > 0 {
 		writer.put(rolloutFieldSurgeAllowance, strconv.Itoa(serviceInput.maxExtra))
 	} else {
@@ -219,14 +237,16 @@ func beginRolloutTowardDesiredImage(serviceInput rolloutServiceInput, classifica
 		writer.remove(staleField)
 	}
 	writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
+	writer.put(rolloutFieldStartedAt, serviceInput.now.UTC().Format(time.RFC3339))
 	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.healthyNewCount))
 	logging.Default().Info("rollout started", "service", serviceInput.serviceName,
-		"from", knownGoodImage, "to", serviceInput.desiredImage, "revision", strconv.Itoa(nextRevision))
+		"from", historyImage, "to", serviceInput.desiredImage, "revision", strconv.Itoa(nextRevision))
 }
 
 // rollBackToPreviousImage reverts the desired image to the previous image (D5
 // row 3), records why and which image was rolled back (D7, D9), restarts the
-// deadline and logs one warning.
+// deadline and started_at (failures of the previous image count from now, D13)
+// and logs one warning.
 func rollBackToPreviousImage(serviceInput rolloutServiceInput, classification rolloutClassification, rollbackReason string) {
 	writer := serviceInput.writer
 	previousImage := writer.value(rolloutFieldPreviousImage)
@@ -238,6 +258,7 @@ func rollBackToPreviousImage(serviceInput rolloutServiceInput, classification ro
 	writer.put(rolloutFieldRolledBackImage, serviceInput.desiredImage)
 	writer.put(rolloutFieldRolledBackAt, serviceInput.now.UTC().Format(time.RFC3339))
 	writer.put(rolloutFieldProgressAt, serviceInput.now.UTC().Format(time.RFC3339))
+	writer.put(rolloutFieldStartedAt, serviceInput.now.UTC().Format(time.RFC3339))
 	writer.put(rolloutFieldRunningNew, strconv.Itoa(classification.countHealthyOldOnImage(previousImage)))
 	writer.put(rolloutFieldReason, truncateRolloutReason("rolling back to "+previousImage))
 	logging.Default().Warn("rollout rolled back", "service", serviceInput.serviceName,
@@ -246,17 +267,18 @@ func rollBackToPreviousImage(serviceInput rolloutServiceInput, classification ro
 
 // finishRollout ends a rollout (complete) or a rollback (rolled-back) once every
 // instance runs the desired image (D5 rows 4 and 5) and deletes the bookkeeping
-// of the run. The rollback reason and rolled-back image stay for the user.
+// of the run. The rollback reason and rolled-back image stay for the user. A
+// rollback stored by an older server, without a reason, ends complete (L1).
 func finishRollout(serviceInput rolloutServiceInput, currentState types.RolloutState) {
 	writer := serviceInput.writer
 	finalState := types.RolloutRolledBack
-	if currentState == types.RolloutRolling {
+	if currentState == types.RolloutRolling || writer.value(rolloutFieldRollbackReason) == "" {
 		finalState = types.RolloutComplete
 	}
 	writer.put(rolloutFieldState, string(finalState))
 	for _, finishedField := range []rolloutField{
 		rolloutFieldPreviousImage, rolloutFieldTargetImage, rolloutFieldFailures, rolloutFieldSurgeAllowance,
-		rolloutFieldReason, rolloutFieldProgressAt, rolloutFieldRunningNew,
+		rolloutFieldReason, rolloutFieldProgressAt, rolloutFieldRunningNew, rolloutFieldStartedAt,
 	} {
 		writer.remove(finishedField)
 	}

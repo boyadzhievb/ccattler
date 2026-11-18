@@ -24,6 +24,9 @@ type rolloutInstanceInfo struct {
 	statusReason string              // statusReason is observed/instance/{id}/status-reason.
 	exitReason   string              // exitReason is observed/instance/{id}/exit-reason.
 	startedAt    time.Time           // startedAt is observed/instance/{id}/started_at; zero when absent or unreadable.
+	createdAt    time.Time           // createdAt is observed/instance/{id}/created-at; zero when absent or unreadable (D13).
+	lastExit     string              // lastExit is observed/instance/{id}/last_exit, kept across restarts.
+	stopWritten  bool                // stopWritten is true when observed/instance/{id}/state already says stopped (B2).
 	readiness    string              // readiness is observed/instance/{id}/probe/readiness; "" when absent.
 	healthy      bool                // healthy is set by classification: running long enough, and ready when probed (D10).
 	healthWait   string              // healthWait says what a running, not yet healthy instance waits for ("8s", "readiness not-ready").
@@ -47,6 +50,7 @@ const (
 	rolloutFieldRunningNew      rolloutField = "running_new"       // healthy target-image instances last seen (D10)
 	rolloutFieldRolledBackImage rolloutField = "rolled_back_image" // the image the last rollback moved away from
 	rolloutFieldRolledBackAt    rolloutField = "rolled_back_at"    // RFC 3339 time of the last rollback
+	rolloutFieldStartedAt       rolloutField = "started_at"        // RFC 3339 time the rollout or rollback started (D13)
 )
 
 // rolloutFieldKeys maps every rollout field to its store key function.
@@ -63,6 +67,7 @@ var rolloutFieldKeys = map[rolloutField]func(string) string{
 	rolloutFieldRunningNew:      types.KeyDerivedServiceRolloutRunningNew,
 	rolloutFieldRolledBackImage: types.KeyDerivedServiceRolloutRolledBackImage,
 	rolloutFieldRolledBackAt:    types.KeyDerivedServiceRolloutRolledBackAt,
+	rolloutFieldStartedAt:       types.KeyDerivedServiceRolloutStartedAt,
 }
 
 // rolloutFactWriter proposes the rollout changes of one service. It writes a
@@ -126,8 +131,8 @@ type rolloutServiceInput struct {
 	desiredImage          string                          // desiredImage is desired/service/{svc}/image.
 	instances             []rolloutInstanceInfo           // instances are the service's instances, sorted by ID.
 	writer                *rolloutFactWriter              // writer holds the stored rollout fields and collects changes.
-	maxUnavailable        int                             // maxUnavailable is the effective budget (update policy, disruption budget).
-	maxExtra              int                             // maxExtra is the surge allowance of a new rollout.
+	maxUnavailable        int                             // maxUnavailable is the effective budget (update policy or default, disruption budget; D12).
+	maxExtra              int                             // maxExtra is the surge allowance of a new rollout (update policy or default; D12).
 	desiredInstanceCount  int                             // desiredInstanceCount drives the failure threshold.
 	expectedInstanceCount int                             // expectedInstanceCount is how many must run for completion.
 	paused                bool                            // paused is desired/service/{svc}/rollout/paused.
@@ -167,23 +172,21 @@ func extractRolloutClusterFacts(facts []store.Fact) rolloutClusterFacts {
 	}
 }
 
-// buildServiceInput assembles one service's rollout input. The completion
-// count is the effective instance count, else the desired one.
+// buildServiceInput assembles one service's rollout input. The expected count
+// (completion, budget, defaults) is the effective instance count, else the
+// desired one; the pace is resolved from it (D12).
 func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, now time.Time) rolloutServiceInput {
 	updatePolicy, hasPolicy := clusterFacts.updatePolicies[serviceName]
 	if !hasPolicy {
 		updatePolicy = newDefaultUpdatePolicy()
 	}
-	effectivePolicy := applyDisruptionBudgetToUpdatePolicy(updatePolicy,
-		clusterFacts.disruptionBudgets[serviceName], clusterFacts.desiredCounts[serviceName])
-	maxUnavailable := effectivePolicy.maxUnavailable
-	if maxUnavailable == 0 {
-		maxUnavailable = rolloutDefaultMaxUnavailable
-	}
 	expectedCount, hasEffectiveCount := clusterFacts.effectiveCounts[serviceName]
 	if !hasEffectiveCount {
 		expectedCount = clusterFacts.desiredCounts[serviceName]
 	}
+	disruptionBudget := clusterFacts.disruptionBudgets[serviceName]
+	pacing := types.ResolveRolloutPacing(expectedCount, updatePolicy.explicitMaxUnavailable, updatePolicy.explicitMaxExtra).
+		CappedByDisruptionBudget(disruptionBudget.minAvailable, disruptionBudget.maxUnavailable, clusterFacts.desiredCounts[serviceName])
 	healthRule := rolloutHealthRule{
 		minHealthyTime:   updatePolicy.minHealthyTime,
 		requireReadiness: clusterFacts.readinessProbed[serviceName],
@@ -198,8 +201,8 @@ func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, no
 		desiredImage:          clusterFacts.desiredImages[serviceName],
 		instances:             clusterFacts.instancesByService[serviceName],
 		writer:                &rolloutFactWriter{serviceName: serviceName, storedFields: storedFields},
-		maxUnavailable:        maxUnavailable,
-		maxExtra:              updatePolicy.maxExtra,
+		maxUnavailable:        pacing.MaxUnavailable,
+		maxExtra:              pacing.MaxExtra,
 		desiredInstanceCount:  clusterFacts.desiredCounts[serviceName],
 		expectedInstanceCount: expectedCount,
 		paused:                clusterFacts.pausedServices[serviceName],
@@ -217,10 +220,10 @@ func extractDesiredImages(facts []store.Fact) map[string]string {
 
 // extractedUpdatePolicy holds parsed update strategy from facts.
 type extractedUpdatePolicy struct {
-	maxUnavailable   int           // maxUnavailable is update { max_unavailable }, 0 when unset.
-	maxExtra         int           // maxExtra is update { max_extra }, 0 when unset.
-	progressDeadline time.Duration // progressDeadline is update { progress_deadline }, the default when unset.
-	minHealthyTime   time.Duration // minHealthyTime is update { min_healthy_time }, the default when unset; 0 is valid.
+	explicitMaxUnavailable *int          // explicitMaxUnavailable is update { max_unavailable }, nil when unset (default 25 %, D12).
+	explicitMaxExtra       *int          // explicitMaxExtra is update { max_extra }, nil when unset (default 25 %, D12).
+	progressDeadline       time.Duration // progressDeadline is update { progress_deadline }, the default when unset.
+	minHealthyTime         time.Duration // minHealthyTime is update { min_healthy_time }, the default when unset; 0 is valid.
 }
 
 // newDefaultUpdatePolicy returns the update policy of a service that sets no
@@ -245,9 +248,9 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 		}
 		switch suffix {
 		case "update/max_unavailable":
-			policy.maxUnavailable = parseUpdatePolicyInteger(serviceName, suffix, fact.Value, policy.maxUnavailable)
+			policy.explicitMaxUnavailable = parseUpdatePolicyInteger(serviceName, suffix, fact.Value, policy.explicitMaxUnavailable)
 		case "update/max_extra":
-			policy.maxExtra = parseUpdatePolicyInteger(serviceName, suffix, fact.Value, policy.maxExtra)
+			policy.explicitMaxExtra = parseUpdatePolicyInteger(serviceName, suffix, fact.Value, policy.explicitMaxExtra)
 		case "update/progress_deadline":
 			parsedDeadline, parseError := time.ParseDuration(string(fact.Value))
 			if parseError != nil || parsedDeadline <= 0 {
@@ -269,14 +272,14 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 }
 
 // parseUpdatePolicyInteger parses an integer update policy fact, logging a
-// corrupt value and keeping currentValue.
-func parseUpdatePolicyInteger(serviceName string, suffix string, factValue []byte, currentValue int) int {
+// corrupt value and keeping currentValue (nil: the default applies).
+func parseUpdatePolicyInteger(serviceName string, suffix string, factValue []byte, currentValue *int) *int {
 	parsedValue, parseError := strconv.Atoi(string(factValue))
 	if parseError != nil {
 		logging.Default().Warn("corrupt rollout "+strings.TrimPrefix(suffix, "update/"), "service", serviceName, "value", string(factValue))
 		return currentValue
 	}
-	return parsedValue
+	return &parsedValue
 }
 
 // extractInstancesByService returns all instances grouped by service name and
@@ -302,26 +305,29 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 			nodeFailure:  fields["node_failure"] == "true",
 			statusReason: fields["status-reason"],
 			exitReason:   fields["exit-reason"],
-			startedAt:    parseInstanceStartedAt(instanceID, fields["started_at"]),
+			startedAt:    parseInstanceTimestamp(instanceID, "started_at", fields["started_at"]),
+			createdAt:    parseInstanceTimestamp(instanceID, "created-at", fields["created-at"]),
+			lastExit:     fields["last_exit"],
+			stopWritten:  types.InstanceState(fields["state"]) == types.InstanceStopped,
 			readiness:    fields["probe/"+string(types.ProbeReadiness)],
 		})
 	}
 	return result
 }
 
-// parseInstanceStartedAt parses an instance's started_at (RFC 3339, fractions
-// allowed). A missing value is the zero time; so is a corrupt one, which is
-// logged: the instance then counts as healthy while running, as before D10.
-func parseInstanceStartedAt(instanceID string, startedAtText string) time.Time {
-	if startedAtText == "" {
+// parseInstanceTimestamp parses an instance's started_at or created-at (RFC
+// 3339, fractions allowed). A missing value is the zero time; so is a corrupt
+// one, which is logged: the instance is then treated as having none (D10, D13).
+func parseInstanceTimestamp(instanceID string, fieldName string, timestampText string) time.Time {
+	if timestampText == "" {
 		return time.Time{}
 	}
-	startedAt, parseError := time.Parse(time.RFC3339, startedAtText)
+	timestamp, parseError := time.Parse(time.RFC3339, timestampText)
 	if parseError != nil {
-		logging.Default().Warn("corrupt instance started_at, ignoring it", "instance", instanceID, "value", startedAtText)
+		logging.Default().Warn("corrupt instance "+fieldName+", ignoring it", "instance", instanceID, "value", timestampText)
 		return time.Time{}
 	}
-	return startedAt
+	return timestamp
 }
 
 // extractReadinessProbedServices returns the services that declare a readiness
@@ -382,30 +388,6 @@ func extractRolloutDisruptionBudgets(facts []store.Fact) map[string]rolloutDisru
 // desired instance count per service.
 func extractDesiredInstanceCounts(facts []store.Fact) map[string]int {
 	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "instances")
-}
-
-// applyDisruptionBudgetToUpdatePolicy returns an update policy with
-// maxUnavailable capped by the disruption budget. If the budget is more
-// restrictive than the update policy, the budget wins.
-func applyDisruptionBudgetToUpdatePolicy(
-	originalPolicy extractedUpdatePolicy,
-	budget rolloutDisruptionBudget,
-	desiredInstanceCount int,
-) extractedUpdatePolicy {
-	effectivePolicy := originalPolicy
-	if budget.maxUnavailable > 0 && budget.maxUnavailable < effectivePolicy.maxUnavailable {
-		effectivePolicy.maxUnavailable = budget.maxUnavailable
-	}
-	if budget.minAvailable > 0 && desiredInstanceCount > 0 {
-		budgetMaxUnavailable := desiredInstanceCount - budget.minAvailable
-		if budgetMaxUnavailable < 1 {
-			budgetMaxUnavailable = 1
-		}
-		if effectivePolicy.maxUnavailable == 0 || budgetMaxUnavailable < effectivePolicy.maxUnavailable {
-			effectivePolicy.maxUnavailable = budgetMaxUnavailable
-		}
-	}
-	return effectivePolicy
 }
 
 // extractRolloutFields returns the rollout bookkeeping facts per service

@@ -1754,41 +1754,55 @@ instance no longer placed here → entry dropped with the stale-instance cleanup
 apply image b (was a)  → desired/service/{svc}/image = b
                          apply answer warns when b == rollout/rolled_back_image (D9)
 
-InstanceController creating an instance (any time)                     [D1, D2]
-  instance-create/{id} group: observed marker/service/state=pending
-                              + derived/instance/{id}/image = desired image
-                              + DELETE observed/instance/{id}/restarts (stale count of a re-created ID)
+InstanceController creating an instance, FailureController replacing one   [D1, D2, D13, B1, B4]
+  instance-create/{id} | replace/{failed id} group: observed marker/service/state=pending
+        + derived/instance/{id}/image = desired image (buildInstanceIncarnationChanges)
+        + DELETE observed/instance/{id}/{restarts,created-at,started_at,last_exit,probe/*}
+          left by an earlier instance with the same ID (re-created stateful ordinal)
 Agent start / in-place restart (Flow 33)
-  image = derived/instance/{id}/image, else desired/service/{svc}/image (pre-M241 instance, logged once)
-  every start: PUT observed/instance/{id}/started_at = now, before the state            [D10]
+  image = derived/instance/{id}/image; missing → desired/service/{svc}/image (pre-M241
+        instance, logged once); any other read error → no start this cycle         [B5]
+  every start: PUT observed/instance/{id}/started_at = now, DELETE probe/readiness,
+        then the state                                                       [D10, B4]
+  every exit: PUT observed/instance/{id}/last_exit = "exited with code N" (kept after
+        the restart, for the rollback reason)
 
 RolloutController pass, per service (sorted), instances sorted by ID     [D3–D7]
   image(instance) = derived/instance/{id}/image, else observed image; "" → new
   old = active instances whose image ≠ desired; new = the rest
   unavailable = failed | crash-loop-backoff | image-pull-backoff | node_failure
-  failures = Σ restarts(new) + count(new failed), node_failure skipped
+  failures = Σ restarts(new) + count(new failed), node_failure skipped, only new instances
+        created since rollout/started_at (− 30 s clock skew; no created-at → counted) [D13]
   threshold = clamp(ceil(desired instances / 2), 3, 200)
   healthy(instance) = running ∧ now − started_at ≥ update { min_healthy_time } (default 10s;
         no started_at → counts at once) ∧ probe/readiness = ready when the service has a
         readiness probe                                                              [D10]
 
+  pace: max_unavailable / max_extra from update {}, unset → 25 % of expected (down: floor,
+        up: ceil), both 0 → max_unavailable 1; capped by the disruption budget      [D12]
   state none/complete/rolled-back and old exists
       → rolling: previous_image = most common old image, target_image = b, revision+1,
-        history/{rev} = previous, surge_allowance = max_extra, progress_at = now,
+        history/{rev} = previous, surge_allowance = max_extra, progress_at = started_at = now,
         DELETE rollback_reason, rolled_back_image, rolled_back_at, failures
   state rolling/rollback/stalled and desired ≠ target_image (image changed mid-rollout)
-      → same, previous_image kept (the last known-good image)
+      → same, previous_image kept (the last known-good image); desired = previous_image
+        (a revert) → no previous_image: it can never roll back                       [D13]
   no old instance, ≥ expected count healthy, every new instance healthy
-      → rolling: complete;  rollback/stalled: rolled-back
-        DELETE previous_image, target_image, failures, surge_allowance, reason, progress_at, running_new
+      → rolling: complete;  rollback/stalled: rolled-back (complete when no rollback_reason:
+        a rollback stored by an older server, L1)
+        DELETE previous_image, target_image, failures, surge_allowance, reason, progress_at,
+        running_new, started_at
         (rollback_reason, rolled_back_image, rolled_back_at stay until the next rollout)
   rolling: PUT failures (when changed); failures ≥ threshold
       → rollback group: desired/service/{svc}/image = previous, target_image = previous,
         state = rollback, DELETE surge, rollback_reason = "N failures ≥ T on b: <exit reason>",
-        rolled_back_image = b, rolled_back_at = now, progress_at = now; one warning logged
-  stops (not paused): every unavailable old instance (no budget), then healthy old ones,
-        in ID order, up to max_unavailable − unavailable new instances, only while a new
-        instance is healthy (or none exists and no unhealthy one is being replaced)
+        rolled_back_image = b, rolled_back_at = now, progress_at = started_at = now;
+        <exit reason> = last_exit of the failing instance with most restarts; one warning logged
+  stops (not paused): every unavailable old instance (no budget; except node_failure ones,
+        which the failure controller replaces, and ones already stopped: B2), then healthy
+        (running) old ones in ID order while expected − healthy of any image stays within
+        max_unavailable (D11), only while a new instance is healthy (or none exists and no
+        unhealthy one is being replaced)
         → PUT observed/instance/{id}/state = stopped
   progress = a stop, or more healthy new instances than rollout/running_new
         → progress_at = now (absent while paused; resuming restarts the deadline)
@@ -1798,11 +1812,13 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
   reason (written when changed): paused | previous image also fails (N failures on a)
         | waiting for <id> (<state>: <status reason>, or "unplaced: insufficient_capacity
           (cpu …m, memory …Mi)" from derived/scheduler/unplaced/{id}/*)
-        | waiting for <id> to stay healthy (<time left> | readiness <state>) | max_unavailable
-          N used up by <ids> | replacing N old-image instances
+        | waiting for <id> to stay healthy (until HH:MM:SS UTC | readiness <state>)
+        | waiting for the first new-image instance | max_unavailable N used up: U of E
+          expected instances not healthy (<ids>) | replacing N old-image instances
 ```
 
 - Desired and observed stay separate: the rollback writes `desired/service/{svc}/image` (as Nomad's `auto_revert`); re-applying the configuration starts a new rollout and warns.
+- `max_unavailable` bounds unavailable capacity, as in Kubernetes: stopped old instances and new ones not yet healthy count against it, so a service never has more than `max_unavailable` of its expected instances down at once (D11). The 25 % defaults make a small service surge first: a 1-instance service gets `max_unavailable 0`, `max_extra 1` (D12).
 - The failure count is current facts only: a `failed` instance the failure controller replaces drops out of it; crash loops stay on the same instance and keep counting.
 - A new instance counts only once it stays healthy (D10): an image that exits a second or two after start never replaces an old instance or finishes the rollout; its restarts roll it back. No fact changes when the window ends, so the runner's periodic resync (30 s) gives the pass that counts it.
 - A rollback never rolls back again; without progress it becomes `stalled` and clears itself once it progresses or completes.

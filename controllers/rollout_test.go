@@ -25,50 +25,6 @@ func TestRolloutControllerName(t *testing.T) {
 	}
 }
 
-func TestApplyDisruptionBudgetMinAvailableCapsMaxUnavailable(t *testing.T) {
-	// Update policy says max_unavailable=3. Disruption budget says
-	// min_available=4 out of 5 desired. That means at most 1 can be
-	// unavailable — the budget should cap maxUnavailable to 1.
-	originalPolicy := extractedUpdatePolicy{maxUnavailable: 3, maxExtra: 1}
-	budget := rolloutDisruptionBudget{minAvailable: 4}
-	desiredCount := 5
-
-	effectivePolicy := applyDisruptionBudgetToUpdatePolicy(originalPolicy, budget, desiredCount)
-
-	if effectivePolicy.maxUnavailable != 1 {
-		t.Errorf("maxUnavailable: got %d, want 1", effectivePolicy.maxUnavailable)
-	}
-	if effectivePolicy.maxExtra != 1 {
-		t.Errorf("maxExtra should be unchanged: got %d, want 1", effectivePolicy.maxExtra)
-	}
-}
-
-func TestApplyDisruptionBudgetMaxUnavailableCapsPolicy(t *testing.T) {
-	// Update policy says max_unavailable=5. Disruption budget says
-	// max_unavailable=2 — the budget should win.
-	originalPolicy := extractedUpdatePolicy{maxUnavailable: 5, maxExtra: 1}
-	budget := rolloutDisruptionBudget{maxUnavailable: 2}
-	desiredCount := 10
-
-	effectivePolicy := applyDisruptionBudgetToUpdatePolicy(originalPolicy, budget, desiredCount)
-
-	if effectivePolicy.maxUnavailable != 2 {
-		t.Errorf("maxUnavailable: got %d, want 2", effectivePolicy.maxUnavailable)
-	}
-}
-
-func TestApplyDisruptionBudgetNoBudgetNoChange(t *testing.T) {
-	originalPolicy := extractedUpdatePolicy{maxUnavailable: 3, maxExtra: 2}
-	budget := rolloutDisruptionBudget{}
-	desiredCount := 10
-
-	effectivePolicy := applyDisruptionBudgetToUpdatePolicy(originalPolicy, budget, desiredCount)
-
-	if effectivePolicy.maxUnavailable != 3 {
-		t.Errorf("maxUnavailable should be unchanged: got %d, want 3", effectivePolicy.maxUnavailable)
-	}
-}
-
 func TestRolloutControllerRespectsDisruptionBudget(t *testing.T) {
 	rolloutController := NewRolloutController()
 
@@ -301,6 +257,8 @@ type rolloutTestInstance struct {
 	startedAgo   time.Duration       // startedAgo is how long before the test clock it started; 0 means rolloutTestSettledAge.
 	noStartedAt  bool                // noStartedAt leaves out started_at, as an agent older than M241 D10 does.
 	readiness    string              // readiness is the observed readiness probe state; "" for none.
+	createdAgo   time.Duration       // createdAgo is how long before the test clock the agent first saw it; 0 for no created-at.
+	lastExit     string              // lastExit is the observed last_exit; "" for none.
 }
 
 // rolloutTestSettledAge is the default age of a running test instance's
@@ -334,6 +292,13 @@ func buildRolloutTestFacts(desiredImage string, extraFacts map[string]string, in
 		}
 		if instance.readiness != "" {
 			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceProbeState(instance.instanceID, types.ProbeReadiness), Value: []byte(instance.readiness)})
+		}
+		if instance.createdAgo != 0 {
+			createdAt := rolloutTestNow.Add(-instance.createdAgo).Format(time.RFC3339)
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceCreatedAt(instance.instanceID), Value: []byte(createdAt)})
+		}
+		if instance.lastExit != "" {
+			inputFacts = append(inputFacts, store.Fact{Key: types.KeyObservedInstanceLastExit(instance.instanceID), Value: []byte(instance.lastExit)})
 		}
 		inputFacts = append(inputFacts, buildStartedAtTestFacts(instance)...)
 	}
