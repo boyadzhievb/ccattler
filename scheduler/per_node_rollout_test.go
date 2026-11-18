@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -49,8 +50,8 @@ func TestPerNodePlacesReplacementOnNodeOfStoppedInstance(t *testing.T) {
 }
 
 // TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance: review round 4
-// (M241 2g.1). A stopped instance's placement stays until GC, but it no longer
-// uses its node's CPU and memory, so a per-node replacement that requests 1500m
+// (M241 2g.1). A stopped instance's placement stays until GC, but its requests
+// are no longer counted on its node, so a per-node replacement that requests 1500m
 // of a 2000m node is placed there instead of being insufficient_capacity.
 func TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance(t *testing.T) {
 	placementScheduler := newTestScheduler()
@@ -76,4 +77,71 @@ func TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance(t *testing.T) 
 		}
 	}
 	t.Errorf("new-1 not placed on node-1 beside the stopped old-1; changes: %v", changes)
+}
+
+// TestSpreadIgnoresStoppedInstance: review round 5 (M241 2h.1). A stopped web
+// instance on node-1 (placement kept until GC) does not count for spread, so
+// its replacement goes back to node-1, although node-1 carries more load,
+// instead of giving node-2 a second web replica and node-1 none.
+func TestSpreadIgnoresStoppedInstance(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("web-old-1"), "web"),
+		kv(types.KeyObservedInstanceState("web-old-1"), string(types.InstanceStopped)),
+		kv(types.KeyPlacementInstance("web-old-1"), "node-1"),
+		kv(types.KeyObservedInstanceService("web-old-2"), "web"),
+		kv(types.KeyObservedInstanceState("web-old-2"), string(types.InstanceRunning)),
+		kv(types.KeyPlacementInstance("web-old-2"), "node-2"),
+		kv(types.KeyObservedInstanceService("cache-1"), "cache"),
+		kv(types.KeyObservedInstanceState("cache-1"), string(types.InstanceRunning)),
+		kv(types.KeyPlacementInstance("cache-1"), "node-1"),
+		kv(types.KeyObservedInstanceService("cache-2"), "cache"),
+		kv(types.KeyObservedInstanceState("cache-2"), string(types.InstanceRunning)),
+		kv(types.KeyPlacementInstance("cache-2"), "node-1"),
+		kv(types.KeyObservedInstanceService("web-new"), "web"),
+		kv(types.KeyObservedInstanceState("web-new"), string(types.InstancePending)),
+		kv(types.KeyObservedNodeState("node-1"), string(types.NodeAlive)),
+		kv(types.KeyObservedNodeState("node-2"), string(types.NodeAlive)),
+	)
+	assertPlacedOn(t, placementScheduler, facts, "web-new", "node-1")
+}
+
+// TestStoppedInstanceRequestsReleasedBeforeContainerIsGone: review round 5
+// (M241 2h.3), the accepted trade-off: once stopped is written, the scheduler
+// no longer counts the instance's requests, though its container may still run
+// (pre_stop, grace period), so another instance is placed beside it (M246).
+func TestStoppedInstanceRequestsReleasedBeforeContainerIsGone(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("web-old"), "web"),
+		kv(types.KeyObservedInstanceState("web-old"), string(types.InstanceStopped)),
+		kv(types.KeyPlacementInstance("web-old"), "node-1"),
+		kv(types.KeyObservedInstanceService("batch-1"), "batch"),
+		kv(types.KeyObservedInstanceState("batch-1"), string(types.InstancePending)),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "1500"),
+		kv(types.KeyDesiredServiceResourcesCPU("batch"), "1500"),
+		kv(types.KeyObservedNodeState("node-1"), string(types.NodeAlive)),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "2000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "4096"),
+	)
+	// 1500m + 1500m on a 2000m node while web-old's container may still run.
+	assertPlacedOn(t, placementScheduler, facts, "batch-1", "node-1")
+}
+
+// assertPlacedOn runs one scheduler pass and fails unless instanceID is placed on wantNode.
+func assertPlacedOn(t *testing.T, placementScheduler *Scheduler, facts []store.Fact, instanceID string, wantNode string) {
+	t.Helper()
+	changes, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	for _, change := range filterPlacementChanges(changes) {
+		if change.Key == types.KeyPlacementInstance(instanceID) {
+			if string(change.Value) != wantNode {
+				t.Errorf("%s placed on %s, want %s", instanceID, change.Value, wantNode)
+			}
+			return
+		}
+	}
+	t.Errorf("%s not placed, want %s; changes: %v", instanceID, wantNode, changes)
 }

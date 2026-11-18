@@ -697,10 +697,41 @@ Testbed rerun after 2f (push run 44373404786 on `25c5088`, green): stateful ngin
 
 Round 5 (on `25c5088..c843115`, APPROVE) found that 2g.1 frees a stopped instance's CPU and memory as soon as `stopped` is written, while the container may still run (pre_stop + grace); a decision review (code-reviewer, Opus high) and the user agreed: accept it in M241 as a deliberate accounting trade-off, never described as freed resources; releasing only on an agent observation that the container is gone is follow-up milestone M246 ("a stop request is not proof of termination"). Verified bound: pre_stop ≤ 30 s (`lifecycleHookTimeout`), then SIGTERM, the service's `termination_grace_period` (no upper limit), SIGKILL, ≤ 10 s wait (runtime/containerd.go `StopWithGracePeriod`, which never returns an error); only a process that survives SIGKILL outlives it.
 
-- [ ] 2h.1 Spread: `countServiceInstancesPerNode` (scheduler/scheduler.go ~:1172) skips stopped instances like the load count, so a replacement is not pushed off its predecessor's node (otherwise one node ends with two replicas and one with none until GC); fix its comment; test.
-- [ ] 2h.2 Document the trade-off in Flow 34 and the service-rollout spec (replace "a stopped instance uses none of the node's CPU or memory" with what is true): marking an instance stopped releases its requests in the scheduler before the container is gone; during pre_stop and the grace period the node's real usage can exceed its accounted requests; the bound above (incl. that `termination_grace_period` is user-set and uncapped, and a process surviving SIGKILL); every stop path opens it (rollouts, `cca stop`, `cca restart`, which marks every replica at once: up to 2x a node's requests); per-node start-new-first opens it on every node, and overlapping rollouts of several services add up per node. Link M246.
-- [ ] 2h.3 Tests: keep the 2g.1 no-deadlock regression tests; add a scheduler test that makes the discrepancy visible (a stopped-but-not-gone instance's requests are not counted, so another instance is placed beside it), named in the spec scenario.
-- [ ] 2h.4 Doc comment of `TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance` to ≤ 4 lines; checks as in 3.1, paste results.
+- [x] 2h.1 Spread: `countServiceInstancesPerNode` (scheduler/scheduler.go ~:1172) skips stopped instances like the load count, so a replacement is not pushed off its predecessor's node (otherwise one node ends with two replicas and one with none until GC); fix its comment; test.
+  - `countServiceInstancesPerNode` (scheduler/scheduler.go:1175) now skips stopped instances; its comment is fixed.
+  - Red: `--- FAIL: TestSpreadIgnoresStoppedInstance  per_node_rollout_test.go:106: web-new placed on node-2, want node-1`. The test has a stopped web on node-1 and two cache instances adding load there; the stopped one counted for spread, so node-2 got a second web replica.
+  - Green after the fix.
+- [x] 2h.2 Document the trade-off in Flow 34 and the service-rollout spec (replace "a stopped instance uses none of the node's CPU or memory" with what is true): marking an instance stopped releases its requests in the scheduler before the container is gone; during pre_stop and the grace period the node's real usage can exceed its accounted requests; the bound above (incl. that `termination_grace_period` is user-set and uncapped, and a process surviving SIGKILL); every stop path opens it (rollouts, `cca stop`, `cca restart`, which marks every replica at once: up to 2x a node's requests); per-node start-new-first opens it on every node, and overlapping rollouts of several services add up per node. Link M246.
+  - Flow 34: the scheduler paragraph now states the trade-off instead of "freed". Marking an instance stopped releases its requests before the container is gone, and the node's real usage can exceed its accounted requests. The bound: pre_stop ≤ 30 s, uncapped `termination_grace_period`, SIGKILL, ≤ 10 s. Every stop path opens it (rollouts, `cca stop`, `cca restart` up to 2x), per-node start-new-first opens it on every node, and overlapping rollouts add up per node. Links M246.
+  - Spec: the per-node resources scenario no longer says the stopped instance uses nothing. New scenario "Requests released before the container is gone (accepted trade-off)".
+  - The same wording is fixed in the SCHEDULING_GRAPH.md skip note, the `computeNodeLoadAndResourceUsage` comment ("accounted"), the inline comment, and the 2g.1 test comment.
+- [x] 2h.3 Tests: keep the 2g.1 no-deadlock regression tests; add a scheduler test that makes the discrepancy visible (a stopped-but-not-gone instance's requests are not counted, so another instance is placed beside it), named in the spec scenario.
+  - Kept: `TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance` and `TestPerNodeRolloutWithResourceRequestsReplacesEveryNode`.
+  - New: `TestStoppedInstanceRequestsReleasedBeforeContainerIsGone` (scheduler). A stopped `web-old` (1500m) is still placed on a 2000m node, and `batch-1` (1500m) is placed beside it. It passes on the current code: it documents the discrepancy, it is not a fix. It is named in the new spec scenario. `TestSpreadIgnoresStoppedInstance` is named in the per-node resources scenario.
+- [x] 2h.4 Doc comment of `TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance` to ≤ 4 lines; checks as in 3.1, paste results.
+  - The doc comment is cut to 4 lines.
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ ./scheduler/ -count=1
+    ok  controllers 5.243s | agent 28.319s | types 0.053s | api 8.536s | integration 8.815s | lang 0.116s
+    ok  tenant 0.067s | cmd/cca 6.842s | cmd/k8s-to-cca 0.012s | store 1.597s | scheduler 0.030s
+    $ go test ./scheduler/ -race -count=3
+    ok  	github.com/boyadzhievb/ccattler/scheduler	1.084s
+    $ go test ./integration/ -race -count=3 -run "TestPerNodeRollout|TestPerNodePlacementLifecycle|TestRollingUpdateGraduallyReplacesInstances"
+    ok  	github.com/boyadzhievb/ccattler/integration	2.428s
+    $ go test ./agent/ -race -count=3 -run TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance
+    ok  	github.com/boyadzhievb/ccattler/agent	1.132s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    20 packages ok, 0 failures
+    ```
 
 ## 4. Testbed and review (main session)
 

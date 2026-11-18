@@ -1169,13 +1169,14 @@ func findUnplacedPendingInstances(instances map[string]*schedulerInstanceInfo, p
 }
 
 // countServiceInstancesPerNode returns, per service, how many placed instances
-// each node hosts. It counts placements the same way as loadPerNode (every
-// placement whose instance still exists) so spread and load agree.
+// each node hosts. Like loadPerNode it skips stopped instances, whose placement
+// stays until GC, so spread and load agree and a replacement is not pushed off
+// its predecessor's node (M241 2h.1).
 func countServiceInstancesPerNode(placements map[string]string, instances map[string]*schedulerInstanceInfo) map[string]map[string]int {
 	serviceInstancesPerNode := make(map[string]map[string]int)
 	for instanceID, nodeID := range placements {
 		instanceInfo := instances[instanceID]
-		if instanceInfo == nil {
+		if instanceInfo == nil || instanceInfo.state == types.InstanceStopped {
 			continue
 		}
 		if serviceInstancesPerNode[instanceInfo.service] == nil {
@@ -1186,8 +1187,8 @@ func countServiceInstancesPerNode(placements map[string]string, instances map[st
 	return serviceInstancesPerNode
 }
 
-// computeNodeLoadAndResourceUsage computes the instance count, consumed CPU and
-// consumed memory per node from the placements of instances that are not
+// computeNodeLoadAndResourceUsage computes the instance count, accounted CPU and
+// accounted memory per node from the placements of instances that are not
 // stopped; these give each node's remaining capacity during scheduling.
 func computeNodeLoadAndResourceUsage(
 	placements map[string]string,
@@ -1200,7 +1201,7 @@ func computeNodeLoadAndResourceUsage(
 	for instanceID, nodeID := range placements {
 		instanceInfo := instances[instanceID]
 		if instanceInfo != nil && instanceInfo.state == types.InstanceStopped {
-			continue // its placement stays until GC, but it uses nothing on the node (M241 2g.1)
+			continue // requests no longer counted from the stop request on; the container may still run (M241 2g.1, M246)
 		}
 		loadPerNode[nodeID]++
 		if instanceInfo != nil {

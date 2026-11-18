@@ -1777,7 +1777,19 @@ Agent start / in-place restart (Flow 33)
 Scheduler, per-node service: a node is taken only by a placed instance that is not
         stopped; a stopped one keeps its placement until GC, which waits for the
         replacement, so it must not block the replacement's node                  [2e.2]
-        nor its CPU and memory (computeNodeLoadAndResourceUsage skips stopped)    [2g.1]
+        Requests: a stopped instance's CPU and memory requests are no longer
+        counted (computeNodeLoadAndResourceUsage), and it no longer counts for
+        spread (countServiceInstancesPerNode)                               [2g.1, 2h.1]
+        Accepted accounting trade-off (M241; proper fix M246): marking an instance
+        stopped releases its requests in the scheduler before its container is gone.
+        Until the agent has stopped it, the node's real usage can exceed its
+        accounted requests. Bound: pre_stop hook ≤ 30 s (lifecycleHookTimeout), then
+        SIGTERM and the service's termination_grace_period (user-set, no upper
+        limit), then SIGKILL and ≤ 10 s wait (StopWithGracePeriod); only a process
+        that survives SIGKILL outlives it. Every stop path opens this window:
+        rollouts, `cca stop`, and `cca restart`, which marks every replica at once
+        (up to 2x a node's requests). Per-node start-new-first (below) opens it on
+        every node, and overlapping rollouts of several services add up per node.
 Agent, per-node replacement on the node of the instance it replaces: the desired
         loop starts the new instance (pull, start) before the stale loop stops the
         old one (pre_stop, grace period), so the node keeps the service throughout;

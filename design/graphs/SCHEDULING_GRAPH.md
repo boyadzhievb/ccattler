@@ -69,9 +69,11 @@ Scheduler.Watch()                                                :67
 ```
 attemptPlacements(unplaced, nodes, instances, ...)               :621
 ├── computeNodeLoadAndResourceUsage(placements, instances, res)  :630
-│   └── scans placements × instances → loadPerNode, usedCPU, usedMemory  :1192
-│       (stopped instances skipped: their placement stays until GC but uses no CPU
-│        or memory, or a per-node replacement could not fit on its node, M241 2g.1)
+│   └── scans placements × instances → loadPerNode, usedCPU, usedMemory  :1193
+│       (stopped instances skipped: their requests are no longer counted from the
+│        stop request on, though the container may still run its pre_stop and grace
+│        period; otherwise a per-node replacement could not fit on its node until GC.
+│        Accepted trade-off, M241 2g.1/2h; release on proof of termination: M246)
 │
 ├── buildAliveCandidateNodes(nodes, usedCPU, usedMemory)         :631
 │   └── FOR EACH node where state == "alive":                    :1070
@@ -123,7 +125,7 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
 │       ├── -1 per separate target present on node
 │       └── stable sort: higher affinityScore first
 │
-├── serviceInstancesPerNode = state.serviceInstancesPerNode[svc]  [from countServiceInstancesPerNode :1079]
+├── serviceInstancesPerNode = state.serviceInstancesPerNode[svc]  [from countServiceInstancesPerNode :1175; stopped instances skipped, M241 2h.1]
 ├── NewNodeCapacityCache(candidates, loadPerNode, svcPerNode, reqCPU, reqMem)
 │   └── buildNodeHeap(candidates, load, svcPerNode, cpu, mem)    [node_heap.go:60]
 │       └── filter by capacity → heap.Init (soft service spread first)
@@ -197,7 +199,7 @@ rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
 │   └── nodes where load > idealLoad + 1, sorted by load desc
 │
 └── executeRebalanceMoves(overloaded, nodeLoad, alive, ..., pinned)  :441/:450
-    ├── countServiceInstancesPerNode(placements, instances)      :1132
+    ├── countServiceInstancesPerNode(placements, instances)      :1175  [skips stopped]
     └── FOR EACH overloaded node:
         ├── findMovableInstances(sourceNode, placements, ..., pinned)  :469/:575
         │   └── filter: running, service opted in (placement/rebalance = "true"),
@@ -447,10 +449,10 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `findOverloadedNodes` | scheduler.go:504 | rebalancePlacedInstances |
 | `findMovableInstances` | scheduler.go:519 | executeRebalanceMoves |
 | `selectRebalanceTarget` | scheduler.go:567 | executeRebalanceMoves |
-| `countServiceInstancesPerNode` | scheduler.go:1079 | attemptPlacements, executeRebalanceMoves |
+| `countServiceInstancesPerNode` | scheduler.go:1175 | attemptPlacements, executeRebalanceMoves |
 | `buildRebalanceMoveChanges` | scheduler.go:583 | executeRebalanceMoves |
 | `detectAndLogNodePressure` | scheduler.go:594 | Reconcile |
-| `computeNodeLoadAndResourceUsage` | scheduler.go:1192 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |
+| `computeNodeLoadAndResourceUsage` | scheduler.go:1193 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |
 | `buildAliveCandidateNodes` | scheduler.go:1070 | attemptPlacements, rebalancePlacedInstances |
 | `buildNodeIndexMap` | scheduler.go:1094 | attemptPlacements |
 | `buildNodeZoneMap` | scheduler.go:1104 | attemptPlacements |

@@ -35,8 +35,14 @@ When a service's desired image differs from the image of some of its instances, 
 #### Scenario: Per-node replacement that requests resources
 - **GIVEN** a per-node rollout whose instances each request most of their node's CPU
 - **WHEN** an old instance is stopped
-- **THEN** its replacement is placed on the same node, because a stopped instance uses none of the node's CPU or memory, and the rollout completes
-- Test: `TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance`, `TestPerNodeRolloutWithResourceRequestsReplacesEveryNode`
+- **THEN** its replacement is placed on the same node, because the scheduler stops counting a stopped instance's requests (and its spread) from the stop request on, and the rollout completes
+- Test: `TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance`, `TestPerNodeRolloutWithResourceRequestsReplacesEveryNode`, `TestSpreadIgnoresStoppedInstance`
+
+#### Scenario: Requests released before the container is gone (accepted trade-off)
+- **GIVEN** an instance marked stopped whose container may still run its pre_stop hook (≤ 30 s), its `termination_grace_period` (user-set, no upper limit) and the SIGKILL wait (≤ 10 s)
+- **WHEN** the scheduler places another instance that fits only without the stopped instance's requests
+- **THEN** it places it on that node: until the container is gone the node's real usage can exceed its accounted requests. Every stop path opens this window (rollouts, `cca stop`, `cca restart`, up to 2x a node's requests), per-node rollouts open it on every node, and overlapping rollouts add up per node. Releasing only once the agent has seen the container gone is M246.
+- Test: `TestStoppedInstanceRequestsReleasedBeforeContainerIsGone`
 
 #### Scenario: Per-node replacement starts before the old instance stops
 - **GIVEN** a per-node rollout that stops the old instance on a node and places its replacement there

@@ -48,11 +48,10 @@ func (recordingRuntime *orderRecordingRuntime) recordedCalls() []string {
 	return slices.Clone(recordingRuntime.calls)
 }
 
-// TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance: review round 4
-// (M241 2g.3, decided: keep the order). When a per-node rollout stops the old
-// instance on a node and its replacement is placed there in the same step, the
-// agent starts the new instance before it stops the old one, so the node is
-// never without the service for the pull, start and grace period.
+// TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance: M241 2g.3 (decided
+// order). With the old instance stopped and its replacement placed on the same
+// node in one step, the agent starts the new instance before it stops the old,
+// so the node never lacks the service during the pull, start and grace period.
 func TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { factStore.Close() })
