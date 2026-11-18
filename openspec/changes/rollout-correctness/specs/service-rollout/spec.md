@@ -1,0 +1,150 @@
+# Spec Delta
+
+## Purpose
+States how a change of a service's image reaches its instances: paced within `max_unavailable`, unhealthy old instances replaced first, failures of the new image counted, and a broken image rolled back automatically.
+
+## ADDED Requirements
+
+### Requirement: Old instances are replaced within max_unavailable
+When a service's desired image differs from the image of some of its instances, the rollout controller SHALL stop old-image instances so that the instances unavailable for any reason never exceed `max_unavailable` (1 when unset, capped by the disruption budget). It SHALL stop healthy old instances only while at least one new-image instance is running, or while none has been created yet, and SHALL pick them in instance-ID order.
+
+#### Scenario: Paced and deterministic
+- **GIVEN** a service with 4 running instances on image `a`, `max_unavailable 1`, whose desired image changes to `b`
+- **WHEN** the rollout controller reconciles twice on the same facts
+- **THEN** both times it proposes stopping exactly one instance, the one with the lowest instance ID
+- Test: `TestRolloutStopsOldInstancesInIDOrder`
+
+#### Scenario: Unavailable instances use up the budget
+- **GIVEN** a rollout with `max_unavailable 2` where one instance of the new image is in `crash-loop-backoff` and a healthy new-image instance is running
+- **WHEN** the rollout controller reconciles
+- **THEN** it stops one healthy old instance, not two
+- Test: `TestRolloutCountsAllUnavailableInstancesAgainstMaxUnavailable`
+
+### Requirement: Unhealthy old instances are replaced first
+Old-image instances that are `failed`, `crash-loop-backoff`, `image-pull-backoff`, or on a lost node SHALL be stopped before any healthy old instance and SHALL NOT use up `max_unavailable`: they are already unavailable.
+
+#### Scenario: Crash-looping old instance goes first
+- **GIVEN** a rollout with `max_unavailable 1` where one old-image instance is in `crash-loop-backoff` and two old-image instances are running
+- **WHEN** the rollout controller reconciles
+- **THEN** it stops the crash-looping instance, and no healthy old instance in the same pass
+- Test: `TestRolloutStopsUnhealthyOldInstancesFirst`
+
+### Requirement: Failures of the new image are counted
+The rollout controller SHALL count new-image failures as the sum of restarts of the new-image instances plus the new-image instances that are `failed`. Instances on a lost node SHALL NOT count. It SHALL publish the count as `derived/service/{svc}/rollout/failures` while a rollout is in progress.
+
+#### Scenario: Restarts and failed instances count
+- **GIVEN** a rollout to image `b` with one `b` instance restarted twice and one `b` instance `failed`
+- **WHEN** the rollout controller reconciles
+- **THEN** `rollout/failures` is 3
+- Test: `TestRolloutCountsNewImageRestartsAndFailures`
+
+#### Scenario: Node loss is not a failure of the image
+- **GIVEN** a rollout to image `b` whose `b` instances are all on a node marked failed (`node_failure`)
+- **WHEN** the rollout controller reconciles
+- **THEN** `rollout/failures` is 0 and the desired image is not reverted
+- Test: `TestRolloutIgnoresNodeFailureForRollback`
+
+### Requirement: A broken new image is rolled back
+When new-image failures reach half the service's desired instance count (rounded up), kept between 3 and 200, the rollout controller SHALL write the previous image to `desired/service/{svc}/image`, set the rollout state to `rollback`, and record in `rollout/rollback_reason` the failure count, the threshold and the latest exit reason of a failing instance. It SHALL NOT start another rollback while one is in progress.
+
+#### Scenario: One-instance service rolls back
+- **GIVEN** a service with 1 desired instance rolling out from `a` to `b`, whose `b` instance has restarted 3 times
+- **WHEN** the rollout controller reconciles
+- **THEN** `desired/service/{svc}/image` is `a`, `rollout/state` is `rollback`, and `rollout/rollback_reason` names 3 failures, the threshold 3 and `exited with code 1`
+- Test: `TestRolloutRollsBackSmallServiceOnRestarts`
+
+#### Scenario: Threshold scales with the service
+- **GIVEN** a service with 10 desired instances rolling out to `b`, with 4 new-image failures
+- **WHEN** the rollout controller reconciles
+- **THEN** it does not roll back; with 5 failures it does
+- Test: `TestRolloutRollbackThresholdScalesWithDesiredCount`
+
+#### Scenario: Broken image rolled back on a real cluster
+- **GIVEN** a service running image `a` on the deploy testbed
+- **WHEN** its configuration is applied with an image whose container exits with code 1 at once
+- **THEN** within a few minutes `cca describe service` shows state `rolled-back`, its instances run `a` again, and the old instances that were running `a` are still running or have been replaced by `a` instances
+- Check: `deploy-run:rollout-rollback` (by hand)
+
+### Requirement: Rollout state ends and is reset
+When no instance runs another image than the desired one, the rollout controller SHALL set the state to `complete` after a rollout and to `rolled-back` after a rollback (also from `stalled`), and SHALL delete `rollout/previous_image`, `rollout/failures`, `rollout/reason` and the surge allowance. `rollout/rollback_reason` SHALL stay until the next rollout starts. The next image change SHALL record its own previous image, next revision and history entry.
+
+#### Scenario: Second rollout is tracked
+- **GIVEN** a service that completed a rollout from `a` to `b`
+- **WHEN** its desired image changes to `c`
+- **THEN** `rollout/state` is `rolling`, `rollout/previous_image` is `b`, the revision is one higher and the history records `b`
+- Test: `TestRolloutTracksSecondRollout`
+
+#### Scenario: Rollback finishes
+- **GIVEN** a rollback from `b` to `a`
+- **WHEN** no instance runs `b` any more
+- **THEN** `rollout/state` is `rolled-back` and `rollout/previous_image` is gone
+- Test: `TestRolloutRollbackMovesToRolledBack`
+
+### Requirement: A waiting rollout says why
+While a rollout or rollback is in progress, the rollout controller SHALL publish `derived/service/{svc}/rollout/reason`, naming what it waits for: a new-image instance that is not running (its ID, state, and its status reason or scheduler unplaced reason), the `max_unavailable` budget in use (the unavailable instance IDs), a pause, or the previous image failing during a rollback. The reason SHALL be deleted when the rollout ends.
+
+#### Scenario: New image cannot be pulled
+- **GIVEN** a rollout whose only new-image instance `web-3` is in `image-pull-backoff` with status reason `pull failed: not found`
+- **WHEN** the rollout controller reconciles
+- **THEN** `rollout/reason` names `web-3`, `image-pull-backoff` and `pull failed: not found`
+- Test: `TestRolloutReasonNamesWaitingInstance`
+
+#### Scenario: Paused and budget-bound rollouts
+- **WHEN** a rollout is paused, or cannot stop an old instance because `max_unavailable` is used up
+- **THEN** `rollout/reason` says it is paused, or names the unavailable instances
+- Test: `TestRolloutReasonForPauseAndBudget`
+
+### Requirement: A rollout without progress is rolled back with its reason
+When a rolling, unpaused rollout has made no progress (no old instance stopped and no new-image instance started running) for its progress deadline (`update { progress_deadline }`, default 10 minutes), the rollout controller SHALL roll back as for failures and record why in `rollout/rollback_reason`: the deadline and the reason the rollout was waiting for. A rollback that itself makes no progress for the deadline SHALL become `stalled` with its reason and SHALL NOT roll back again.
+
+#### Scenario: No room for the new instance
+- **GIVEN** a rollout from `a` to `b` whose new-image instance `web-3` has been unplaced with scheduler reason `insufficient_capacity` for longer than the progress deadline
+- **WHEN** the rollout controller reconciles
+- **THEN** `desired/service/{svc}/image` is `a`, `rollout/state` is `rollback`, and `rollout/rollback_reason` names the deadline, `web-3`, `insufficient_capacity` and the instance's resource requirements
+- Test: `TestRolloutRollsBackAfterProgressDeadlineWithReason`
+
+#### Scenario: Progress restarts the deadline
+- **GIVEN** a rollout whose last progress was 9 minutes ago with a 10-minute deadline
+- **WHEN** a new-image instance starts running
+- **THEN** no rollback happens and the deadline counts from that moment
+- Test: `TestRolloutProgressRestartsDeadline`
+
+#### Scenario: Paused rollout does not time out
+- **GIVEN** a paused rollout with no progress for longer than the deadline
+- **WHEN** the rollout controller reconciles
+- **THEN** it does not roll back
+- Test: `TestRolloutPausedIgnoresProgressDeadline`
+
+#### Scenario: Rollback that cannot progress
+- **GIVEN** a rollback whose previous-image instance has been unplaced for longer than the deadline
+- **WHEN** the rollout controller reconciles
+- **THEN** `rollout/state` is `stalled`, `rollout/reason` names the instance and its scheduler reason, and the desired image is unchanged
+- Test: `TestRolloutRollbackStallsWithReason`
+
+#### Scenario: Shown to the user
+- **WHEN** the user runs `cca describe service` after a rollback
+- **THEN** it shows the state and `rollout/rollback_reason`; the rollback reason stays until the next rollout starts
+- Test: `TestDescribeServiceShowsRolloutReason`
+
+### Requirement: Stalled and rolled-back services are shown without asking
+The status API SHALL include each service's rollout state, reason and rollback reason. The RUNTIME HEALTH summary of `cca status` SHALL list services whose rollout is `stalled` or `rolled-back`, with the reason. The e2e health check SHALL report them as warnings with the reason. A `rolled-back` service SHALL stay listed until its next rollout starts.
+
+#### Scenario: Status lists them
+- **GIVEN** one service in `stalled` with reason `web-3 unplaced: insufficient_capacity` and one `rolled-back` with rollback reason `3 failures ≥ 3 on app:v2: exited with code 1`
+- **WHEN** the user runs `cca status`
+- **THEN** RUNTIME HEALTH lists both services with their state and reason
+- Test: `TestStatusTextListsStalledAndRolledBackServices`
+
+#### Scenario: Health check warns
+- **WHEN** the status JSON has a service whose rollout is `stalled` or `rolled-back`
+- **THEN** test/e2e/health_check.sh prints a warning naming the service, the state and the reason
+- Check: health_check.sh run on a sample status JSON (by hand), and `deploy-run:rollout-rollback`
+
+### Requirement: A new image during a rollout keeps the last known-good image
+When the desired image changes while a rollout or rollback is in progress, the rollout controller SHALL start a new rollout to the new image whose previous image stays the image of the last completed rollout.
+
+#### Scenario: Image changed mid-rollout
+- **GIVEN** a rollout from `a` to `b` in progress
+- **WHEN** the desired image changes to `c`
+- **THEN** `rollout/state` is `rolling`, `rollout/previous_image` stays `a`, and a later rollback goes to `a`
+- Test: `TestRolloutNewImageMidRolloutKeepsKnownGood`
