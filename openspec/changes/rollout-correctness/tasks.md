@@ -789,6 +789,8 @@ Testbed on `c843115` (push run 44386083771): per-node `m241pr` with `cpu 1500` o
     20 packages ok, 0 failures
     ```
 
+Review of 2i by Codex (read-only, `8537021..68f48a4`): APPROVE, no findings; noted the broad `derived/instance/` watch as a load cost only. Testbed rerun on `68f48a4` (push run 44389439619, green): per-node `m241pr` `cpu 1500` on 2000m nodes, whoami → nginx: worker-1 (20:22:08), worker-2 (20:22:23), ctrl (20:22:34) replaced one at a time, each reason named the waiting instance, `3 desired` shown, `complete`. PASSED.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
