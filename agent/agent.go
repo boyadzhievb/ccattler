@@ -2090,19 +2090,49 @@ func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID str
 	return types.InstanceStarting
 }
 
+// publishInstanceStateUnlessStopped writes the instance's observed state by
+// compare-and-swap on the revision read just before, and never over stopped:
+// a stop is final for the agent (findInstancesPlacedOnThisNode skips it), and
+// the instance leaves the desired set next cycle (M241 2i.1). Returns true when written.
+func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, instanceID string, state types.InstanceState) bool {
+	stateKey := types.KeyObservedInstanceState(instanceID)
+	var expectedRevision int64 // 0: the key must not exist yet
+	currentStateFact, getError := nodeAgent.store.Get(ctx, stateKey)
+	switch {
+	case getError == nil && types.InstanceState(currentStateFact.Value) == types.InstanceStopped:
+		logging.Default().Info("instance stopped meanwhile, not publishing its state",
+			"agent", nodeAgent.nodeID, "instance", instanceID, "state", string(state))
+		return false
+	case getError == nil:
+		expectedRevision = currentStateFact.Revision
+	case !errors.Is(getError, store.ErrKeyNotFound):
+		logging.Default().Error("failed to read instance state, publishing next cycle", "instance", instanceID, "error", getError.Error())
+		return false
+	}
+	swapped, transactionError := nodeAgent.store.Transaction(ctx,
+		[]store.Compare{{Key: stateKey, Revision: expectedRevision}},
+		[]store.Op{{Type: store.OpPut, Key: stateKey, Value: []byte(string(state))}}, nil)
+	if transactionError != nil || !swapped {
+		logging.Default().Info("instance state changed meanwhile, publishing next cycle", "agent", nodeAgent.nodeID, "instance", instanceID)
+		return false
+	}
+	return true
+}
+
 // publishInstanceStateToStore writes a complete set of observed-state facts for
 // the given instance: its existence marker, owning service, current state, the
 // node it is running on, and its IP address. When a NetworkProvider is configured,
 // an IP is allocated from the node's subnet. Without a provider, the container's
-// bridge IP from the runtime is published if available.
+// bridge IP from the runtime is published if available. Nothing is written when
+// another component stopped the instance meanwhile (M241 2i.1).
 func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState, runtimeIP string) {
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceID, state) {
+		return
+	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte("")); putError != nil {
 		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service)); putError != nil {
-		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
-	}
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(state))); putError != nil {
 		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte(nodeAgent.nodeID)); putError != nil {

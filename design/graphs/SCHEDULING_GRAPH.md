@@ -10,7 +10,10 @@ without reading scheduler source files.
 ```
 Scheduler.Reconcile(ctx, facts)                                  :86
 ├── extractNodeInfoFromFacts(facts)                              :87  → map[nodeID]*schedulerNodeInfo
-├── extractInstanceInfoFromFacts(facts)                          :88  → map[instanceID]*schedulerInstanceInfo
+├── extractInstanceInfoFromFacts(facts)                          :88/:1401  → map[instanceID]*schedulerInstanceInfo
+│   └── derived/instance/{id}/controller_stopped = true → state stopped: never placed, no
+│       load, resources, spread or per-node slot (a surplus the instance controller marked;
+│       without it the testbed per-node cpu 1500 rollout stalled, M241 2i.2)
 ├── extractPlacementsFromFacts(facts)                            :89  → map[instanceID]nodeID
 ├── extractServiceResourcesFromFacts(facts)                      :90  → map[svc]serviceResourceRequirements
 ├── extractPlacementConstraints(facts)                           :91  → map[svc]*servicePlacementConstraint
@@ -60,7 +63,8 @@ Scheduler.Watch()                                                :67
     ├── desired/service/             [resources, constraints, groups, volumes]
     ├── desired/group/               [service group memberships]
     ├── derived/scheduler/unplaced/  [stale unplaced demand facts]
-    └── observed/volume/             [volume access mode, rebalance pinning]
+    ├── observed/volume/             [volume access mode, rebalance pinning]
+    └── derived/instance/            [controller_stopped → the instance counts as stopped, M241 2i.2]
 ```
 
 ## 2. Placement Pipeline (attemptPlacements)
@@ -380,6 +384,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `observed/volume/{vol}/home_node` | node agent | `applyVolumeHomeNodeConstraints` (Flow 26: hard placement pin; `filterByConstraints`, `countConstraintMatchingNodes`, `placeOneGroup`) |
 | `desired/service/{svc}/probe/startup/method` | compiler | `extractServicesWithStartupProbe` |
 | `observed/instance/{id}/probe/startup` | node agent | `extractInstanceInfoFromFacts` |
+| `derived/instance/{id}/controller_stopped` | instance, failure, scheduler (preemption) | `extractInstanceInfoFromFacts` (counts as stopped, M241 2i.2) |
 | `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |
 | `derived/scheduler/unplaced/{id}/*` | self | `extractExistingUnplacedInstanceIDs` :852 |
 
@@ -421,7 +426,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `Scheduler.Watch` | scheduler.go:64 | Runner.setupControllerWatches |
 | `shouldDeferInitialPlacement` | scheduler.go:138 | Reconcile |
 | `extractNodeInfoFromFacts` | scheduler.go:1269 | Reconcile |
-| `extractInstanceInfoFromFacts` | scheduler.go:1243 | Reconcile |
+| `extractInstanceInfoFromFacts` | scheduler.go:1401 | Reconcile |
 | `extractPlacementsFromFacts` | scheduler.go:1327 | Reconcile |
 | `extractServiceResourcesFromFacts` | scheduler.go:90 | Reconcile |
 | `extractPlacementConstraints` | scheduler.go:1359 | Reconcile |

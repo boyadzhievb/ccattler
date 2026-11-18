@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -144,4 +145,44 @@ func assertPlacedOn(t *testing.T, placementScheduler *Scheduler, facts []store.F
 		}
 	}
 	t.Errorf("%s not placed, want %s; changes: %v", instanceID, wantNode, changes)
+}
+
+// TestSchedulerTreatsControllerStoppedAsStopped: testbed stall after 2g (M241
+// 2i.2). A pending instance marked controller_stopped (surplus) is never
+// placed, and a placed one counts for neither resources nor the per-node
+// slot, so the real replacement fits on its node.
+func TestSchedulerTreatsControllerStoppedAsStopped(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("surplus-placed"), "agentd"),
+		kv(types.KeyObservedInstanceState("surplus-placed"), string(types.InstancePending)),
+		kv(types.KeyDerivedInstanceControllerStopped("surplus-placed"), "true"),
+		kv(types.KeyPlacementInstance("surplus-placed"), "node-1"),
+		kv(types.KeyObservedInstanceService("surplus-pending"), "agentd"),
+		kv(types.KeyObservedInstanceState("surplus-pending"), string(types.InstancePending)),
+		kv(types.KeyDerivedInstanceControllerStopped("surplus-pending"), "true"),
+		kv(types.KeyObservedInstanceService("replacement"), "agentd"),
+		kv(types.KeyObservedInstanceState("replacement"), string(types.InstancePending)),
+		kv(types.KeyDesiredServicePlacementMode("agentd"), string(types.PlacementModePerNode)),
+		kv(types.KeyDesiredServiceResourcesCPU("agentd"), "1500"),
+		kv(types.KeyObservedNodeState("node-1"), string(types.NodeAlive)),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "2000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "4096"),
+	)
+	changes, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	placedOnNode := map[string]string{}
+	for _, change := range filterPlacementChanges(changes) {
+		if instanceID, isPlacement := strings.CutPrefix(change.Key, types.ScanPlacements); isPlacement && !strings.Contains(instanceID, "/") {
+			placedOnNode[instanceID] = string(change.Value)
+		}
+	}
+	if nodeID, placed := placedOnNode["surplus-pending"]; placed {
+		t.Errorf("controller_stopped surplus-pending placed on %s, want never placed", nodeID)
+	}
+	if placedOnNode["replacement"] != "node-1" {
+		t.Errorf("replacement placed on %q, want node-1 (the surplus holds no slot or CPU); changes: %v", placedOnNode["replacement"], changes)
+	}
 }

@@ -989,8 +989,8 @@ func TestControllerInterface(t *testing.T) {
 	if placementScheduler.Name() != "scheduler" {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
-	if len(placementScheduler.Watch()) != 7 {
-		t.Fatalf("expected 7 watch prefixes, got %d", len(placementScheduler.Watch()))
+	if len(placementScheduler.Watch()) != 8 { // derived/instance/ for controller_stopped (M241 2i.2)
+		t.Fatalf("expected 8 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }
 

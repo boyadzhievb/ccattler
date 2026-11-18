@@ -229,7 +229,7 @@ executeReconciliationCycle(controller, deltaEvents)
 ### Writes (agent)
 | Key Pattern | Where Written |
 |---|---|
-| `observed/instance/{id}/state` | publishInstanceStateToStore |
+| `observed/instance/{id}/state` | publishInstanceStateToStore (by CAS via publishInstanceStateUnlessStopped, M241 2i.1) |
 | `observed/instance/{id}/service` | publishInstanceStateToStore |
 | `observed/instance/{id}/ip` | publishInstanceStateToStore |
 | `observed/instance/{id}/node` | publishInstanceStateToStore |
@@ -265,6 +265,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `buildRuntimeSpecForInstance` | `reconcileDesiredInstance` |
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
+| `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state; never over another component's stopped, M241 2i.1) |
 | `deleteExitReason` | `executeReconciliationCycle` (if running) |
 | `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |

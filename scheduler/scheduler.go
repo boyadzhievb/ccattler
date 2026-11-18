@@ -73,6 +73,7 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanDesiredGroups,
 		types.ScanDerivedSchedulerUnplaced,
 		types.ScanObservedVolumes,
+		types.ScanDerivedInstances, // controller_stopped: a surplus or replaced instance is stopped (M241 2i.2)
 	}
 }
 
@@ -1393,9 +1394,10 @@ type schedulerNodeInfo struct {
 	restrictions map[string]string
 }
 
-// extractInstanceInfoFromFacts parses the flat list of store facts and returns
-// a map of instance ID to schedulerInstanceInfo, extracting each instance's
-// service name and lifecycle state from the observed-instances key prefix.
+// extractInstanceInfoFromFacts returns each instance's service and lifecycle
+// state from the observed facts; derived/instance/{id}/controller_stopped=true
+// makes it stopped, so a surplus or replaced instance is never placed and holds
+// no slot, load, resources or spread (M241 2i.2).
 func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInstanceInfo {
 	instances := make(map[string]*schedulerInstanceInfo)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
@@ -1415,6 +1417,12 @@ func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInsta
 			instances[instanceID].state = types.InstanceState(fact.Value)
 		case startupProbeStateKeySuffix:
 			instances[instanceID].startupProbeState = types.StartupProbeState(fact.Value)
+		}
+	}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedInstances) {
+		instanceID, isStopMarker := strings.CutSuffix(strings.TrimPrefix(fact.Key, types.ScanDerivedInstances), "/controller_stopped")
+		if instanceInfo := instances[instanceID]; isStopMarker && instanceInfo != nil && string(fact.Value) == "true" {
+			instanceInfo.state = types.InstanceStopped
 		}
 	}
 	return instances

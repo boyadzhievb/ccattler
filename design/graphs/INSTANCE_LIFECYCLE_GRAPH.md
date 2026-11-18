@@ -314,6 +314,9 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   └── DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
     ├── publishInstanceStateToStore(ctx, id, state, ip, node)
+    │   ├── publishInstanceStateUnlessStopped               [M241 2i.1]
+    │   │   Get state → stopped (written by another component) → write nothing, return;
+    │   │   else TXN compare revision read → PUT state; lost CAS → next cycle
     │   ├── PUT observed/instance/{id}/state    = "running"|"starting"
     │   ├── PUT observed/instance/{id}/ip       = containerIP
     │   └── PUT observed/instance/{id}/node     = nodeID
@@ -365,7 +368,7 @@ executeReconciliationCycle                                   :539
     │   ├── Running: true  → InstanceRunning
     │   └── otherwise      → InstanceStarting   [exited after List: next cycle records it, Flow 33, M238 D4]
     │
-    ├── publishInstanceStateToStore(ctx, id, state, ip, node)
+    ├── publishInstanceStateToStore(ctx, id, state, ip, node)   [CAS, never over stopped: 2i.1]
     └── deleteExitReason(ctx, id)               [DELETE observed/instance/{id}/exit-reason]
 ```
 

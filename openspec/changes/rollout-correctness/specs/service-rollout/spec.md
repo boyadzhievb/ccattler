@@ -38,6 +38,12 @@ When a service's desired image differs from the image of some of its instances, 
 - **THEN** its replacement is placed on the same node, because the scheduler stops counting a stopped instance's requests (and its spread) from the stop request on, and the rollout completes
 - Test: `TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance`, `TestPerNodeRolloutWithResourceRequestsReplacesEveryNode`, `TestSpreadIgnoresStoppedInstance`
 
+#### Scenario: A stop survives the agent's publish and a surplus instance is never placed
+- **GIVEN** a per-node rollout with resource requests where the agent publishes `running` for an old instance from a read taken before the rollout stopped it, and the instance controller marks a new instance surplus (`controller_stopped`)
+- **WHEN** the agent publishes and the scheduler places
+- **THEN** the agent's publish does not overwrite `stopped`, the scheduler neither places the surplus instance nor counts it on a node, and the rollout completes with exactly one instance per node
+- Test: `TestAgentNeverOverwritesConcurrentStop`, `TestSchedulerTreatsControllerStoppedAsStopped`, `TestPerNodeResourceRolloutSurvivesStaleStateOverwrite`
+
 #### Scenario: Requests released before the container is gone (accepted trade-off)
 - **GIVEN** an instance marked stopped whose container may still run its pre_stop hook (≤ 30 s), its `termination_grace_period` (user-set, no upper limit) and the SIGKILL wait (≤ 10 s)
 - **WHEN** the scheduler places another instance that fits only without the stopped instance's requests

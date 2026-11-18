@@ -737,10 +737,57 @@ Round 5 (on `25c5088..c843115`, APPROVE) found that 2g.1 frees a stopped instanc
 
 Testbed on `c843115` (push run 44386083771): per-node `m241pr` with `cpu 1500` on 2000m nodes, whoami → nginx: ctrl and worker-1 replaced; worker-2 STALLED, replacement `e1ef91879b` `insufficient_capacity (cpu 1500m)` for good. Events (20:04:05): .603 rollout marks old `f1fce61172` stopped; .713 new `9769e395ab` created; .777 the agent overwrites `f1fce61172` with `running` (plain Put, round 4 "accepted" item); .806 the instance controller sees 3 active and marks `9769e395ab` surplus (`controller_stopped`); .823 rollout stops `f1fce61172` again; .875 `e1ef91879b` created; .888 the scheduler places `9769e395ab` on worker-2 anyway (it reads only the observed state, the 2e.2 flag (2) noted as harmless). `9769e395ab` now holds worker-2's 1500m and GC never removes it (running never reaches 3). Both earlier accepted items are real together.
 
-- [ ] 2i.1 The agent never overwrites a `stopped` written by another component: publish the observed state with a store transaction (CAS on the value/revision read in the cycle), and treat a state that became `stopped` mid-cycle as the stop it is (the instance leaves the desired set next cycle). Keep the agent's own `stopped` writes and the M233/M238 states working.
-- [ ] 2i.2 The scheduler treats `derived/instance/{id}/controller_stopped=true` as stopped: never places such an instance, and does not count it in load, resources, spread or the per-node slot. Watch `derived/instance/` (or the key) so it reacts; update SCHEDULING_GRAPH.md.
-- [ ] 2i.3 Failing tests first: a loop test that replays the testbed order (state overwritten mid-cycle, surplus stop, late placement) on a per-node service with resource requests and ends `complete` with exactly one instance per node; a scheduler test with a `controller_stopped` pending instance (not placed, no resources counted); an agent test that a concurrent `stopped` survives the agent's publish. Record red, then green.
-- [ ] 2i.4 Docs and graphs; checks as in 3.1, paste results. Main session then reruns the testbed per-node `cpu 1500` case.
+- [x] 2i.1 The agent never overwrites a `stopped` written by another component: publish the observed state with a store transaction (CAS on the value/revision read in the cycle), and treat a state that became `stopped` mid-cycle as the stop it is (the instance leaves the desired set next cycle). Keep the agent's own `stopped` writes and the M233/M238 states working.
+  - `publishInstanceStateUnlessStopped` (agent/agent.go) is called first in `publishInstanceStateToStore`, the one path for every non-stopped state the agent writes (running, starting, pulling, image-pull-backoff, waiting-for-secrets, failed, crash-loop-backoff). It reads the state key. If the value is `stopped` it writes nothing at all (no marker, node, IP or created-at). Otherwise it writes the state in a store transaction that compares the revision just read (0: the key must not exist). A lost CAS writes nothing, and the next cycle publishes again.
+  - The agent's own `stopped` writes (`cleanupUndesiredInstance`, `cleanupStoppedStaleInstance`) stay plain Puts. A stopped instance is already final for the agent: `findInstancesPlacedOnThisNode` skips it, so next cycle its container is stopped by the stale loop.
+  - Choice (small, noted): the CAS revision is read at publish time, not carried from the cycle's first read. Carrying it would also refuse legitimate changes made during the cycle, such as a re-created ordinal's `pending` (2e.1), and only `stopped` must never be overwritten. The read-to-transaction window is closed by the revision compare.
+- [x] 2i.2 The scheduler treats `derived/instance/{id}/controller_stopped=true` as stopped: never places such an instance, and does not count it in load, resources, spread or the per-node slot. Watch `derived/instance/` (or the key) so it reacts; update SCHEDULING_GRAPH.md.
+  - `extractInstanceInfoFromFacts` (scheduler/scheduler.go:1401) sets the state to stopped when `derived/instance/{id}/controller_stopped` = `true`. Every scheduler rule keyed on the state now treats it as stopped: never pending, so never placed; no load or resources (2g.1); no spread (2h.1); no per-node slot (2e.2); not a preemption or rebalance candidate. `derived/instance/` is added to `Scheduler.Watch` (8 prefixes; `TestControllerInterface` updated). SCHEDULING_GRAPH.md updated.
+- [x] 2i.3 Failing tests first: a loop test that replays the testbed order (state overwritten mid-cycle, surplus stop, late placement) on a per-node service with resource requests and ends `complete` with exactly one instance per node; a scheduler test with a `controller_stopped` pending instance (not placed, no resources counted); an agent test that a concurrent `stopped` survives the agent's publish. Record red, then green.
+  - Tests:
+    - scheduler/per_node_resource_rollout_test.go `TestPerNodeResourceRolloutSurvivesStaleStateOverwrite` replays the testbed order with the real instance controller, rollout controller and scheduler (the scheduler package can import controllers; the controllers loop harness cannot), on 3 nodes of 2000m with `cpu 1500`. A fake agent reads the states at cycle start and publishes after: without CAS it overwrites the rollout's stop. Then instance → rollout → instance → scheduler → agent apply. A `controller_stopped` instance without a container keeps its observed `pending`, as the real agent does. Two subtests: agent without CAS (the pre-2i agent) and with CAS.
+    - `TestSchedulerTreatsControllerStoppedAsStopped`: a placed and a pending `controller_stopped` surplus; the replacement must get the node's slot and CPU.
+    - agent/state_cas_test.go `TestAgentNeverOverwritesConcurrentStop`: the runtime's `Status`, called between the running-path read and the publish, writes `stopped`; the stop must survive and the container be stopped.
+  - Red run, 2026-11-18, before the fixes:
+    ```
+    --- FAIL: TestPerNodeResourceRolloutSurvivesStaleStateOverwrite/agent_CAS_false
+        per_node_resource_rollout_test.go:223: rollout/state = "rolling" after 30 passes, want complete (reason "waiting for agentd-new-02 unplaced: insufficient_capacity (cpu 1500m, memory 0Mi)")
+        per_node_resource_rollout_test.go:230: node-1 hosts active instances [], want exactly one
+        per_node_resource_rollout_test.go:235: node-2: agentd-old-1 is running with container "app:a", want running app:b
+        per_node_resource_rollout_test.go:235: node-3: agentd-old-2 is running with container "app:a", want running app:b
+    --- FAIL: TestSchedulerTreatsControllerStoppedAsStopped
+        per_node_rollout_test.go:186: replacement placed on "", want node-1 (the surplus holds no slot or CPU); changes: [derived/scheduler/unplaced/replacement/reason = insufficient_capacity …]
+    --- FAIL: TestAgentNeverOverwritesConcurrentStop (5.03s)
+        state_cas_test.go:62: timed out waiting for: the concurrent stop kept and web-1's container stopped
+    ```
+    The CAS subtest of the replay passed before the fixes: its fake agent models the fix, and the real agent's fix is covered by `TestAgentNeverOverwritesConcurrentStop`. The non-CAS subtest passing after the fixes shows the scheduler fix alone also ends the stall.
+  - Green: all three pass; spec scenario "A stop survives the agent's publish and a surplus instance is never placed".
+- [x] 2i.4 Docs and graphs; checks as in 3.1, paste results. Main session then reruns the testbed per-node `cpu 1500` case.
+  - Docs: Flow 34 (the scheduler's "stopped" includes `controller_stopped`; the agent publishes state by CAS, with the testbed chain); SCHEDULING_GRAPH.md (Watch, `extractInstanceInfoFromFacts`, key table, line numbers); INSTANCE_LIFECYCLE_GRAPH.md §3 and §4 (`publishInstanceStateUnlessStopped`); CALL_GRAPH.md (reverse index, key table); the service-rollout spec scenario.
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ ./scheduler/ -count=1
+    ok  controllers 5.272s | agent 28.411s | types 0.049s | api 9.144s | integration 8.207s | lang 0.041s
+    ok  tenant 0.100s | cmd/cca 6.925s | cmd/k8s-to-cca 0.024s | store 1.608s | scheduler 0.038s
+    $ go test ./agent/ -race -count=3 -run "TestAgentNeverOverwritesConcurrentStop|TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance|TestAgentStartsNewIncarnationWithoutOldBackoff|TestAgentReplacesContainerOnAnotherImageThanRecorded|TestAgentBacksOff"
+    ok  	github.com/boyadzhievb/ccattler/agent	6.316s
+    $ go test ./scheduler/ -race -count=3
+    ok  	github.com/boyadzhievb/ccattler/scheduler	1.108s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.272s
+    $ go test ./integration/ -race -count=3 -run "TestPerNodeRollout|TestPerNodePlacementLifecycle|TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage|TestRollingUpdateGraduallyReplacesInstances"
+    ok  	github.com/boyadzhievb/ccattler/integration	2.368s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    20 packages ok, 0 failures
+    ```
 
 ## 4. Testbed and review (main session)
 

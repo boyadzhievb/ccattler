@@ -1780,6 +1780,15 @@ Scheduler, per-node service: a node is taken only by a placed instance that is n
         Requests: a stopped instance's CPU and memory requests are no longer
         counted (computeNodeLoadAndResourceUsage), and it no longer counts for
         spread (countServiceInstancesPerNode)                               [2g.1, 2h.1]
+        "Stopped" for the scheduler is the observed state stopped or
+        derived/instance/{id}/controller_stopped = true: a surplus the instance
+        controller marked is never placed and holds no slot or resources    [2i.2]
+Agent state publish: by CAS on the state's revision read just before, never over
+        a stopped written by another component (a rollout's stop); the instance
+        leaves the desired set next cycle and its container is stopped. Testbed:
+        a plain Put turned a rollout's stop back into running, the instance
+        controller marked the new instance surplus, the scheduler placed it, and it
+        held the node's CPU for good                                            [2i.1]
         Accepted accounting trade-off (M241; proper fix M246): marking an instance
         stopped releases its requests in the scheduler before its container is gone.
         Until the agent has stopped it, the node's real usage can exceed its
