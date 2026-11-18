@@ -733,6 +733,15 @@ Round 5 (on `25c5088..c843115`, APPROVE) found that 2g.1 frees a stopped instanc
     20 packages ok, 0 failures
     ```
 
+## 2i. Rework after the per-node resource testbed run (added 2026-11-18)
+
+Testbed on `c843115` (push run 44386083771): per-node `m241pr` with `cpu 1500` on 2000m nodes, whoami → nginx: ctrl and worker-1 replaced; worker-2 STALLED, replacement `e1ef91879b` `insufficient_capacity (cpu 1500m)` for good. Events (20:04:05): .603 rollout marks old `f1fce61172` stopped; .713 new `9769e395ab` created; .777 the agent overwrites `f1fce61172` with `running` (plain Put, round 4 "accepted" item); .806 the instance controller sees 3 active and marks `9769e395ab` surplus (`controller_stopped`); .823 rollout stops `f1fce61172` again; .875 `e1ef91879b` created; .888 the scheduler places `9769e395ab` on worker-2 anyway (it reads only the observed state, the 2e.2 flag (2) noted as harmless). `9769e395ab` now holds worker-2's 1500m and GC never removes it (running never reaches 3). Both earlier accepted items are real together.
+
+- [ ] 2i.1 The agent never overwrites a `stopped` written by another component: publish the observed state with a store transaction (CAS on the value/revision read in the cycle), and treat a state that became `stopped` mid-cycle as the stop it is (the instance leaves the desired set next cycle). Keep the agent's own `stopped` writes and the M233/M238 states working.
+- [ ] 2i.2 The scheduler treats `derived/instance/{id}/controller_stopped=true` as stopped: never places such an instance, and does not count it in load, resources, spread or the per-node slot. Watch `derived/instance/` (or the key) so it reacts; update SCHEDULING_GRAPH.md.
+- [ ] 2i.3 Failing tests first: a loop test that replays the testbed order (state overwritten mid-cycle, surplus stop, late placement) on a per-node service with resource requests and ends `complete` with exactly one instance per node; a scheduler test with a `controller_stopped` pending instance (not placed, no resources counted); an agent test that a concurrent `stopped` survives the agent's publish. Record red, then green.
+- [ ] 2i.4 Docs and graphs; checks as in 3.1, paste results. Main session then reruns the testbed per-node `cpu 1500` case.
+
 ## 4. Testbed and review (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:rollout-rollback`): deploy a service on a good image, apply it with an image whose container exits with code 1 at once, and watch `cca describe service` move from `rolling` to `rollback` to `rolled-back`, with instances back on the good image. Apply an image tag that does not exist, with `progress_deadline 2m`: the reason names the pull error, and after 2 minutes the rollout rolls back with that `rollback_reason`. Apply a service whose resource request no node can meet and see `insufficient_capacity` in the reason and in the rollback reason. Then apply a good second image and see `rolling` → `complete`, with `previous_image` gone. Record the commands and output.
