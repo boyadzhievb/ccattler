@@ -212,7 +212,7 @@ func buildServiceDescribe(ctx context.Context, factStore store.StateStore, event
 		Name:             service.Name,
 		Image:            service.Image,
 		Command:          service.Command,
-		DesiredInstances: service.Instances,
+		DesiredInstances: readPerNodeAwareDesiredCount(ctx, factStore, serviceName, service.Instances),
 		ExposedPorts:     service.Ports,
 	}
 
@@ -516,7 +516,7 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 	pacing := types.ResolveRolloutPacing(workloadKind, expectedCount,
 		readOptionalIntegerFact(ctx, factStore, types.KeyDesiredServiceUpdateMaxUnavailable(serviceName)),
 		readOptionalIntegerFact(ctx, factStore, types.KeyDesiredServiceUpdateMaxExtra(serviceName)),
-	).CappedByDisruptionBudget(budgetMinAvailable, budgetMaxUnavailable, desiredCount)
+	).CappedByDisruptionBudget(budgetMinAvailable, budgetMaxUnavailable, expectedCount)
 	return &DescribeUpdateStrategy{
 		MaxUnavailable:          strconv.Itoa(pacing.MaxUnavailable),
 		MaxExtra:                strconv.Itoa(pacing.MaxExtra),
@@ -534,7 +534,21 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 func readServiceWorkloadKind(ctx context.Context, factStore store.StateStore, serviceName string) types.WorkloadKind {
 	placementMode := store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServicePlacementMode(serviceName))
 	isStateful := store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServiceStateful(serviceName)) == "true"
-	return types.WorkloadKindOf(isStateful, placementMode)
+	return types.WorkloadKindOf(isStateful, types.PlacementMode(placementMode))
+}
+
+// readPerNodeAwareDesiredCount returns the desired instance count describe
+// shows: for a per-node service, which declares none, the effective count (one
+// per alive node, M241 2g.2); otherwise declaredCount.
+func readPerNodeAwareDesiredCount(ctx context.Context, factStore store.StateStore, serviceName string, declaredCount int) int {
+	if readServiceWorkloadKind(ctx, factStore, serviceName) != types.WorkloadPerNode {
+		return declaredCount
+	}
+	effectiveCount, parseError := strconv.Atoi(store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServiceInstances(serviceName)))
+	if parseError != nil {
+		return declaredCount
+	}
+	return effectiveCount
 }
 
 // readOptionalIntegerFact returns the integer stored at factKey, or nil when it

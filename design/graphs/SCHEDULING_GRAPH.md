@@ -69,7 +69,9 @@ Scheduler.Watch()                                                :67
 ```
 attemptPlacements(unplaced, nodes, instances, ...)               :621
 ├── computeNodeLoadAndResourceUsage(placements, instances, res)  :630
-│   └── scans placements × instances → loadPerNode, usedCPU, usedMemory  :1047
+│   └── scans placements × instances → loadPerNode, usedCPU, usedMemory  :1192
+│       (stopped instances skipped: their placement stays until GC but uses no CPU
+│        or memory, or a per-node replacement could not fit on its node, M241 2g.1)
 │
 ├── buildAliveCandidateNodes(nodes, usedCPU, usedMemory)         :631
 │   └── FOR EACH node where state == "alive":                    :1070
@@ -106,7 +108,7 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
 │       │   └── FOR EACH node restriction: !accept[label] → false
 │       └── all filtered out → return original list (fallback)   :1462
 │
-├── [per-node] filterOutNodesAlreadyHostingService(candidates, svc, ...) :1046/:1583
+├── [per-node] filterOutNodesAlreadyHostingService(candidates, svc, ...) :1046/:1586
 │   └── build occupiedNodes from placements of not stopped instances → remove from candidates
 │       (a stopped instance keeps its placement until instance GC, which waits for its
 │        replacement; counting it blocked every per-node rollout, M241 2e.2)
@@ -448,7 +450,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `countServiceInstancesPerNode` | scheduler.go:1079 | attemptPlacements, executeRebalanceMoves |
 | `buildRebalanceMoveChanges` | scheduler.go:583 | executeRebalanceMoves |
 | `detectAndLogNodePressure` | scheduler.go:594 | Reconcile |
-| `computeNodeLoadAndResourceUsage` | scheduler.go:1047 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |
+| `computeNodeLoadAndResourceUsage` | scheduler.go:1192 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |
 | `buildAliveCandidateNodes` | scheduler.go:1070 | attemptPlacements, rebalancePlacedInstances |
 | `buildNodeIndexMap` | scheduler.go:1094 | attemptPlacements |
 | `buildNodeZoneMap` | scheduler.go:1104 | attemptPlacements |
@@ -468,7 +470,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `filterByRestrictions` | scheduler.go:1495 | filterByConstraints (no constraints path) |
 | `satisfiesRequireLabels` | scheduler.go:1470 | filterByConstraints |
 | `toleratesRestrictions` | scheduler.go:1484 | filterByConstraints, filterByRestrictions |
-| `filterOutNodesAlreadyHostingService` | scheduler.go:1583 | placeBatchedInstances (per-node) |
+| `filterOutNodesAlreadyHostingService` | scheduler.go:1586 | placeBatchedInstances (per-node) |
 | `rankByPreferences` | scheduler.go:1512 | placeBatchedInstances |
 | `rankByAffinityHints` | scheduler.go:1569 | placeBatchedInstances |
 | `findMinZones` | scheduler.go:995 | placeBatchedInstances (zone-spread, maxSkew param) |

@@ -98,3 +98,24 @@ func TestAgentStartsNewIncarnationWithoutOldBackoff(t *testing.T) {
 		waitForStartOnNewImageWithoutRestart(t, ctx, factStore, "db-0")
 	})
 }
+
+// TestAgentLogsNewIncarnationOnce: review round 4 (M241 2g.4). While a new
+// incarnation cannot start yet, every cycle sees the image mismatch again; it
+// is logged the first time only, and again for a later incarnation.
+func TestAgentLogsNewIncarnationOnce(t *testing.T) {
+	nodeAgent := New("node-1", store.NewMemoryStore(), newCrashingRuntime())
+	wantFirstSights := []struct {
+		recordedImage string // recordedImage is the incarnation's recorded image.
+		wantFirst     bool   // wantFirst says whether it is logged.
+	}{
+		{recordedImage: "nginx:1.28", wantFirst: true},
+		{recordedImage: "nginx:1.28", wantFirst: false},
+		{recordedImage: "nginx:1.28", wantFirst: false},
+		{recordedImage: "nginx:1.29", wantFirst: true},
+	}
+	for cycleIndex, wantSight := range wantFirstSights {
+		if firstSight := nodeAgent.isFirstSightOfIncarnation("db-0", wantSight.recordedImage); firstSight != wantSight.wantFirst {
+			t.Errorf("cycle %d (%s): first sight = %v, want %v", cycleIndex, wantSight.recordedImage, firstSight, wantSight.wantFirst)
+		}
+	}
+}

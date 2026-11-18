@@ -111,3 +111,31 @@ service db {
 		return serviceRolledOutTo(ctx, factStore, "db", "mariadb:11", 1)
 	})
 }
+
+// TestPerNodeRolloutWithResourceRequestsReplacesEveryNode: review round 4
+// (M241 2g.1). Each agentd instance requests 3000m of a 4000m node, so a
+// replacement fits on its node only once the stopped predecessor's request
+// is no longer counted; the rollout still completes.
+func TestPerNodeRolloutWithResourceRequestsReplacesEveryNode(t *testing.T) {
+	t.Parallel()
+	factStore, ctx := startRolloutKindsCluster(t, `
+service agentd {
+    image monitor:1.0
+    placement {
+        mode per-node
+    }
+    update {
+        min_healthy_time 0s
+    }
+}
+`)
+	// Plain millicores: the scheduler does not read unit suffixes yet (M243).
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("agentd"), []byte("3000"))
+	waitFor(t, rolloutKindsTimeout, "3 running agentd instances", func() bool {
+		return countRunningInstancesForService(ctx, factStore, "agentd") == 3
+	})
+	factStore.Put(ctx, types.KeyDesiredServiceImage("agentd"), []byte("monitor:2.0"))
+	waitFor(t, rolloutKindsTimeout, "agentd rollout complete on monitor:2.0 on every node", func() bool {
+		return serviceRolledOutTo(ctx, factStore, "agentd", "monitor:2.0", 3)
+	})
+}

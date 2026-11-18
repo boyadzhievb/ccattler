@@ -75,9 +75,22 @@ func (nodeAgent *Agent) forgetOldIncarnationBackoff(ctx context.Context, instanc
 	if !isNewIncarnation {
 		return false
 	}
-	logging.Default().Info("exited container ran another image than recorded, starting the recorded image at once",
-		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "exited_image", startedImage, "recorded_image", recordedImage)
+	if nodeAgent.isFirstSightOfIncarnation(instanceInfo.id, recordedImage) {
+		logging.Default().Info("exited container ran another image than recorded, starting the recorded image at once",
+			"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "exited_image", startedImage, "recorded_image", recordedImage)
+	}
 	delete(nodeAgent.crashLoopBackoffs, instanceInfo.id)
+	return true
+}
+
+// isFirstSightOfIncarnation reports whether this is the first time the agent
+// sees the instance's new incarnation on recordedImage, and remembers it, so
+// the new incarnation is logged once, not every cycle until it starts (2g.4).
+func (nodeAgent *Agent) isFirstSightOfIncarnation(instanceID string, recordedImage string) bool {
+	if nodeAgent.incarnationLoggedImage[instanceID] == recordedImage {
+		return false
+	}
+	nodeAgent.incarnationLoggedImage[instanceID] = recordedImage
 	return true
 }
 

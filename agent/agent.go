@@ -129,6 +129,7 @@ type Agent struct {
 	crashLoopResetPeriod     time.Duration                        // crashLoopResetPeriod is the run time after which the back-off starts over; tests set a short value.
 	initStepBackoffs         map[string]*initStepBackoffEntry     // initStepBackoffs tracks per-instance init step retry state across reconcile cycles so the reconcile loop never blocks on retries.
 	imageFallbackLogged      map[string]bool                      // imageFallbackLogged marks instances without a recorded image whose fallback to the service image was logged (M241 D1).
+	incarnationLoggedImage   map[string]string                    // incarnationLoggedImage maps an instance to the recorded image whose new incarnation was last logged (M241 2g.4).
 	bridgeRetryAttempted     bool                                 // bridgeRetryAttempted is true after the first deferred bridge attachment attempt, preventing repeated retries on every container start.
 	testHookChannel          chan func()                          // testHookChannel lets tests inject closures that execute inside the agent goroutine, avoiding data races on agent-internal state.
 }
@@ -152,6 +153,7 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		crashLoopResetPeriod:     crashLoopResetPeriod,
 		initStepBackoffs:         make(map[string]*initStepBackoffEntry),
 		imageFallbackLogged:      make(map[string]bool),
+		incarnationLoggedImage:   make(map[string]string),
 		secretDeliveryWaits:      make(map[string]*secretDeliveryWaitEntry),
 		legacyKeyFilePath:        LegacySecretMasterKeyPath,
 		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
@@ -1220,11 +1222,10 @@ func (nodeAgent *Agent) lookupInstanceImageFromStore(ctx context.Context, instan
 	return serviceImage
 }
 
-// replaceContainerOnAnotherImage ensures a running container runs its
-// instance's recorded image (M241 2e.1): when the image this agent last started
-// (observed image) differs, the ID got a new incarnation while the old container
-// ran, so it is stopped and the next cycle starts the recorded image. Returns
-// true when it stopped the container; a missing fact or read error changes nothing.
+// replaceContainerOnAnotherImage ensures a running container runs its recorded
+// image (M241 2e.1): on a new incarnation on another image it stops the
+// container, and the next cycle starts the recorded image. Returns true when it
+// stopped the container.
 func (nodeAgent *Agent) replaceContainerOnAnotherImage(ctx context.Context, instanceInfo placedInstanceInfo) bool {
 	startedImage, recordedImage, isNewIncarnation := nodeAgent.findNewIncarnationOnAnotherImage(ctx, instanceInfo)
 	if !isNewIncarnation {
@@ -1242,10 +1243,9 @@ func (nodeAgent *Agent) replaceContainerOnAnotherImage(ctx context.Context, inst
 }
 
 // findNewIncarnationOnAnotherImage returns the image this agent last started
-// for the instance (observed image), its recorded image, and whether they
-// differ: the ID got a new incarnation on another image, so the container's
-// exits, back-off and restarts are not the new incarnation's (M241 2e.1, 2f).
-// A missing fact or a read error is no new incarnation.
+// (observed), the recorded image, and whether they differ: a new incarnation on
+// another image, which owns none of the container's exits, back-off or restarts
+// (M241 2e.1, 2f). A missing fact or read error is no new incarnation.
 func (nodeAgent *Agent) findNewIncarnationOnAnotherImage(ctx context.Context, instanceInfo placedInstanceInfo) (string, string, bool) {
 	recordedImageFact, recordedError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceImage(instanceInfo.id))
 	startedImageFact, startedError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceImage(instanceInfo.id))
@@ -1256,12 +1256,17 @@ func (nodeAgent *Agent) findNewIncarnationOnAnotherImage(ctx context.Context, in
 	return startedImage, recordedImage, startedImage != recordedImage
 }
 
-// cleanupStaleImageFallbackLogs forgets the logged image fallback of instances
-// no longer placed on this node.
+// cleanupStaleImageFallbackLogs forgets the logged image fallbacks and new
+// incarnations of instances no longer placed on this node.
 func (nodeAgent *Agent) cleanupStaleImageFallbackLogs(desiredByID map[string]bool) {
 	for loggedInstanceID := range nodeAgent.imageFallbackLogged {
 		if !desiredByID[loggedInstanceID] {
 			delete(nodeAgent.imageFallbackLogged, loggedInstanceID)
+		}
+	}
+	for loggedInstanceID := range nodeAgent.incarnationLoggedImage {
+		if !desiredByID[loggedInstanceID] {
+			delete(nodeAgent.incarnationLoggedImage, loggedInstanceID)
 		}
 	}
 }

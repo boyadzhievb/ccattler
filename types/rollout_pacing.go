@@ -20,9 +20,13 @@ const percentDenominator = 100
 // end up 0, which would let it neither stop nor create an instance.
 const rolloutMinimumPace = 1
 
+// PlacementMode is a service's placement mode (placement { mode … }); the
+// empty mode is the default placement.
+type PlacementMode string
+
 // PlacementModePerNode is the placement mode of a service that runs one
 // instance on every alive node (placement { mode per-node }).
-const PlacementModePerNode = "per-node"
+const PlacementModePerNode PlacementMode = "per-node"
 
 // WorkloadKind is how a service's instances are laid out, which decides its
 // rollout defaults (M241 D14).
@@ -88,7 +92,7 @@ func ResolveRolloutPacing(workloadKind WorkloadKind, expectedCount int, explicit
 
 // WorkloadKindOf returns the kind of a service from its effective stateful
 // flag and placement mode; stateful wins when both are set.
-func WorkloadKindOf(isStateful bool, placementMode string) WorkloadKind {
+func WorkloadKindOf(isStateful bool, placementMode PlacementMode) WorkloadKind {
 	switch {
 	case isStateful:
 		return WorkloadStateful
@@ -100,14 +104,15 @@ func WorkloadKindOf(isStateful bool, placementMode string) WorkloadKind {
 }
 
 // CappedByDisruptionBudget lowers max_unavailable to the service's disruption
-// budget: its max_unavailable, and desiredCount − min_available (at least 1).
-// Zero budget values are unset and change nothing.
-func (pacing RolloutPacing) CappedByDisruptionBudget(budgetMinAvailable int, budgetMaxUnavailable int, desiredCount int) RolloutPacing {
+// budget: its max_unavailable, and expectedCount − min_available (at least 1),
+// expectedCount being the effective count (a per-node service has no desired
+// one, M241 2g.2). Zero budget values are unset and change nothing.
+func (pacing RolloutPacing) CappedByDisruptionBudget(budgetMinAvailable int, budgetMaxUnavailable int, expectedCount int) RolloutPacing {
 	if budgetMaxUnavailable > 0 {
 		pacing.MaxUnavailable = min(pacing.MaxUnavailable, budgetMaxUnavailable)
 	}
-	if budgetMinAvailable > 0 && desiredCount > 0 {
-		pacing.MaxUnavailable = min(pacing.MaxUnavailable, max(desiredCount-budgetMinAvailable, rolloutMinimumPace))
+	if budgetMinAvailable > 0 && expectedCount > 0 {
+		pacing.MaxUnavailable = min(pacing.MaxUnavailable, max(expectedCount-budgetMinAvailable, rolloutMinimumPace))
 	}
 	return pacing
 }

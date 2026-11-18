@@ -132,7 +132,8 @@ Scheduler.Reconcile
 │       ├── per-node → filterOutNodesAlreadyHostingService
 │       │   (a node hosting a placed, not stopped instance of the service is
 │       │    skipped; a stopped one keeps its placement until GC but does not
-│       │    occupy the node, so a per-node rollout's replacement is placed, M241 2e.2)
+│       │    occupy the node, so a per-node rollout's replacement is placed, M241 2e.2;
+│       │    nor does it count in the node's used CPU and memory, 2g.1)
 │       ├── buildCandidateNodes        → heap sorted by loadScore
 │       ├── rankByPreferences          → prefer/require/accept
 │       ├── rankByAffinityHints        → colocate/separate tiebreaker
@@ -337,9 +338,10 @@ The agent never publishes `failed` from observing a container (M238). An exited 
 
 ### executeReconciliationCycle → running instance path
 ```
-executeReconciliationCycle                                   :537
+executeReconciliationCycle                                   :539
 └── FOR EACH running instance:
-    ├── replaceContainerOnAnotherImage(ctx, instanceInfo)    :1228  [M241 2e.1]
+    ├── replaceContainerOnAnotherImage(ctx, instanceInfo)    :1229  [M241 2e.1]
+    │   ├── findNewIncarnationOnAnotherImage                 :1249
     │   ├── Get derived/instance/{id}/image (recorded) + observed/instance/{id}/image
     │   │   (the image this agent last started)
     │   ├── both set and different (ID recreated while the old container ran,
@@ -347,9 +349,9 @@ executeReconciliationCycle                                   :537
     │   │   pre_stop hook → stopInstanceWithGracePeriod → forget crash-loop back-off
     │   │   → next cycle starts the recorded image (not counted as a restart)
     │   └── missing fact or read error → no change
-    ├── detectConfigChange(ctx, instanceInfo)                :1461
+    ├── detectConfigChange(ctx, instanceInfo)                :1479
     │   ├── no stored hash → no compare (instance started by an older agent)
-    │   ├── computeServiceConfigHash(ctx, service)           :1430  [empty input → hash of "", never ""; M236 inputs above]
+    │   ├── computeServiceConfigHash(ctx, service)           :1562  [empty input → hash of "", never ""; M236 inputs above]
     │   │   └── read error → no compare, instance keeps running (a blip is not a change)
     │   └── compare with observed/instance/{id}/config-hash
     │       → if changed: stopInstanceWithGracePeriod → restart
@@ -357,7 +359,7 @@ executeReconciliationCycle                                   :537
     ├── reconcileResourceChanges(ctx, instanceInfo)
     │   └── live resize CPU/memory if supported
     │
-    ├── republishHostPortIfNeeded(ctx, id)                   :1009
+    ├── republishHostPortIfNeeded(ctx, id)                   :1083
     │
     ├── observeInstanceState(id)
     │   ├── Running: true  → InstanceRunning

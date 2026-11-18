@@ -335,7 +335,7 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 		case "stateful":
 			statefulServices[serviceName] = string(fact.Value) == "true"
 		case "placement_mode":
-			perNodeServices[serviceName] = string(fact.Value) == types.PlacementModePerNode
+			perNodeServices[serviceName] = types.PlacementMode(fact.Value) == types.PlacementModePerNode
 		}
 	}
 

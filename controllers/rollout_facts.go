@@ -189,7 +189,7 @@ func (clusterFacts rolloutClusterFacts) buildServiceInput(serviceName string, no
 	}
 	disruptionBudget := clusterFacts.disruptionBudgets[serviceName]
 	pacing := types.ResolveRolloutPacing(clusterFacts.workloadKinds[serviceName], expectedCount, updatePolicy.explicitMaxUnavailable, updatePolicy.explicitMaxExtra).
-		CappedByDisruptionBudget(disruptionBudget.minAvailable, disruptionBudget.maxUnavailable, clusterFacts.desiredCounts[serviceName])
+		CappedByDisruptionBudget(disruptionBudget.minAvailable, disruptionBudget.maxUnavailable, expectedCount)
 	healthRule := rolloutHealthRule{
 		minHealthyTime:   updatePolicy.minHealthyTime,
 		requireReadiness: clusterFacts.readinessProbed[serviceName],
@@ -285,11 +285,10 @@ func parseUpdatePolicyInteger(serviceName string, suffix string, factValue []byt
 	return &parsedValue
 }
 
-// extractInstancesByService returns all instances grouped by service name and
-// sorted by ID, with effective state from observed and derived facts. The
-// recorded image (derived/instance/{id}/image) shadows the observed image in
-// the merged fields: it is the image the agent starts the instance with. Both
-// are also kept apart, for the health rule's "started on its image" (2e.1).
+// extractInstancesByService returns the instances by service, sorted by ID, with
+// effective state. image is the recorded image (it shadows the observed one in
+// the merged fields: the agent starts it); both are also kept apart for the
+// "started on its recorded image" rule (2e.1, 2f.2).
 func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceInfo {
 	instanceFields := parseInstanceFieldsFromFacts(facts)
 	recordedImages := collectStringValuesBySuffix(facts, types.ScanDerivedInstances, "image")
@@ -428,7 +427,7 @@ func extractWorkloadKinds(facts []store.Fact) map[string]types.WorkloadKind {
 	workloadKinds := make(map[string]types.WorkloadKind)
 	for _, kindFacts := range []map[string]string{statefulServices, placementModes} {
 		for serviceName := range kindFacts {
-			workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", placementModes[serviceName])
+			workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", types.PlacementMode(placementModes[serviceName]))
 		}
 	}
 	return workloadKinds

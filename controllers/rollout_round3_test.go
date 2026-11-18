@@ -152,7 +152,7 @@ func TestRolloutReasonNamesWaitingPerNodeInstance(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			kindFacts := mergeFactMaps(rollingFacts(types.RolloutRolling, "app:a", "app:b", time.Minute), map[string]string{
-				types.KeyEffectiveServicePlacementMode("web"): types.PlacementModePerNode,
+				types.KeyEffectiveServicePlacementMode("web"): string(types.PlacementModePerNode),
 				types.KeyEffectiveServiceInstances("web"):     "3",
 			})
 			inputFacts := buildRolloutTestFacts("app:b", mergeFactMaps(kindFacts, testCase.unplacedFacts),

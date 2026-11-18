@@ -290,7 +290,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, fi
 		}
 	}
 
-	isPerNode := serviceDecl.Placement != nil && serviceDecl.Placement.Mode == "per-node"
+	isPerNode := serviceDecl.Placement != nil && types.PlacementMode(serviceDecl.Placement.Mode) == types.PlacementModePerNode
 
 	facts := []Fact{
 		{Key: types.KeyDesiredService(serviceDecl.Name), Value: ""},

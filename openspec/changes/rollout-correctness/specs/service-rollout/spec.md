@@ -32,6 +32,24 @@ When a service's desired image differs from the image of some of its instances, 
 - **THEN** no extra ordinal or extra instance is created, instances are replaced one at a time, and both rollouts reach `complete`; each per-node replacement is placed on the node its stopped predecessor left
 - Test: `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`, `TestPerNodePlacesReplacementOnNodeOfStoppedInstance`, `TestPerNodeRolloutReplacesEveryNode`
 
+#### Scenario: Per-node replacement that requests resources
+- **GIVEN** a per-node rollout whose instances each request most of their node's CPU
+- **WHEN** an old instance is stopped
+- **THEN** its replacement is placed on the same node, because a stopped instance uses none of the node's CPU or memory, and the rollout completes
+- Test: `TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance`, `TestPerNodeRolloutWithResourceRequestsReplacesEveryNode`
+
+#### Scenario: Per-node replacement starts before the old instance stops
+- **GIVEN** a per-node rollout that stops the old instance on a node and places its replacement there
+- **WHEN** the node's agent reconciles
+- **THEN** it starts the new instance before it stops the old one, so the node is never without the service for the pull, start and grace period
+- Test: `TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance`
+
+#### Scenario: Disruption budget of a per-node service
+- **GIVEN** a per-node service on 3 nodes (no desired instance count), `max_unavailable 2` and `disruption { min_available 2 }`
+- **WHEN** the rollout controller reconciles, and `cca describe service` runs
+- **THEN** it stops one instance at a time, and describe shows 3 desired instances and max_unavailable 1
+- Test: `TestRolloutDisruptionBudgetUsesExpectedCountForPerNode`, `TestDescribePerNodeServiceUsesExpectedCount`
+
 #### Scenario: A rollback can always move
 - **GIVEN** a 3-instance service with default pacing, two instances on the new image running, which rolls back
 - **WHEN** the instance and rollout controllers reconcile

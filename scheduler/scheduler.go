@@ -319,7 +319,7 @@ func findPreemptionVictim(
 			continue
 		}
 		constraint := placementConstraints[victimService]
-		if constraint != nil && constraint.mode == "per-node" {
+		if constraint != nil && constraint.mode == types.PlacementModePerNode {
 			continue
 		}
 		if statefulServices[victimService] {
@@ -640,7 +640,7 @@ func findMovableInstances(
 		if constraint == nil || !constraint.rebalance {
 			continue
 		}
-		if constraint.mode == "per-node" || len(constraint.colocate) > 0 || len(constraint.separate) > 0 {
+		if constraint.mode == types.PlacementModePerNode || len(constraint.colocate) > 0 || len(constraint.separate) > 0 {
 			continue
 		}
 		movable = append(movable, instanceID)
@@ -1042,7 +1042,7 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 	candidates := filterByConstraints(state.alive, serviceName, state.placementConstraints)
 	constraint := state.placementConstraints[serviceName]
 
-	if constraint != nil && constraint.mode == "per-node" {
+	if constraint != nil && constraint.mode == types.PlacementModePerNode {
 		candidates = filterOutNodesAlreadyHostingService(candidates, serviceName, state.placements, state.instances)
 	}
 
@@ -1087,7 +1087,7 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 		state.loadPerNode[bestNode]++
 		serviceInstancesPerNode[bestNode]++
 		cache.RecordPlacement(bestNode, reqCPU, reqMemory)
-		if constraint != nil && constraint.mode == "per-node" {
+		if constraint != nil && constraint.mode == types.PlacementModePerNode {
 			cache.RemoveNode(bestNode)
 		}
 		updateNodeResourcesAfterPlacement(state.alive, bestNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
@@ -1186,9 +1186,9 @@ func countServiceInstancesPerNode(placements map[string]string, instances map[st
 	return serviceInstancesPerNode
 }
 
-// computeNodeLoadAndResourceUsage iterates over existing placements and computes
-// the instance count, consumed CPU, and consumed memory per node. These totals
-// are used to determine remaining capacity on each node during scheduling.
+// computeNodeLoadAndResourceUsage computes the instance count, consumed CPU and
+// consumed memory per node from the placements of instances that are not
+// stopped; these give each node's remaining capacity during scheduling.
 func computeNodeLoadAndResourceUsage(
 	placements map[string]string,
 	instances map[string]*schedulerInstanceInfo,
@@ -1198,8 +1198,12 @@ func computeNodeLoadAndResourceUsage(
 	usedCPU := make(map[string]int64)
 	usedMemory := make(map[string]int64)
 	for instanceID, nodeID := range placements {
+		instanceInfo := instances[instanceID]
+		if instanceInfo != nil && instanceInfo.state == types.InstanceStopped {
+			continue // its placement stays until GC, but it uses nothing on the node (M241 2g.1)
+		}
 		loadPerNode[nodeID]++
-		if instanceInfo := instances[instanceID]; instanceInfo != nil {
+		if instanceInfo != nil {
 			if resource, ok := serviceResources[instanceInfo.service]; ok {
 				usedCPU[nodeID] += resource.cpu
 				usedMemory[nodeID] += resource.memory
@@ -1491,7 +1495,7 @@ func extractPlacementsFromFacts(facts []store.Fact) map[string]string {
 // servicePlacementConstraint holds parsed placement constraints for a service.
 type servicePlacementConstraint struct {
 	// mode is the placement mode: "" (default) or "per-node" (one instance per alive node).
-	mode string
+	mode types.PlacementMode
 	// architecture is the required CPU architecture (empty means any).
 	architecture string
 	// zonePolicy is "spread" for zone-aware distribution, or a specific zone name.
@@ -1534,7 +1538,7 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 		constraint := constraints[serviceName]
 		switch {
 		case suffix == "placement/mode":
-			constraint.mode = string(fact.Value)
+			constraint.mode = types.PlacementMode(fact.Value)
 		case suffix == "placement/rebalance":
 			constraint.rebalance = string(fact.Value) == "true"
 		case suffix == "placement/architecture":
@@ -1575,11 +1579,10 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 	return constraints
 }
 
-// filterOutNodesAlreadyHostingService removes candidate nodes that already
-// have a placed, not stopped instance of the given service. Used by per-node
-// placement to enforce the one-instance-per-node invariant. A stopped
-// instance keeps its placement until instance GC, which waits for its
-// replacement, so counting it would block a per-node rollout (M241 2e.2).
+// filterOutNodesAlreadyHostingService removes candidate nodes hosting a placed,
+// not stopped instance of the service (per-node: one instance per node). A
+// stopped one keeps its placement until GC, which waits for its replacement, so
+// counting it would block a per-node rollout (M241 2e.2).
 func filterOutNodesAlreadyHostingService(
 	candidates []candidateNode,
 	serviceName string,

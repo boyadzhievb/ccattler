@@ -80,7 +80,7 @@ func TestInstanceControllerSurgesOnlyStatelessWithOldInstances(t *testing.T) {
 		{name: "stateless with old instances surges", currentImage: "app:a", wantCreated: true},
 		{name: "stateless without old instances", currentImage: "app:b", wantCreated: false},
 		{name: "per-node never surges", currentImage: "app:a", wantCreated: false,
-			kindFacts: map[string]string{types.KeyEffectiveServicePlacementMode("web"): types.PlacementModePerNode}},
+			kindFacts: map[string]string{types.KeyEffectiveServicePlacementMode("web"): string(types.PlacementModePerNode)}},
 		{name: "stateful never surges", currentImage: "app:a", wantCreated: false,
 			kindFacts: map[string]string{types.KeyEffectiveServiceStateful("web"): "true", types.KeyObservedInstanceOrdinal("web-0"): "0"}},
 	}

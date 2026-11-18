@@ -909,7 +909,7 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 			if err != nil {
 				return nil, err
 			}
-			if placementDecl.Mode != "per-node" {
+			if types.PlacementMode(placementDecl.Mode) != types.PlacementModePerNode {
 				return nil, parser.parserErrorf("unsupported placement mode %q (supported: per-node)", placementDecl.Mode)
 			}
 		default:

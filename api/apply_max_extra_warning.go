@@ -23,7 +23,7 @@ func collectIgnoredMaxExtraWarnings(facts []lang.Fact) []string {
 		serviceName := serviceCount.ServiceName
 		maxExtraText, hasMaxExtra := compiledValues[types.KeyDesiredServiceUpdateMaxExtra(serviceName)]
 		workloadKind := types.WorkloadKindOf(compiledValues[types.KeyDesiredServiceStateful(serviceName)] == "true",
-			compiledValues[types.KeyDesiredServicePlacementMode(serviceName)])
+			types.PlacementMode(compiledValues[types.KeyDesiredServicePlacementMode(serviceName)]))
 		if !hasMaxExtra || maxExtraText == "0" || workloadKind == types.WorkloadStateless {
 			continue
 		}

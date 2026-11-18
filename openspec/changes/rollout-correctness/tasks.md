@@ -511,7 +511,7 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
   - Green: `--- PASS: TestRolloutRecreatedOrdinalCountsOnlyOnceStartedOnNewImage` (both subtests), `--- PASS: TestRolloutRecreatedInstanceWithoutStartedAtIsNotHealthy` (5 cases), `--- PASS: TestAgentReplacesContainerOnAnotherImageThanRecorded (0.05s)`, `--- PASS: TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage`.
 - [x] 2e.2 Testbed T2 (per-node replacement never placed): per-node `m241pn` on 3 nodes, whoami → `nginx:1.27`: old `233eb1b1f3` on worker-1 stopped at 16:00:12, new `6272b78d8a` created with no node and no events, still `pending` after 3.5 min; no rollout reason, no unplaced fact logged. Find why per-node placement does not place it (stopped instance still counted on the node? per-node placement owned by the intent controller?), fix it, and make the rollout reason name the waiting instance in this case too (D7: a waiting rollout always says why).
   - Root cause: the scheduler, not the intent controller. Per-node placement (`placeBatchedInstances` → `filterOutNodesAlreadyHostingService`, scheduler/scheduler.go) treated every node with a placement of the service as taken, stopped instances included. The rollout stops the old instance by writing its observed state `stopped`, but its placement stays until instance GC, and GC waits until the service has its expected running count, which needs the replacement. With one instance per node, every node was taken and the replacement stayed pending forever: a deadlock. The intent controller only sets the effective count to the alive node count (3), and the instance controller created the replacement correctly.
-  - Fix: `filterOutNodesAlreadyHostingService` skips instances whose observed state is `stopped`. The replacement goes to the node its predecessor left. If the old container still runs there for one agent cycle, the agent stops it in the same cycle: the instance is not desired any more.
+  - Fix: `filterOutNodesAlreadyHostingService` skips instances whose observed state is `stopped`. The replacement goes to the node its predecessor left. (Corrected in 2g.3: within the agent cycle that sees both, the desired loop pulls and starts the new instance before the stale loop stops the old one, so the two overlap briefly on the node. That is the decided order.)
   - Reason: not reproduced. With the bug, the integration run's rollout reason was `waiting for <id> unplaced: insufficient_capacity` (the scheduler wrote `derived/scheduler/unplaced/<id>/reason`). `TestRolloutReasonNamesWaitingPerNodeInstance` pins that a pending per-node replacement is named with its unplaced reason, or with `pending` before the scheduler has seen it, and it passed before any change. No code path for a rolling service skips the reason. The testbed's "no rollout reason" may have been read from output without the Rollout section; the main session should check the reason on the next testbed run.
   - Decided 2026-11-18 (user agreed): (1) → new bug milestone M245, verified in the code (`classifyUnplacedReason` falls through to `insufficient_capacity`). (2) → note only: a `controller_stopped` instance holds its per-node node only until its agent stops it (one agent pass); it blocks for good only when that agent never reports, which the node-failure path covers.
   - Not fixed, out of scope (flag): (1) the scheduler labels "every matching node already hosts this per-node service" as `insufficient_capacity`, and the cluster-scale controller requests a node for it (clusterscale.go:255). (2) The per-node filter reads only the observed state, so an instance stopped only by `controller_stopped` (failure-controller replacement on an alive node, scale-down) still takes its node until GC. That has the same shape, but the scheduler does not watch `derived/instance/`.
@@ -633,14 +633,65 @@ Testbed on `ae47f36` (push run 44366640013): T1 stateful whoami → nginx PASSED
     20 packages ok, 0 failures
     ```
 
-## 2g. Rework after review round 4 (added 2026-11-18, proposed, waiting for the user)
+Testbed rerun after 2f (push run 44373404786 on `25c5088`, green): stateful nginx → `mariadb:11` rolled back (`3 failures ≥ 3 on …/mariadb:11`); the agent logged `exited container ran another image than recorded, starting the recorded image at once` (exited_image mariadb:11, recorded nginx:1.27), the healthy wait started at once, `rolled-back` with `m241db-0` running nginx and 0 restarts; no "previous image also fails". PASSED.
 
-- [ ] 2g.1 (H) A stopped instance still holds node CPU and memory: `computeNodeLoadAndResourceUsage` (scheduler/scheduler.go) counts every placement, so a per-node replacement that requests resources is `insufficient_capacity` on its only node until GC, which waits for the replacement: the 2e.2 deadlock again (reviewer probe: `cpu 1500` on a 2000m node). Skip `InstanceStopped` there as the per-node filter and `computeServiceZonePlacements` do; per-node scheduler test and rollout test with resource requests.
-- [ ] 2g.2 (M, found in round 4 by reading, verified) The disruption budget gets `desiredCounts` (0 for per-node services without `instances`) instead of the expected count (controllers/rollout_facts.go `CappedByDisruptionBudget(…, clusterFacts.desiredCounts[…])`, api/describe.go:519), so `min_available` is ignored for per-node services. Pass the expected (effective) count in both; `cca describe service` shows the effective count for per-node services instead of `0 desired`.
-- [ ] 2g.3 (L, decided 2026-11-18: keep the order) Per-node replacement starts before the old container on the same node is stopped: the agent runs the desired loop (pull + start the new instance) before the stale loop (pre_stop + graceful stop of the old). User: stopping the old first would leave the node (or a one-node cluster) without the service for the pull, start and grace period. Keep start-new-then-stop-old; the brief overlap is safe (per-instance IPs, no host networking or host-port clash). Only document it: correct the 2e.2 note, state the order in Flow 34 and the service-rollout spec, and add a test that pins it (new running before old stopped on the same node).
-- [ ] 2g.4 (L) `forgetOldIncarnationBackoff` logs at Info every cycle while the recorded image cannot start yet; log once per incarnation.
-- [ ] 2g.5 (style) Doc comments over 4 lines (`replaceContainerOnAnotherImage`, `findNewIncarnationOnAnotherImage`, `filterOutNodesAlreadyHostingService`, `extractInstancesByService`); typed `PlacementMode` with `PlacementModePerNode` used for every `"per-node"` literal (scheduler.go 322/643/1045/1090, lang/parser.go 912, lang/compiler.go 293); INSTANCE_LIFECYCLE_GRAPH.md §4 line numbers.
-- [ ] 2g.6 Failing tests first for 2g.1–2g.3 (record red); docs and graphs; checks as in 3.1, paste results.
+## 2g. Rework after review round 4 (added 2026-11-18)
+
+- [x] 2g.1 (H) A stopped instance still holds node CPU and memory: `computeNodeLoadAndResourceUsage` (scheduler/scheduler.go) counts every placement, so a per-node replacement that requests resources is `insufficient_capacity` on its only node until GC, which waits for the replacement: the 2e.2 deadlock again (reviewer probe: `cpu 1500` on a 2000m node). Skip `InstanceStopped` there as the per-node filter and `computeServiceZonePlacements` do; per-node scheduler test and rollout test with resource requests.
+  - `computeNodeLoadAndResourceUsage` (scheduler/scheduler.go) now skips placements of `stopped` instances for load, CPU and memory, as the per-node filter does. Its three callers (placement, rebalance resources, pressure log) all get the corrected usage.
+  - Green: `TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance` (scheduler: 1500m on a 2000m node, beside a stopped instance) and `TestPerNodeRolloutWithResourceRequestsReplacesEveryNode` (integration: 3000m per instance on 4000m nodes, rollout completes). The request is written as plain millicores, since unit suffixes read as 0 until M243.
+- [x] 2g.2 (M, found in round 4 by reading, verified) The disruption budget gets `desiredCounts` (0 for per-node services without `instances`) instead of the expected count (controllers/rollout_facts.go `CappedByDisruptionBudget(…, clusterFacts.desiredCounts[…])`, api/describe.go:519), so `min_available` is ignored for per-node services. Pass the expected (effective) count in both; `cca describe service` shows the effective count for per-node services instead of `0 desired`.
+  - The rollout controller (`buildServiceInput`) and describe (`buildServiceUpdateStrategy`) now pass the expected count to `CappedByDisruptionBudget`: effective, else desired. Its parameter is renamed `expectedCount`.
+  - `readPerNodeAwareDesiredCount` (api/describe.go) makes describe show the effective count as desired for per-node services (kind from the effective placement mode); other services are unchanged.
+  - Green: `TestRolloutDisruptionBudgetUsesExpectedCountForPerNode` (one stop, not two) and `TestDescribePerNodeServiceUsesExpectedCount` (3 desired, max_unavailable 1).
+- [x] 2g.3 (L, decided 2026-11-18: keep the order) Per-node replacement starts before the old container on the same node is stopped: the agent runs the desired loop (pull + start the new instance) before the stale loop (pre_stop + graceful stop of the old). User: stopping the old first would leave the node (or a one-node cluster) without the service for the pull, start and grace period. Keep start-new-then-stop-old; the brief overlap is safe (per-instance IPs, no host networking or host-port clash). Only document it: correct the 2e.2 note, state the order in Flow 34 and the service-rollout spec, and add a test that pins it (new running before old stopped on the same node).
+  - Documented as decided. The 2e.2 note is corrected, Flow 34 has an "Agent, per-node replacement" paragraph, and the service-rollout spec has the scenario "Per-node replacement starts before the old instance stops".
+  - The pin is `TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance` (agent/per_node_order_test.go). In one agent-loop hook the old instance is stopped and its replacement placed on the same node; the runtime's call order must show `start agentd-new` before `stop agentd-old`. It passes on the current code, as expected for a pin.
+- [x] 2g.4 (L) `forgetOldIncarnationBackoff` logs at Info every cycle while the recorded image cannot start yet; log once per incarnation.
+  - `isFirstSightOfIncarnation` (agent/crash_loop_backoff.go) remembers the recorded image last logged per instance (`incarnationLoggedImage`, cleared with the other per-instance logs when the instance leaves the node). `forgetOldIncarnationBackoff` logs only on a new incarnation. Green: `TestAgentLogsNewIncarnationOnce`.
+- [x] 2g.5 (style) Doc comments over 4 lines (`replaceContainerOnAnotherImage`, `findNewIncarnationOnAnotherImage`, `filterOutNodesAlreadyHostingService`, `extractInstancesByService`); typed `PlacementMode` with `PlacementModePerNode` used for every `"per-node"` literal (scheduler.go 322/643/1045/1090, lang/parser.go 912, lang/compiler.go 293); INSTANCE_LIFECYCLE_GRAPH.md §4 line numbers.
+  - Doc comments of the four functions cut to 4 lines.
+  - `types.PlacementMode` is now a typed string, with `PlacementModePerNode PlacementMode`. `servicePlacementConstraint.mode` is typed, and every `"per-node"` literal in scheduler.go (322, 643, 1045, 1090), lang/parser.go:912 and lang/compiler.go:293 uses the constant. `WorkloadKindOf` takes a `PlacementMode`, and its callers convert the stored string. `lang.PlacementDecl.Mode` stays a string: the AST holds source text.
+  - INSTANCE_LIFECYCLE_GRAPH.md §4 line numbers updated (`executeReconciliationCycle` :539, `replaceContainerOnAnotherImage` :1229, `findNewIncarnationOnAnotherImage` :1249, `detectConfigChange` :1479, `computeServiceConfigHash` :1562, `republishHostPortIfNeeded` :1083).
+- [x] 2g.6 Failing tests first for 2g.1–2g.3 (record red); docs and graphs; checks as in 3.1, paste results.
+  - Red run, 2026-11-18, before the fixes:
+    ```
+    --- FAIL: TestPerNodeReplacementWithResourcesFitsBesideStoppedInstance
+        per_node_rollout_test.go:78: new-1 not placed on node-1 beside the stopped old-1; changes: [derived/scheduler/unplaced/new-1/reason = insufficient_capacity, …]
+    --- FAIL: TestPerNodeRolloutWithResourceRequestsReplacesEveryNode (10.05s)
+        rollout_kinds_test.go:138: timed out waiting for: agentd rollout complete on monitor:2.0 on every node
+    --- FAIL: TestRolloutDisruptionBudgetUsesExpectedCountForPerNode
+        rollout_round4_test.go:30: stopped [web-1 web-2], want exactly one (3 expected, min_available 2)
+    --- FAIL: TestDescribePerNodeServiceUsesExpectedCount
+        describe_pacing_kind_test.go:115: desired instances = 0, want the effective count 3
+        describe_pacing_kind_test.go:118: update strategy = &{MaxUnavailable:2 … WorkloadKind:per-node …}, want max_unavailable 1
+    ok  agent  TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance (passes: pins the decided order)
+    ```
+  - Docs: Flow 34 (stopped instances use no node resources, the per-node start order, the budget against the expected count); SCHEDULING_GRAPH.md (`computeNodeLoadAndResourceUsage` skip note, line numbers); INSTANCE_LIFECYCLE_GRAPH.md §2 and §4; the service-rollout spec (three scenarios).
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ ./scheduler/ -count=1
+    ok  controllers 5.267s | agent 28.412s | types 0.078s | api 9.349s | integration 8.190s | lang 0.048s
+    ok  tenant 0.123s | cmd/cca 6.636s | cmd/k8s-to-cca 0.008s | store 1.604s | scheduler 0.017s
+    $ go test ./agent/ -race -count=3 -run "TestAgentStartsPerNodeReplacementBeforeStoppingOldInstance|TestAgentLogsNewIncarnationOnce|TestAgentStartsNewIncarnationWithoutOldBackoff|TestAgentReplacesContainerOnAnotherImageThanRecorded|TestAgentBacksOff"
+    ok  	github.com/boyadzhievb/ccattler/agent	6.240s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController|TestFailure"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.291s
+    $ go test ./scheduler/ -race -count=3 -run PerNode
+    ok  	github.com/boyadzhievb/ccattler/scheduler	1.023s
+    $ go test ./integration/ -race -count=3 -run "TestPerNodeRollout|TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage|TestRollingUpdateGraduallyReplacesInstances|TestRollbackOnHealthFailure|TestPerNodePlacementLifecycle"
+    ok  	github.com/boyadzhievb/ccattler/integration	2.500s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    $ go test ./... -count=1
+    20 packages ok, 0 failures
+    ```
 
 ## 4. Testbed and review (main session)
 

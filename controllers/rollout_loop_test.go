@@ -261,7 +261,7 @@ func TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace(t *testing.T) {
 		cluster.assertAllActiveOnImage(rolloutLoopNewImage, 1)
 	})
 	t.Run("per-node, 3 nodes", func(t *testing.T) {
-		cluster := newRolloutLoopCluster(t, "agentd", 3, false, map[string]string{types.KeyEffectiveServicePlacementMode("agentd"): types.PlacementModePerNode})
+		cluster := newRolloutLoopCluster(t, "agentd", 3, false, map[string]string{types.KeyEffectiveServicePlacementMode("agentd"): string(types.PlacementModePerNode)})
 		cluster.placementCapacity = 3
 		cluster.runPasses(20, types.RolloutComplete)
 		if cluster.rolloutState() != types.RolloutComplete {
@@ -278,7 +278,7 @@ func TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace(t *testing.T) {
 // rollout finishes before the 10-minute progress deadline instead of being
 // rolled back for want of room for a surge instance.
 func TestRolloutPerNodeEightNodesCompletes(t *testing.T) {
-	cluster := newRolloutLoopCluster(t, "agentd", 8, false, map[string]string{types.KeyEffectiveServicePlacementMode("agentd"): types.PlacementModePerNode})
+	cluster := newRolloutLoopCluster(t, "agentd", 8, false, map[string]string{types.KeyEffectiveServicePlacementMode("agentd"): string(types.PlacementModePerNode)})
 	cluster.placementCapacity = 8
 	cluster.runPasses(60, types.RolloutComplete)
 	if cluster.rolloutState() != types.RolloutComplete {

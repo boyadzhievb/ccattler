@@ -1777,6 +1777,13 @@ Agent start / in-place restart (Flow 33)
 Scheduler, per-node service: a node is taken only by a placed instance that is not
         stopped; a stopped one keeps its placement until GC, which waits for the
         replacement, so it must not block the replacement's node                  [2e.2]
+        nor its CPU and memory (computeNodeLoadAndResourceUsage skips stopped)    [2g.1]
+Agent, per-node replacement on the node of the instance it replaces: the desired
+        loop starts the new instance (pull, start) before the stale loop stops the
+        old one (pre_stop, grace period), so the node keeps the service throughout;
+        the brief overlap is safe (per-instance IPs, no host networking or host-port
+        clash). Deliberate: stop-first would leave the node, or a one-node cluster,
+        without the service for the pull, start and grace period                  [2g.3]
 
 RolloutController pass, per service (sorted), instances sorted by ID     [D3–D7]
   image(instance) = derived/instance/{id}/image, else observed image; "" → new
@@ -1795,7 +1802,8 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
   pace: max_unavailable / max_extra from update {}; unset, stateless: 25 % of expected
         (down: floor, up: ceil) [D12]; stateful and per-node: 1 / 0, never a surge, an
         explicit max_extra ignored (apply warns) [D14]; both 0 → max_unavailable 1;
-        capped by the disruption budget; rollback / stalled: max_unavailable ≥ 1   [D14]
+        capped by the disruption budget (min_available against the expected = effective
+        count, also for per-node services, 2g.2); rollback / stalled: max_unavailable ≥ 1   [D14]
   surge: InstanceController adds min(rollout/surge_allowance, old-image instances left)
         to the count, only for a stateless service, so new instances never outnumber
         the expected count and none is scaled down at the end; the pass that stops the
