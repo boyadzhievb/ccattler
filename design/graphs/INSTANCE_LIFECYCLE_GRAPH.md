@@ -22,34 +22,36 @@ InstanceController.Reconcile(ctx, facts)                     :80
 ├── instanceCreationFacts{extractDesiredImages(facts), fields}  [M241 D1, D2]
 │   └── reads desired/service/{svc}/image  [rollout_facts.go]
 │
-├── extractSurgeAllowances(facts)                            :359
-│   └── reads derived/service/{svc}/rollout/surge_allowance
-│       → desiredCounts[svc] += surgeCount, only for a service that is neither
-│         stateful nor per-node and hasOldImageInstances :348 (M241 D14)
-│
-├── buildInstanceMapsFromFields(fieldsByInstanceID)           :378
+├── buildInstanceMapsFromFields(fieldsByInstanceID)           :380
 │   ├── effectiveInstanceState(fields)                       [helpers.go:198]
 │   │   ├── controller_stopped == "true" → InstanceStopped
 │   │   ├── node_failure == "true"       → InstanceFailed
 │   │   └── else                         → observed state
 │   └── → stateByInstanceID, serviceByInstanceID
 │
-├── buildActiveInstanceIDsByService(...)                      :394
+├── buildActiveInstanceIDsByService(...)                      :396
 │   └── groups non-stopped IDs by service, sorted
+│
+├── extractSurgeAllowances(facts)                            :361
+│   └── reads derived/service/{svc}/rollout/surge_allowance
+│       → for a service that is neither stateful nor per-node:
+│         desiredCounts[svc] += min(surgeCount, countOldImageInstances :349)
+│         (old = active instance whose recorded, else observed, image differs
+│          from the desired one; M241 D14, review round 3 M1)
 │
 ├── reconcileScaleDowns(...)                                 :138
 │   └── FOR EACH service where haveCount > wantCount:
-│       ├── perNodeServices → markPerNodeExcessInstancesAsStopped  :565
+│       ├── perNodeServices → markPerNodeExcessInstancesAsStopped  :567
 │       │   └── priority: failedNode > pending > running
-│       ├── statefulServices → stopHighestOrdinalInstances         :486
+│       ├── statefulServices → stopHighestOrdinalInstances         :488
 │       │   └── reverse ordinal order, writes controller_stopped
-│       └── default → markExcessStatelessInstancesAsStopped        :538
-│           └── selectInstancesForRemoval(pending first)           :607
+│       └── default → markExcessStatelessInstancesAsStopped        :540
+│           └── selectInstancesForRemoval(pending first)           :609
 │               → writes derived/instance/{id}/controller_stopped
 │
 ├── computeServiceDeficits(...)                              :181
 │   └── FOR EACH service where haveCount < wantCount:
-│       ├── stateful → createNextStatefulInstance             :440
+│       ├── stateful → createNextStatefulInstance             :442
 │       │   └── ordered startup: N+1 only after N is running
 │       │       clears stale controller_stopped / node_failure and the previous
 │       │       incarnation's restarts, created-at, started_at, last_exit, probe/*
@@ -58,16 +60,16 @@ InstanceController.Reconcile(ctx, facts)                     :80
 └── allocateCreationsFairly(deficits, ...)                   :216
     ├── baseShare = budget / serviceCount, cap at deficit
     ├── remainder slots → largest unmet demand first
-    ├── stateful → createNextStatefulInstance                 :440
+    ├── stateful → createNextStatefulInstance                 :442
     │   ├── writes observed/instance/{svc}-{ord}/*
-    │   └── buildIncarnationChanges                          :528  (same group)
-    └── stateless → createPendingInstances                   :503
+    │   └── buildIncarnationChanges                          :530  (same group)
+    └── stateless → createPendingInstances                   :505
         └── FOR EACH count:
             └── writes grouped (instance-create/{id}):
                 ├── observed/instance/{id}        = ""
                 ├── observed/instance/{id}/service = serviceName
                 ├── observed/instance/{id}/state   = "pending"
-                └── buildIncarnationChanges                   :528  [M241 D1, D2, D13, B4]
+                └── buildIncarnationChanges                   :530  [M241 D1, D2, D13, B4]
                     └── buildInstanceIncarnationChanges       [instance_incarnation.go:34]
                         ├── derived/instance/{id}/image = desired/service/{svc}/image (when set)
                         └── DELETE stale observed/instance/{id}/{restarts,created-at,started_at,
@@ -75,6 +77,11 @@ InstanceController.Reconcile(ctx, facts)                     :80
 
 Both creation paths, and the failure controller's replacements (§5), record the
 image through buildInstanceIncarnationChanges.
+
+A recreated stateful ordinal keeps observed/instance/{id}/image (the image its
+old container runs) and its placement: the agent compares the two images and
+replaces the container (§4, replaceContainerOnAnotherImage), and the rollout
+counts the instance healthy only once they match (M241 2e.1).
 ```
 
 ### Store Key Reads
@@ -122,6 +129,10 @@ Scheduler.Reconcile
 ├── buildNodeServicesMap               → nodeID → {running services}
 ├── attemptPlacements
 │   └── placeBatchedInstances
+│       ├── per-node → filterOutNodesAlreadyHostingService
+│       │   (a node hosting a placed, not stopped instance of the service is
+│       │    skipped; a stopped one keeps its placement until GC but does not
+│       │    occupy the node, so a per-node rollout's replacement is placed, M241 2e.2)
 │       ├── buildCandidateNodes        → heap sorted by loadScore
 │       ├── rankByPreferences          → prefer/require/accept
 │       ├── rankByAffinityHints        → colocate/separate tiebreaker
@@ -326,9 +337,17 @@ The agent never publishes `failed` from observing a container (M238). An exited 
 
 ### executeReconciliationCycle → running instance path
 ```
-executeReconciliationCycle                                   :535
+executeReconciliationCycle                                   :537
 └── FOR EACH running instance:
-    ├── detectConfigChange(ctx, instanceInfo)                :1347
+    ├── replaceContainerOnAnotherImage(ctx, instanceInfo)    :1228  [M241 2e.1]
+    │   ├── Get derived/instance/{id}/image (recorded) + observed/instance/{id}/image
+    │   │   (the image this agent last started)
+    │   ├── both set and different (ID recreated while the old container ran,
+    │   │   e.g. a stateful ordinal whose stop the agent never saw):
+    │   │   pre_stop hook → stopInstanceWithGracePeriod → forget crash-loop back-off
+    │   │   → next cycle starts the recorded image (not counted as a restart)
+    │   └── missing fact or read error → no change
+    ├── detectConfigChange(ctx, instanceInfo)                :1461
     │   ├── no stored hash → no compare (instance started by an older agent)
     │   ├── computeServiceConfigHash(ctx, service)           :1430  [empty input → hash of "", never ""; M236 inputs above]
     │   │   └── read error → no compare, instance keeps running (a blip is not a change)
@@ -755,6 +774,7 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `handleInstanceStartError` | startInstanceAndPublishState |
 | `publishInstanceConfigHash` | startInstanceAndPublishState, handleInstanceStartError (ProcessFailed) |
 | `publishInstanceStartedAt` | startInstanceAndPublishState (start OK, M241 D10) |
+| `replaceContainerOnAnotherImage` | executeReconciliationCycle (running path, before detectConfigChange; M241 2e.1) |
 | `resetInstanceReadiness` | startInstanceAndPublishState (start OK, M241 review B4) |
 | `publishInstanceLastExit` | beginCrashLoopWait (M241) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |

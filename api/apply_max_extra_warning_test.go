@@ -25,6 +25,16 @@ func TestApplyWarnsForIgnoredMaxExtra(t *testing.T) {
 			}
 		}
 		statusCode, body = applyAsUser(testServer.apiServer, "admin",
+			"service agentd {\n  image monitor:1.0\n  placement {\n    mode per-node\n  }\n  update {\n    max_extra 1\n  }\n}\n", 0)
+		if statusCode != http.StatusOK {
+			t.Fatalf("%s: per-node apply: HTTP %d %s, want 200", applyPath, statusCode, body)
+		}
+		for _, wantFragment := range []string{"agentd", "max_extra", "ignored", "per-node"} {
+			if !strings.Contains(body, wantFragment) {
+				t.Errorf("%s: per-node apply answer %s does not mention %q", applyPath, body, wantFragment)
+			}
+		}
+		statusCode, body = applyAsUser(testServer.apiServer, "admin",
 			"service web {\n  image app:v1\n  instances 2\n  update {\n    max_extra 2\n  }\n}\n", 0)
 		if statusCode != http.StatusOK || strings.Contains(body, "ignored") {
 			t.Errorf("%s: stateless apply: HTTP %d %s, want 200 without the max_extra warning", applyPath, statusCode, body)

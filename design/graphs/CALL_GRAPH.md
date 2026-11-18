@@ -47,6 +47,7 @@ executeReconciliationCycle
 │   │       └── reconcileDesiredInstance         [full startup, see below]
 │   │
 │   └── IF running:
+│       ├── replaceContainerOnAnotherImage       [observed image ≠ recorded → stop; next cycle starts it (M241 2e.1)]
 │       ├── detectConfigChange                   [if changed → stop+restart]
 │       ├── reconcileResourceChanges
 │       ├── republishHostPortIfNeeded
@@ -268,6 +269,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |
 | `publishExitReasonFromStatus` | `recordInstanceExit` (agent, exitCode != 0) |
+| `replaceContainerOnAnotherImage` | `executeReconciliationCycle` (if running, M241 2e.1) |
 | `detectConfigChange` | `executeReconciliationCycle` (if running) |
 | `hasConfigChangedSinceStart` | `detectConfigChange`, `isExitedInstanceDueForRestart` (M233) |
 | `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |

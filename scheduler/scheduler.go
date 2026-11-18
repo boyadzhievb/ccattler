@@ -1576,8 +1576,10 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 }
 
 // filterOutNodesAlreadyHostingService removes candidate nodes that already
-// have a placed instance of the given service. Used by per-node placement to
-// enforce the one-instance-per-node invariant.
+// have a placed, not stopped instance of the given service. Used by per-node
+// placement to enforce the one-instance-per-node invariant. A stopped
+// instance keeps its placement until instance GC, which waits for its
+// replacement, so counting it would block a per-node rollout (M241 2e.2).
 func filterOutNodesAlreadyHostingService(
 	candidates []candidateNode,
 	serviceName string,
@@ -1587,7 +1589,7 @@ func filterOutNodesAlreadyHostingService(
 	occupiedNodes := make(map[string]bool)
 	for instanceID, nodeID := range placements {
 		instanceInfo := instances[instanceID]
-		if instanceInfo != nil && instanceInfo.service == serviceName {
+		if instanceInfo != nil && instanceInfo.service == serviceName && instanceInfo.state != types.InstanceStopped {
 			occupiedNodes[nodeID] = true
 		}
 	}

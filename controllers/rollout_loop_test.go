@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,26 +27,41 @@ const (
 	rolloutLoopNewImage = "app:b"
 )
 
+// rolloutLoopContainer is the fake agent's container of one instance.
+type rolloutLoopContainer struct {
+	image string // image is the image the container was started with.
+}
+
 // rolloutLoopCluster is a small simulated cluster for the M241 D14 loop tests:
 // the real instance and rollout controllers run on its facts, and a fake agent
-// starts pending instances while the placement capacity allows.
+// keeps one container per instance, starting pending instances while the
+// placement capacity allows. Each pass runs the instance controller once more
+// after the rollout controller and only then the agent, so the agent sees a
+// stop only after the instance controller reacted to it, as on the testbed
+// (a recreated stateful ordinal overwrites the stop before the agent sees it).
 type rolloutLoopCluster struct {
-	t                  *testing.T          // t reports failures.
-	serviceName        string              // serviceName is the one service of the cluster.
-	facts              map[string]string   // facts are the store contents, key to value.
-	now                time.Time           // now is the simulated clock.
-	placementCapacity  int                 // placementCapacity caps running instances (per-node: the node count); 0 = unlimited.
-	createdInstanceIDs []string            // createdInstanceIDs lists the IDs the instance controller created, in order.
-	maxActiveCount     int                 // maxActiveCount is the most active (not stopped) instances seen after a pass.
-	instanceController *InstanceController // instanceController is the real instance controller, with test IDs.
-	rolloutController  *RolloutController  // rolloutController is the real rollout controller on the simulated clock.
+	testingReporter    *testing.T                      // testingReporter reports failures.
+	serviceName        string                          // serviceName is the one service of the cluster.
+	facts              map[string]string               // facts are the store contents, key to value.
+	now                time.Time                       // now is the simulated clock.
+	stepDuration       time.Duration                   // stepDuration is the simulated time between passes (rolloutLoopStep by default).
+	placementCapacity  int                             // placementCapacity caps containers (per-node: the node count); 0 = unlimited.
+	agentEnsuresImage  bool                            // agentEnsuresImage: the agent replaces a container that runs another image than the recorded one (2e.1a).
+	containers         map[string]rolloutLoopContainer // containers are the fake agent's containers by instance ID.
+	createdInstanceIDs []string                        // createdInstanceIDs lists the IDs the instance controller created, in order.
+	maxActiveCount     int                             // maxActiveCount is the most active (not stopped) instances seen after a pass.
+	scaledDownIDs      []string                        // scaledDownIDs lists the instances the instance controller marked controller_stopped.
+	prematureFinishes  []string                        // prematureFinishes records passes that ended the rollout while a container ran another image.
+	instanceController *InstanceController             // instanceController is the real instance controller, with test IDs.
+	rolloutController  *RolloutController              // rolloutController is the real rollout controller on the simulated clock.
 }
 
 // newRolloutLoopCluster returns a cluster whose service runs expectedCount
 // instances on the old image, with the desired image already changed to the
 // new one. stateful uses ordinal IDs; extraFacts add kind facts.
 func newRolloutLoopCluster(t *testing.T, serviceName string, expectedCount int, stateful bool, extraFacts map[string]string) *rolloutLoopCluster {
-	cluster := &rolloutLoopCluster{t: t, serviceName: serviceName, facts: map[string]string{}, now: rolloutTestNow}
+	cluster := &rolloutLoopCluster{testingReporter: t, serviceName: serviceName, facts: map[string]string{}, now: rolloutTestNow,
+		stepDuration: rolloutLoopStep, agentEnsuresImage: true, containers: map[string]rolloutLoopContainer{}}
 	cluster.facts[types.KeyDesiredServiceImage(serviceName)] = rolloutLoopNewImage
 	cluster.facts[types.KeyDesiredServiceInstances(serviceName)] = strconv.Itoa(expectedCount)
 	cluster.facts[types.KeyEffectiveServiceInstances(serviceName)] = strconv.Itoa(expectedCount)
@@ -81,6 +97,7 @@ func (cluster *rolloutLoopCluster) addRunningInstance(instanceID string, image s
 	cluster.facts[types.KeyDerivedInstanceImage(instanceID)] = image
 	cluster.facts[types.KeyObservedInstanceStartedAt(instanceID)] = startedAt
 	cluster.facts[types.KeyObservedInstanceCreatedAt(instanceID)] = startedAt
+	cluster.containers[instanceID] = rolloutLoopContainer{image: image}
 }
 
 // snapshot returns the facts sorted by key, as a controller pass reads them.
@@ -95,16 +112,20 @@ func (cluster *rolloutLoopCluster) snapshot() []store.Fact {
 
 // reconcileAndApply runs one controller on a snapshot and applies its changes.
 func (cluster *rolloutLoopCluster) reconcileAndApply(controller Controller) {
-	cluster.t.Helper()
+	cluster.testingReporter.Helper()
 	proposedChanges, reconcileError := controller.Reconcile(context.Background(), cluster.snapshot())
 	if reconcileError != nil {
-		cluster.t.Fatalf("%s: %v", controller.Name(), reconcileError)
+		cluster.testingReporter.Fatalf("%s: %v", controller.Name(), reconcileError)
 	}
 	for _, change := range proposedChanges {
 		if change.Type == store.OpDelete {
 			delete(cluster.facts, change.Key)
-		} else {
-			cluster.facts[change.Key] = string(change.Value)
+			continue
+		}
+		cluster.facts[change.Key] = string(change.Value)
+		if instanceID, isStopMarker := strings.CutPrefix(change.Key, types.ScanDerivedInstances); isStopMarker &&
+			strings.HasSuffix(instanceID, "/controller_stopped") && controller == Controller(cluster.instanceController) {
+			cluster.scaledDownIDs = append(cluster.scaledDownIDs, strings.TrimSuffix(instanceID, "/controller_stopped"))
 		}
 	}
 }
@@ -121,27 +142,38 @@ func (cluster *rolloutLoopCluster) activeInstanceFields() map[string]map[string]
 	return activeFields
 }
 
-// startPendingInstances is the fake agent: it starts pending instances on their
-// recorded image, in ID order, while running instances stay within capacity.
-func (cluster *rolloutLoopCluster) startPendingInstances() {
-	activeFields := cluster.activeInstanceFields()
-	runningCount := 0
-	for _, fields := range activeFields {
-		if effectiveInstanceState(fields) == types.InstanceRunning {
-			runningCount++
+// runAgentPass is the fake agent, as the real one works: it removes the
+// containers of stopped instances, replaces a container that runs another
+// image than the recorded one when agentEnsuresImage is set (2e.1a), reports a
+// kept container as running without a new started_at, and starts pending
+// instances on their recorded image, in ID order, within the capacity.
+func (cluster *rolloutLoopCluster) runAgentPass() {
+	instanceFields := parseInstanceFieldsFromFacts(cluster.snapshot())
+	for _, instanceID := range sortedMapKeys(cluster.containers) {
+		fields := instanceFields[instanceID]
+		recordedImage := cluster.facts[types.KeyDerivedInstanceImage(instanceID)]
+		switch {
+		case effectiveInstanceState(fields) == types.InstanceStopped:
+			delete(cluster.containers, instanceID)
+		case cluster.agentEnsuresImage && recordedImage != "" && recordedImage != cluster.containers[instanceID].image:
+			delete(cluster.containers, instanceID)
+		default:
+			cluster.facts[types.KeyObservedInstanceState(instanceID)] = string(types.InstanceRunning)
 		}
 	}
-	for _, instanceID := range sortedMapKeys(activeFields) {
-		fields := activeFields[instanceID]
-		if effectiveInstanceState(fields) != types.InstancePending {
+	for _, instanceID := range sortedMapKeys(instanceFields) {
+		fields := instanceFields[instanceID]
+		_, hasContainer := cluster.containers[instanceID]
+		if hasContainer || fields["service"] != cluster.serviceName || effectiveInstanceState(fields) != types.InstancePending {
 			continue
 		}
-		if cluster.placementCapacity > 0 && runningCount >= cluster.placementCapacity {
+		if cluster.placementCapacity > 0 && len(cluster.containers) >= cluster.placementCapacity {
 			continue
 		}
-		runningCount++
+		recordedImage := cluster.facts[types.KeyDerivedInstanceImage(instanceID)]
+		cluster.containers[instanceID] = rolloutLoopContainer{image: recordedImage}
 		cluster.facts[types.KeyObservedInstanceState(instanceID)] = string(types.InstanceRunning)
-		cluster.facts[types.KeyObservedInstanceImage(instanceID)] = fields["image"]
+		cluster.facts[types.KeyObservedInstanceImage(instanceID)] = recordedImage
 		cluster.facts[types.KeyObservedInstanceStartedAt(instanceID)] = cluster.now.UTC().Format(time.RFC3339)
 		if fields["created-at"] == "" {
 			cluster.facts[types.KeyObservedInstanceCreatedAt(instanceID)] = cluster.now.UTC().Format(time.RFC3339)
@@ -149,21 +181,41 @@ func (cluster *rolloutLoopCluster) startPendingInstances() {
 	}
 }
 
-// runPasses runs instance controller, rollout controller and fake agent passes
-// until the rollout state is finalState or passCount passes ran; it returns
-// the number of passes run.
+// runPasses runs passes (instance controller, rollout controller, instance
+// controller again, fake agent) until the rollout state is finalState or
+// passCount passes ran; it returns the number of passes run. A pass that ends
+// the rollout while an active instance's container runs another image than
+// the desired one is recorded in prematureFinishes.
 func (cluster *rolloutLoopCluster) runPasses(passCount int, finalState types.RolloutState) int {
 	for passIndex := range passCount {
 		cluster.reconcileAndApply(cluster.instanceController)
 		cluster.reconcileAndApply(cluster.rolloutController)
+		cluster.recordPrematureFinish(passIndex)
+		cluster.reconcileAndApply(cluster.instanceController)
 		cluster.maxActiveCount = max(cluster.maxActiveCount, len(cluster.activeInstanceFields()))
 		if cluster.rolloutState() == finalState {
 			return passIndex + 1
 		}
-		cluster.startPendingInstances()
-		cluster.now = cluster.now.Add(rolloutLoopStep)
+		cluster.runAgentPass()
+		cluster.now = cluster.now.Add(cluster.stepDuration)
 	}
 	return passCount
+}
+
+// recordPrematureFinish records the pass when the rollout state is complete
+// or rolled-back while an active instance has no container or a container on
+// another image than the desired one.
+func (cluster *rolloutLoopCluster) recordPrematureFinish(passIndex int) {
+	if rolloutState := cluster.rolloutState(); rolloutState != types.RolloutComplete && rolloutState != types.RolloutRolledBack {
+		return
+	}
+	desiredImage := cluster.facts[types.KeyDesiredServiceImage(cluster.serviceName)]
+	for _, instanceID := range sortedMapKeys(cluster.activeInstanceFields()) {
+		if container, hasContainer := cluster.containers[instanceID]; !hasContainer || container.image != desiredImage {
+			cluster.prematureFinishes = append(cluster.prematureFinishes, fmt.Sprintf(
+				"pass %d: rollout %s while %s runs %q, want %s", passIndex, cluster.rolloutState(), instanceID, container.image, desiredImage))
+		}
+	}
 }
 
 // rolloutState returns the service's stored rollout state.
@@ -173,15 +225,21 @@ func (cluster *rolloutLoopCluster) rolloutState() types.RolloutState {
 
 // assertAllActiveOnImage fails unless every active instance runs image.
 func (cluster *rolloutLoopCluster) assertAllActiveOnImage(image string, wantCount int) {
-	cluster.t.Helper()
+	cluster.testingReporter.Helper()
 	activeFields := cluster.activeInstanceFields()
 	if len(activeFields) != wantCount {
-		cluster.t.Errorf("%d active instances at the end, want %d", len(activeFields), wantCount)
+		cluster.testingReporter.Errorf("%d active instances at the end, want %d", len(activeFields), wantCount)
 	}
 	for instanceID, fields := range activeFields {
 		if fields["image"] != image || effectiveInstanceState(fields) != types.InstanceRunning {
-			cluster.t.Errorf("instance %s is %s on %q at the end, want running on %s", instanceID, effectiveInstanceState(fields), fields["image"], image)
+			cluster.testingReporter.Errorf("instance %s is %s on %q at the end, want running on %s", instanceID, effectiveInstanceState(fields), fields["image"], image)
 		}
+		if container := cluster.containers[instanceID]; container.image != image {
+			cluster.testingReporter.Errorf("container of %s runs %q at the end, want %s", instanceID, container.image, image)
+		}
+	}
+	for _, prematureFinish := range cluster.prematureFinishes {
+		cluster.testingReporter.Error(prematureFinish)
 	}
 }
 

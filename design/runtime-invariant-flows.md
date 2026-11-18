@@ -1766,6 +1766,13 @@ Agent start / in-place restart (Flow 33)
         then the state                                                       [D10, B4]
   every exit: PUT observed/instance/{id}/last_exit = "exited with code N" (kept after
         the restart, for the rollback reason)
+  running container: observed/instance/{id}/image (the image it was started with)
+        ≠ derived/instance/{id}/image → stop it, the next cycle starts the recorded
+        image (the ID was re-created while the old container ran: a stateful ordinal
+        whose stop the agent never saw because the re-creation overwrote it)      [2e.1]
+Scheduler, per-node service: a node is taken only by a placed instance that is not
+        stopped; a stopped one keeps its placement until GC, which waits for the
+        replacement, so it must not block the replacement's node                  [2e.2]
 
 RolloutController pass, per service (sorted), instances sorted by ID     [D3–D7]
   image(instance) = derived/instance/{id}/image, else observed image; "" → new
@@ -1774,17 +1781,19 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
   failures = Σ restarts(new) + count(new failed), node_failure skipped, only new instances
         created since rollout/started_at (− 30 s clock skew; no created-at → counted) [D13]
   threshold = clamp(ceil(desired instances / 2), 3, 200)
-  healthy(instance) = running ∧ now − started_at ≥ update { min_healthy_time } (default 10s;
-        no started_at → counts at once) ∧ probe/readiness = ready when the service has a
-        readiness probe                                                              [D10]
+  healthy(instance) = running ∧ observed image = recorded image (when one is recorded:
+        the agent started this incarnation, 2e.1) ∧ now − started_at ≥ update {
+        min_healthy_time } (default 10s; no started_at → counts at once, an older agent) ∧
+        probe/readiness = ready when the service has a readiness probe                [D10]
 
   pace: max_unavailable / max_extra from update {}; unset, stateless: 25 % of expected
         (down: floor, up: ceil) [D12]; stateful and per-node: 1 / 0, never a surge, an
         explicit max_extra ignored (apply warns) [D14]; both 0 → max_unavailable 1;
         capped by the disruption budget; rollback / stalled: max_unavailable ≥ 1   [D14]
-  surge: InstanceController adds rollout/surge_allowance to the count only for a
-        stateless service that still has old-image instances; the pass that stops the
-        last old instance deletes surge_allowance                                    [D14]
+  surge: InstanceController adds min(rollout/surge_allowance, old-image instances left)
+        to the count, only for a stateless service, so new instances never outnumber
+        the expected count and none is scaled down at the end; the pass that stops the
+        last old instance deletes surge_allowance                           [D14, 2e.3]
   state none/complete/rolled-back and old exists
       → rolling: previous_image = most common old image, target_image = b, revision+1,
         history/{rev} = previous, surge_allowance = max_extra, progress_at = started_at = now,
@@ -1818,7 +1827,8 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
   reason (written when changed): paused | previous image also fails (N failures on a)
         | waiting for <id> (<state>: <status reason>, or "unplaced: insufficient_capacity
           (cpu …m, memory …Mi)" from derived/scheduler/unplaced/{id}/*)
-        | waiting for <id> to stay healthy (until HH:MM:SS UTC | readiness <state>)
+        | waiting for <id> to stay healthy (until HH:MM:SS UTC | readiness <state>
+          | still runs "<old>", not yet started on <recorded>)
         | waiting for the first new-image instance | max_unavailable 0: waiting for an
           extra instance to become healthy | max_unavailable N used up: U of E expected
           instances not healthy (<ids>) | replacing N old-image instances
@@ -1829,6 +1839,7 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
 - The failure count is current facts only: a `failed` instance the failure controller replaces drops out of it; crash loops stay on the same instance and keep counting.
 - A new instance counts only once it stays healthy (D10): an image that exits a second or two after start never replaces an old instance or finishes the rollout; its restarts roll it back. No fact changes when the window ends, so the runner's periodic resync (30 s) gives the pass that counts it.
 - Kinds (D14): a stateful service replaces its ordinals in place (no extra ordinal, like a StatefulSet) and a per-node service one node at a time (no room for a surge, like a DaemonSet). A rollback has no surge, so it always gets `max_unavailable` ≥ 1.
+- In-place replacement of an ordinal (2e.1): the rollout's stop and the instance controller's re-creation of the same ID can both land before the agent's next cycle, so the agent may never see `stopped`. It does not need to: it ensures every running container runs its recorded image, and the rollout counts the ordinal only once the agent has started it on that image (testbed T1: a 1-instance stateful rollout reported `complete` within a second while the old container kept running).
 - A rollback never rolls back again; without progress it becomes `stalled` and clears itself once it progresses or completes.
 - `cca describe service` shows state, failures, reason and rollback reason; the status API carries `rollout_state`, `rollout_reason`, `rollout_rollback_reason`; `cca status` RUNTIME HEALTH and `test/e2e/health_check.sh` Check 6 list stalled and rolled-back services (D8).
 - Behaviour: `openspec/specs/service-rollout`, `openspec/specs/instance-restart`. Functions and keys: CONTROLLER_DATA_FLOW_GRAPH.md § rollout, INSTANCE_LIFECYCLE_GRAPH.md.

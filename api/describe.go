@@ -529,13 +529,10 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 }
 
 // readServiceWorkloadKind returns the service's kind from its effective
-// stateful flag and placement mode (the desired mode when no effective one is
-// stored yet), which decides its rollout defaults (M241 D14).
+// stateful flag and placement mode, the facts the rollout and instance
+// controllers read, which decides its rollout defaults (M241 D14, 2e.4).
 func readServiceWorkloadKind(ctx context.Context, factStore store.StateStore, serviceName string) types.WorkloadKind {
 	placementMode := store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServicePlacementMode(serviceName))
-	if placementMode == "" {
-		placementMode = store.ReadValueOrEmpty(ctx, factStore, types.KeyDesiredServicePlacementMode(serviceName))
-	}
 	isStateful := store.ReadValueOrEmpty(ctx, factStore, types.KeyEffectiveServiceStateful(serviceName)) == "true"
 	return types.WorkloadKindOf(isStateful, placementMode)
 }

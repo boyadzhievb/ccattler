@@ -84,11 +84,11 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	stateByInstanceID, serviceByInstanceID := buildInstanceMapsFromFields(fieldsByInstanceID)
 	activeInstanceIDs := buildActiveInstanceIDsByService(serviceByInstanceID, stateByInstanceID)
 	for serviceName, surgeCount := range extractSurgeAllowances(facts) {
-		if statefulServices[serviceName] || perNodeServices[serviceName] ||
-			!hasOldImageInstances(activeInstanceIDs[serviceName], creation.fieldsByInstanceID, creation.desiredImages[serviceName]) {
+		if statefulServices[serviceName] || perNodeServices[serviceName] {
 			continue
 		}
-		desiredCounts[serviceName] += surgeCount
+		oldImageCount := countOldImageInstances(activeInstanceIDs[serviceName], creation.fieldsByInstanceID, creation.desiredImages[serviceName])
+		desiredCounts[serviceName] += min(surgeCount, oldImageCount)
 	}
 
 	var changes []Change
@@ -335,23 +335,25 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 		case "stateful":
 			statefulServices[serviceName] = string(fact.Value) == "true"
 		case "placement_mode":
-			perNodeServices[serviceName] = string(fact.Value) == "per-node"
+			perNodeServices[serviceName] = string(fact.Value) == types.PlacementModePerNode
 		}
 	}
 
 	return desiredCounts, statefulServices, perNodeServices
 }
 
-// hasOldImageInstances reports whether any of the active instances runs (or
-// was recorded with) another image than desiredImage: a rollout's surge
-// applies only while such instances remain (M241 D14).
-func hasOldImageInstances(activeIDs []string, fieldsByInstanceID map[string]map[string]string, desiredImage string) bool {
+// countOldImageInstances counts the active instances that run (or were
+// recorded with) another image than desiredImage. A rollout's surge never
+// exceeds it, so the new instances never outnumber the expected count once the
+// old ones stop and none is scaled down (M241 D14, review round 3 M1).
+func countOldImageInstances(activeIDs []string, fieldsByInstanceID map[string]map[string]string, desiredImage string) int {
+	var oldImageCount int
 	for _, instanceID := range activeIDs {
 		if instanceImage := fieldsByInstanceID[instanceID]["image"]; instanceImage != "" && instanceImage != desiredImage {
-			return true
+			oldImageCount++
 		}
 	}
-	return false
+	return oldImageCount
 }
 
 // extractSurgeAllowances reads rollout surge allowance facts emitted by the

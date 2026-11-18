@@ -160,7 +160,7 @@ func resolveEffectiveInstanceCountChanges(
 	var changes []Change
 
 	for serviceName, userCount := range userIntents {
-		if placementModes[serviceName] == "per-node" {
+		if placementModes[serviceName] == types.PlacementModePerNode {
 			continue
 		}
 		effectiveCount := userCount
@@ -413,7 +413,7 @@ func resolvePerNodePlacementChanges(
 	var changes []Change
 
 	for serviceName, mode := range placementModes {
-		if mode != "per-node" {
+		if mode != types.PlacementModePerNode {
 			continue
 		}
 
@@ -430,11 +430,11 @@ func resolvePerNodePlacementChanges(
 			})
 		}
 
-		if currentEffectiveModes[serviceName] != "per-node" {
+		if currentEffectiveModes[serviceName] != types.PlacementModePerNode {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyEffectiveServicePlacementMode(serviceName),
-				Value: []byte("per-node"),
+				Value: []byte(types.PlacementModePerNode),
 			})
 		}
 	}

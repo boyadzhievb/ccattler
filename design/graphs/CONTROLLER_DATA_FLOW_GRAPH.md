@@ -297,7 +297,9 @@ RolloutController.Reconcile(ctx, facts)                      :82
 
 All rollout bookkeeping of a service goes through `rolloutFactWriter` (rollout_facts.go:76–125): one change group `rollout/{svc}`, a put only when the value changes, a delete only when the fact exists.
 
-The surge itself is the instance controller's (INSTANCE_LIFECYCLE_GRAPH.md §1): `InstanceController.Reconcile` (instance.go:80) adds `rollout/surge_allowance` to a service's count only when it is neither stateful nor per-node and `hasOldImageInstances` (instance.go:348) still finds an active instance on another image (D14).
+The surge itself is the instance controller's (INSTANCE_LIFECYCLE_GRAPH.md §1): `InstanceController.Reconcile` (instance.go:80) adds `rollout/surge_allowance` to a service's count only when it is neither stateful nor per-node, and never more than `countOldImageInstances` (instance.go:349), the active instances still on another image (D14, review round 3 M1): new instances never outnumber the expected count once the old ones stop, so none is scaled down.
+
+A new instance counts as healthy only once the agent started it on its recorded image: `rolloutHealthRule.evaluate` (rollout_plan.go:48) refuses a running instance whose `observed/instance/{id}/image` differs from `derived/instance/{id}/image` (`extractInstancesByService` keeps both, rollout_facts.go:293), with or without `started_at` (testbed T1, 2e.1). The older-agent rule (no `started_at` = healthy) applies only once the images match.
 
 **Read side (API and CLI):**
 ```

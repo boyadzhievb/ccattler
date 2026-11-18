@@ -29,8 +29,8 @@ When a service's desired image differs from the image of some of its instances, 
 #### Scenario: Stateful and per-node services do not surge
 - **GIVEN** a 1-instance stateful service and a per-node service on 3 nodes, both with no `update` block, whose desired image changes
 - **WHEN** the instance and rollout controllers reconcile until the rollout ends
-- **THEN** no extra ordinal or extra instance is created, instances are replaced one at a time, and both rollouts reach `complete`
-- Test: `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`
+- **THEN** no extra ordinal or extra instance is created, instances are replaced one at a time, and both rollouts reach `complete`; each per-node replacement is placed on the node its stopped predecessor left
+- Test: `TestRolloutStatefulAndPerNodeDefaultsReplaceInPlace`, `TestPerNodePlacesReplacementOnNodeOfStoppedInstance`, `TestPerNodeRolloutReplacesEveryNode`
 
 #### Scenario: A rollback can always move
 - **GIVEN** a 3-instance service with default pacing, two instances on the new image running, which rolls back
@@ -39,10 +39,10 @@ When a service's desired image differs from the image of some of its instances, 
 - Test: `TestRolloutRollbackWithDefaultPacingCompletes`
 
 #### Scenario: No surplus instance at the end
-- **GIVEN** a 1-instance stateless service with default pacing whose rollout has stopped its last old instance
+- **GIVEN** a 1-instance stateless service with default pacing whose rollout has stopped its last old instance, a 5-instance service on defaults, or a 3-instance service with `max_extra 2`
 - **WHEN** the instance and rollout controllers reconcile until the rollout ends
-- **THEN** no further new instance is created and no instance is scaled down after the rollout completes
-- Test: `TestRolloutSurgeEndsWithLastOldInstance`
+- **THEN** exactly one new instance is created per old one (the surge never exceeds the old instances left) and no instance is scaled down
+- Test: `TestRolloutSurgeEndsWithLastOldInstance`, `TestInstanceControllerSurgesOnlyForRemainingOldInstances`
 
 #### Scenario: Unavailable instances use up the budget
 - **GIVEN** a rollout with `max_unavailable 2` where one instance of the new image is in `crash-loop-backoff` and a healthy new-image instance is running
@@ -102,7 +102,7 @@ When new-image failures reach half the service's desired instance count (rounded
 - Check: `deploy-run:rollout-rollback` (by hand)
 
 ### Requirement: A new instance counts only once it stays healthy
-For stopping old instances, progress and finishing, a new-image instance SHALL count as healthy only when it is `running`, has run since its last start (`started_at`, written by the agent at every start) for at least `min_healthy_time` (default 10 seconds), and is ready if the service has a readiness probe. Without `started_at` a running instance SHALL count as healthy.
+For stopping old instances, progress and finishing, a new-image instance SHALL count as healthy only when it is `running` on its recorded image (observed image = recorded image, when recorded), has run since its last start (`started_at`, written by the agent at every start) for at least `min_healthy_time` (default 10 seconds), and is ready if the service has a readiness probe. Without `started_at` a running instance on its recorded image SHALL count as healthy.
 
 #### Scenario: Image that exits after a moment does not replace the old instance
 - **GIVEN** a 1-instance service rolling out from `a` to `b`, whose `b` instance is `running` with `started_at` 2 seconds ago and the default `min_healthy_time`
@@ -128,6 +128,12 @@ For stopping old instances, progress and finishing, a new-image instance SHALL c
 - **THEN** it counts the instance as healthy
 - Test: `TestRolloutCountsInstanceWithoutStartedAtAsHealthy`
 
+#### Scenario: Re-created ordinal whose old container still runs
+- **GIVEN** a 1-instance stateful rollout from `a` to `b` whose ordinal `db-0` was stopped and re-created under the same ID with recorded image `b` before the agent saw the stop, so its old container on `a` still runs and the agent reports it `running` without `started_at`
+- **WHEN** the rollout controller reconciles
+- **THEN** it does not count `db-0` as healthy, the rollout does not finish, and the reason names `db-0` with both images; once the agent has replaced the container and started `b`, the rollout completes
+- Test: `TestRolloutRecreatedOrdinalCountsOnlyOnceStartedOnNewImage`, `TestRolloutRecreatedInstanceWithoutStartedAtIsNotHealthy`, `TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage`
+
 #### Scenario: Agent records every start
 - **WHEN** the agent starts an instance, and later restarts it in place
 - **THEN** `observed/instance/{id}/started_at` is set at each start and the second value is later than the first
@@ -137,6 +143,15 @@ For stopping old instances, progress and finishing, a new-image instance SHALL c
 - **WHEN** a service declares `update { min_healthy_time 30s }`
 - **THEN** it compiles to `desired/service/{svc}/update/min_healthy_time` = `30s`; `min_healthy_time -1s` or `min_healthy_time soon` is refused by the parser
 - Test: `TestCompileUpdateMinHealthyTime`
+
+### Requirement: The agent ensures each container runs its recorded image
+The agent SHALL replace a running container whose image (the observed image it was started with) differs from its instance's recorded image, so a re-created instance ID never keeps its previous incarnation's container.
+
+#### Scenario: Agent ensures the recorded image
+- **GIVEN** a running container of an instance whose recorded image changed (a re-created ordinal)
+- **WHEN** the agent reconciles
+- **THEN** it replaces the container and starts the recorded image, with a new `started_at` and no restart counted
+- Test: `TestAgentReplacesContainerOnAnotherImageThanRecorded`
 
 ### Requirement: Rollout state ends and is reset
 When no old-image instance is left and the new-image instances are healthy (at least the expected count), the rollout controller SHALL set the state to `complete` after a rollout and to `rolled-back` after a rollback (also from `stalled`), and SHALL delete `previous_image`, `failures`, `reason` and the surge allowance; `rollback_reason` stays until the next rollout. The next image change SHALL record its own previous image, revision and history entry.
@@ -159,8 +174,8 @@ While a rollout or rollback is in progress, the rollout controller SHALL publish
 #### Scenario: New image cannot be pulled
 - **GIVEN** a rollout whose only new-image instance `web-3` is in `image-pull-backoff` with status reason `pull failed: not found`
 - **WHEN** the rollout controller reconciles
-- **THEN** `rollout/reason` names `web-3`, `image-pull-backoff` and `pull failed: not found`
-- Test: `TestRolloutReasonNamesWaitingInstance`
+- **THEN** `rollout/reason` names `web-3`, `image-pull-backoff` and `pull failed: not found`; a pending per-node replacement is named with its state or its scheduler unplaced reason
+- Test: `TestRolloutReasonNamesWaitingInstance`, `TestRolloutReasonNamesWaitingPerNodeInstance`
 
 #### Scenario: Paused and budget-bound rollouts
 - **WHEN** a rollout is paused, or cannot stop an old instance because `max_unavailable` is used up

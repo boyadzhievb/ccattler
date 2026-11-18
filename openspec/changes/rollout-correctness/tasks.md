@@ -468,12 +468,95 @@ Implementation (groups 0–3) by the `lead-developer` subagent (Opus, effort med
 
 ## 2e. Rework after testbed 4.1 (stateful, per-node) and review round 3 (added 2026-11-18)
 
-- [ ] 2e.0 Failing tests first (loop tests where possible; the loop harness must model the agent seeing a stop only on a later pass, and "running but not yet healthy"). Record the red run.
-- [ ] 2e.1 Testbed T1 (stateful never rolled out): 1-instance stateful `m241db` whoami → `mariadb:11` logged `rollout started` 16:00:11.995 and `rollout finished state=complete` 16:00:12.972. The rollout stopped `m241db-0` and the instance controller recreated it under the same ID with the new recorded image before the agent saw the stop (no stop in the agent log), so the whoami container kept running (0 restarts) while describe shows `mariadb:11`; the recreation deleted `started_at`, and a missing `started_at` counts as healthy. Fix so that (a) the agent ensures the container of an instance runs its recorded image and replaces it when not (idempotent `ensure`, architectural rule 3), and (b) a recreated instance never counts as healthy before the agent has started it (e.g. a `started_at` older than the incarnation, or missing after a recreation, is not healthy; keep the older-agent fallback only where it is genuinely an older agent).
-- [ ] 2e.2 Testbed T2 (per-node replacement never placed): per-node `m241pn` on 3 nodes, whoami → `nginx:1.27`: old `233eb1b1f3` on worker-1 stopped at 16:00:12, new `6272b78d8a` created with no node and no events, still `pending` after 3.5 min; no rollout reason, no unplaced fact logged. Find why per-node placement does not place it (stopped instance still counted on the node? per-node placement owned by the intent controller?), fix it, and make the rollout reason name the waiting instance in this case too (D7: a waiting rollout always says why).
-- [ ] 2e.3 Review round 3 M1 remainder: the instance controller adds `min(surge, active old-image instances)` instead of the full surge (instance.go `hasOldImageInstances` → count). Loop tests: 5 instances on defaults, and 3 instances with `max_extra 2`: exactly N created, none scaled down.
-- [ ] 2e.4 Round 3 lows: INSTANCE_LIFECYCLE_GRAPH.md call order (surge after the instance maps); `t *testing.T` field renamed; use `PlacementModePerNode` for the literal `"per-node"` (instance.go, intent.go); one loop over stateful and placement keys in rollout_facts.go; describe reads the effective placement mode like the controllers; per-node case in the max_extra warning test.
-- [ ] 2e.5 Docs and graphs for 2e.1–2e.3; checks as in 3.1, paste results.
+- [x] 2e.0 Failing tests first (loop tests where possible; the loop harness must model the agent seeing a stop only on a later pass, and "running but not yet healthy"). Record the red run.
+  - Loop harness (controllers/rollout_loop_test.go): the fake agent now keeps one container per instance (`rolloutLoopContainer`, its image). Each pass runs instance controller → rollout controller → instance controller again → agent, so the agent sees a stop only after the instance controller reacted (a re-created ordinal overwrites `stopped` with `pending` before the agent sees it, as on the testbed). The agent removes the containers of stopped instances, reports a kept container as `running` without a new `started_at` (the real running path), and, with `agentEnsuresImage`, replaces a container on another image than the recorded one. `stepDuration` (default 15 s) is set to 5 s in the new tests, so a started instance is running but not yet healthy for a pass. `recordPrematureFinish` records any pass that ends the rollout while an active instance's container runs another image; `assertAllActiveOnImage` also checks the containers. Instance-controller scale-downs are recorded (`scaledDownIDs`).
+  - New tests: controllers/rollout_round3_test.go `TestRolloutRecreatedOrdinalCountsOnlyOnceStartedOnNewImage` (loop, both agent models), `TestRolloutRecreatedInstanceWithoutStartedAtIsNotHealthy` (health rule table), `TestInstanceControllerSurgesOnlyForRemainingOldInstances` (loop: 5 on defaults, 3 with `max_extra 2`), `TestRolloutReasonNamesWaitingPerNodeInstance`; agent/recorded_image_ensure_test.go `TestAgentReplacesContainerOnAnotherImageThanRecorded`; scheduler/per_node_rollout_test.go `TestPerNodePlacesReplacementOnNodeOfStoppedInstance`; integration/rollout_kinds_test.go `TestPerNodeRolloutReplacesEveryNode`, `TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage` (real scheduler, simulator agents); api `TestDescribeReadsEffectivePlacementModeLikeTheControllers`; per-node case in `TestApplyWarnsForIgnoredMaxExtra`.
+  - Red run, 2026-11-18, before any fix (only the `recordedImage` / `observedImage` fields of `rolloutInstanceInfo` added so the tests compile):
+    ```
+    $ go test ./controllers/ -run 'TestRolloutRecreated|TestInstanceControllerSurgesOnlyForRemainingOldInstances|TestRolloutStatefulAndPerNode|TestRolloutPerNodeEightNodes|TestRolloutRollbackWithDefaultPacing|TestRolloutSurgeEnds|TestInstanceControllerSurgesOnlyStateless' -count=1
+    --- FAIL: TestRolloutRecreatedOrdinalCountsOnlyOnceStartedOnNewImage/agent_keeps_the_old_container
+        rollout_round3_test.go:42: rollout complete while db-0's container runs "app:a", want it to keep waiting
+        rollout_round3_test.go:45: pass 1: rollout complete while db-0 runs "app:a", want app:b
+        rollout_round3_test.go:50: rollout/reason "" does not contain "db-0" (also "app:a", "app:b")
+    --- FAIL: TestRolloutRecreatedInstanceWithoutStartedAtIsNotHealthy/recreated,_old_container_kept
+        rollout_round3_test.go:84: healthy = true (""), want false
+    --- FAIL: TestRolloutRecreatedInstanceWithoutStartedAtIsNotHealthy/recreated,_old_container_kept,_stale_started_at
+        rollout_round3_test.go:84: healthy = true (""), want false
+    --- FAIL: TestInstanceControllerSurgesOnlyForRemainingOldInstances/5_instances_on_defaults
+        rollout_round3_test.go:113: instance controller created 6 instances [web-new-00 … web-new-05], want exactly 5
+        rollout_round3_test.go:118: new instance web-new-00 scaled down
+    --- FAIL: TestInstanceControllerSurgesOnlyForRemainingOldInstances/3_instances_with_max_extra_2
+        rollout_round3_test.go:113: instance controller created 4 instances [web-new-00 … web-new-03], want exactly 3
+        rollout_round3_test.go:118: new instance web-new-00 scaled down
+    FAIL	github.com/boyadzhievb/ccattler/controllers	0.040s
+    $ go test ./agent/ -run TestAgentReplacesContainerOnAnotherImageThanRecorded -count=1
+    --- FAIL: TestAgentReplacesContainerOnAnotherImageThanRecorded (5.02s)
+        recorded_image_ensure_test.go:32: timed out waiting for: db-0 restarted on nginx:1.28 with a new started_at and no restart counted
+    $ go test ./scheduler/ -run TestPerNodePlacesReplacementOnNodeOfStoppedInstance -count=1
+    --- FAIL: TestPerNodePlacesReplacementOnNodeOfStoppedInstance (0.00s)
+        per_node_rollout_test.go:48: new-1 not placed, want node-1; changes: [derived/scheduler/unplaced/new-1/reason = insufficient_capacity, …/requirements]
+    $ go test ./integration/ -run 'TestPerNodeRolloutReplacesEveryNode|TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage' -count=1
+    --- FAIL: TestPerNodeRolloutReplacesEveryNode (10.05s)
+        rollout_kinds_test.go:86: timed out waiting for: agentd rollout complete on monitor:2.0 on every node
+    $ go test ./api/ -run TestDescribeReadsEffectivePlacementModeLikeTheControllers -count=1
+    --- FAIL: TestDescribeReadsEffectivePlacementModeLikeTheControllers/desired_per-node_not_effective_yet
+        describe_pacing_kind_test.go:82: update strategy = &{MaxUnavailable:1 MaxExtra:0 … WorkloadKind:per-node …}, want kind stateless
+    ```
+    Passing already: the existing loop tests on the new harness; `TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage` (with real agents at a 50 ms interval the agent usually sees the stop before the re-creation, so the T1 race does not occur there; kept as an end-to-end check); `TestRolloutReasonNamesWaitingPerNodeInstance` and the per-node case of `TestApplyWarnsForIgnoredMaxExtra` (see 2e.2, 2e.4).
+- [x] 2e.1 Testbed T1 (stateful never rolled out): 1-instance stateful `m241db` whoami → `mariadb:11` logged `rollout started` 16:00:11.995 and `rollout finished state=complete` 16:00:12.972. The rollout stopped `m241db-0` and the instance controller recreated it under the same ID with the new recorded image before the agent saw the stop (no stop in the agent log), so the whoami container kept running (0 restarts) while describe shows `mariadb:11`; the recreation deleted `started_at`, and a missing `started_at` counts as healthy. Fix so that (a) the agent ensures the container of an instance runs its recorded image and replaces it when not (idempotent `ensure`, architectural rule 3), and (b) a recreated instance never counts as healthy before the agent has started it (e.g. a `started_at` older than the incarnation, or missing after a recreation, is not healthy; keep the older-agent fallback only where it is genuinely an older agent).
+  - Root cause: the agent's running path (`executeReconciliationCycle`) never compared a running container with the instance's image. After the re-creation (`state` = `pending`, recorded image `b`, `started_at` deleted) it found the whoami container running, published `running` over `pending`, and wrote no `started_at` and no image (only a start does). The rollout's health rule then took the missing `started_at` for an older agent and counted db-0 healthy at once, so the rollout ended in the next pass.
+  - (a) `replaceContainerOnAnotherImage` (agent/agent.go), called on the running path before `detectConfigChange`: when `observed/instance/{id}/image` (the image this agent last started; the re-creation keeps it) differs from `derived/instance/{id}/image`, it runs the pre_stop hook, stops the container and forgets the crash-loop back-off; the next cycle starts the recorded image like any missing container (new `started_at`, no restart counted). A missing fact or a read error changes nothing.
+  - (b) `rolloutHealthRule.evaluate` (rollout_plan.go): a running instance with a recorded image is healthy only when its observed image equals it, with or without `started_at`; the reason is `waiting for db-0 to stay healthy (still runs "app:a", not yet started on app:b)`. `extractInstancesByService` keeps both images apart (`recordedImage`, `observedImage`). The older-agent rule (no `started_at` = healthy) stays for an instance on its recorded image: every agent since M7 publishes the observed image at each start, and an older agent starts a new instance on the service image, which is its recorded image. An instance without a recorded image (older server) is unchanged.
+  - Decision (no new key): "started by the agent in this incarnation" is read from the existing observed image rather than a new incarnation marker. Limit: an ordinal re-created with the same image as its still-running container counts at once, which is correct (it runs the right image). A stateful rollout on an agent older than this change never becomes healthy and is rolled back by the progress deadline, which is what actually happens on such a node (the old container keeps running).
+  - Green: `--- PASS: TestRolloutRecreatedOrdinalCountsOnlyOnceStartedOnNewImage` (both subtests), `--- PASS: TestRolloutRecreatedInstanceWithoutStartedAtIsNotHealthy` (5 cases), `--- PASS: TestAgentReplacesContainerOnAnotherImageThanRecorded (0.05s)`, `--- PASS: TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage`.
+- [x] 2e.2 Testbed T2 (per-node replacement never placed): per-node `m241pn` on 3 nodes, whoami → `nginx:1.27`: old `233eb1b1f3` on worker-1 stopped at 16:00:12, new `6272b78d8a` created with no node and no events, still `pending` after 3.5 min; no rollout reason, no unplaced fact logged. Find why per-node placement does not place it (stopped instance still counted on the node? per-node placement owned by the intent controller?), fix it, and make the rollout reason name the waiting instance in this case too (D7: a waiting rollout always says why).
+  - Root cause: the scheduler, not the intent controller. Per-node placement (`placeBatchedInstances` → `filterOutNodesAlreadyHostingService`, scheduler/scheduler.go) treated every node with a placement of the service as taken, stopped instances included. The rollout stops the old instance by writing its observed state `stopped`, but its placement stays until instance GC, and GC waits until the service has its expected running count, which needs the replacement. With one instance per node, every node was taken and the replacement stayed pending forever: a deadlock. The intent controller only sets the effective count to the alive node count (3), and the instance controller created the replacement correctly.
+  - Fix: `filterOutNodesAlreadyHostingService` skips instances whose observed state is `stopped`. The replacement goes to the node its predecessor left. If the old container still runs there for one agent cycle, the agent stops it in the same cycle: the instance is not desired any more.
+  - Reason: not reproduced. With the bug, the integration run's rollout reason was `waiting for <id> unplaced: insufficient_capacity` (the scheduler wrote `derived/scheduler/unplaced/<id>/reason`). `TestRolloutReasonNamesWaitingPerNodeInstance` pins that a pending per-node replacement is named with its unplaced reason, or with `pending` before the scheduler has seen it, and it passed before any change. No code path for a rolling service skips the reason. The testbed's "no rollout reason" may have been read from output without the Rollout section; the main session should check the reason on the next testbed run.
+  - Not fixed, out of scope (flag): (1) the scheduler labels "every matching node already hosts this per-node service" as `insufficient_capacity`, and the cluster-scale controller requests a node for it (clusterscale.go:255). (2) The per-node filter reads only the observed state, so an instance stopped only by `controller_stopped` (failure-controller replacement on an alive node, scale-down) still takes its node until GC. That has the same shape, but the scheduler does not watch `derived/instance/`.
+  - Green: `--- PASS: TestPerNodePlacesReplacementOnNodeOfStoppedInstance`, `--- PASS: TestPerNodeRolloutReplacesEveryNode`, `go test ./scheduler/ -count=1` → `ok`.
+- [x] 2e.3 Review round 3 M1 remainder: the instance controller adds `min(surge, active old-image instances)` instead of the full surge (instance.go `hasOldImageInstances` → count). Loop tests: 5 instances on defaults, and 3 instances with `max_extra 2`: exactly N created, none scaled down.
+  - `hasOldImageInstances` → `countOldImageInstances` (instance.go). `Reconcile` adds `min(surge_allowance, old-image instances)` for stateless services; stateful and per-node still get none.
+  - Green: `--- PASS: TestInstanceControllerSurgesOnlyForRemainingOldInstances` (5 on defaults: 5 created; 3 with `max_extra 2`: 3 created; none scaled down; at most N + surge active), plus the existing `TestRolloutSurgeEndsWithLastOldInstance` and `TestInstanceControllerSurgesOnlyStatelessWithOldInstances`.
+- [x] 2e.4 Round 3 lows: INSTANCE_LIFECYCLE_GRAPH.md call order (surge after the instance maps); `t *testing.T` field renamed; use `PlacementModePerNode` for the literal `"per-node"` (instance.go, intent.go); one loop over stateful and placement keys in rollout_facts.go; describe reads the effective placement mode like the controllers; per-node case in the max_extra warning test.
+  - INSTANCE_LIFECYCLE_GRAPH.md §1 now shows the surge after `buildInstanceMapsFromFields` / `buildActiveInstanceIDsByService`, as the code runs it, with all §1 line numbers corrected. The loop cluster field `t` is now `testingReporter`. `types.PlacementModePerNode` replaces the four `"per-node"` literals in intent.go and the one in instance.go. `extractWorkloadKinds` uses one loop over both key maps. `readServiceWorkloadKind` (api/describe.go) reads only `effective/service/{svc}/placement_mode`, as `extractWorkloadKinds` and `parseEffectiveServiceFacts` do; `TestDescribeReadsEffectivePlacementModeLikeTheControllers` was red before the change.
+  - The new per-node case of `TestApplyWarnsForIgnoredMaxExtra` (`placement { mode per-node }` with `max_extra 1`) passed already: per-node services compile an instance count, so `collectIgnoredMaxExtraWarnings` already covered them.
+- [x] 2e.5 Docs and graphs for 2e.1–2e.3; checks as in 3.1, paste results.
+  - Docs: Flow 34 (the agent's image check, the per-node scheduler rule, the healthy rule with "started on its recorded image", surge = min(allowance, old left), the new reason, an in-place-replacement bullet); INSTANCE_LIFECYCLE_GRAPH.md §1 (order, line numbers, surge count, re-created ordinal note), §2 (per-node filter), §4 (`replaceContainerOnAnotherImage`), reverse index; SCHEDULING_GRAPH.md (per-node filter, line numbers); CONTROLLER_DATA_FLOW_GRAPH.md (surge count, health rule); CALL_GRAPH.md (running path, reverse index); dsl-reference.md (surge never exceeds the old instances). Spec delta service-rollout: the healthy requirement names the recorded image; new requirement "The agent ensures each container runs its recorded image"; the scenarios name the new tests. No new store key.
+  - Run 2026-11-18 on the final working tree:
+    ```
+    $ gofmt -l (changed and new Go files)
+    (no output)
+    $ golangci-lint run ./...
+    0 issues.
+    $ go build ./... && go vet ./...
+    exit 0
+    $ go test ./controllers/ ./agent/ ./types/ ./api/ ./integration/ ./lang/ ./tenant/ ./cmd/cca/ ./cmd/k8s-to-cca/ ./store/ ./scheduler/ -count=1
+    ok  	github.com/boyadzhievb/ccattler/controllers	5.286s
+    ok  	github.com/boyadzhievb/ccattler/agent	28.260s
+    ok  	github.com/boyadzhievb/ccattler/types	0.039s
+    ok  	github.com/boyadzhievb/ccattler/api	9.074s
+    ok  	github.com/boyadzhievb/ccattler/integration	8.390s
+    ok  	github.com/boyadzhievb/ccattler/lang	0.045s
+    ok  	github.com/boyadzhievb/ccattler/tenant	0.034s
+    ok  	github.com/boyadzhievb/ccattler/cmd/cca	6.610s
+    ok  	github.com/boyadzhievb/ccattler/cmd/k8s-to-cca	0.008s
+    ok  	github.com/boyadzhievb/ccattler/store	1.601s
+    ok  	github.com/boyadzhievb/ccattler/scheduler	0.017s
+    $ go test ./agent/ -race -count=3 -run "TestAgentReplacesContainerOnAnotherImageThanRecorded|TestAgentStartsInstanceWithRecordedImage|TestAgentRestartsInstanceWithItsOwnImage|TestAgentRecordsStartedAtOnEveryStart|TestAgentSkipsStartWhenRecordedImageUnreadable|TestAgentResetsReadinessOnStart|TestAgentKeepsLastExitAfterRestart"
+    ok  	github.com/boyadzhievb/ccattler/agent	3.069s
+    $ go test ./controllers/ -race -count=3 -run "TestRollout|TestInstanceController|TestFailure"
+    ok  	github.com/boyadzhievb/ccattler/controllers	1.299s
+    $ go test ./scheduler/ -race -count=3 -run PerNode
+    ok  	github.com/boyadzhievb/ccattler/scheduler	1.022s
+    $ go test ./integration/ -race -count=3 -run "TestPerNodeRolloutReplacesEveryNode|TestStatefulRolloutRestartsRecreatedOrdinalOnNewImage|TestRollingUpdateGraduallyReplacesInstances|TestRollbackOnHealthFailure|TestPerNodePlacementLifecycle"
+    ok  	github.com/boyadzhievb/ccattler/integration	2.136s
+    $ openspec validate rollout-correctness --strict
+    Change 'rollout-correctness' is valid
+    (first run warned that the healthy requirement text was over 500 characters; the agent rule became its own requirement)
+    $ go test ./... -count=1
+    20 packages ok, 0 failures
+    ```
 
 ## 4. Testbed and review (main session)
 

@@ -106,8 +106,10 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
 │       │   └── FOR EACH node restriction: !accept[label] → false
 │       └── all filtered out → return original list (fallback)   :1462
 │
-├── [per-node] filterOutNodesAlreadyHostingService(candidates, svc, ...) :935/:1413
-│   └── build occupiedNodes from placements → remove from candidates
+├── [per-node] filterOutNodesAlreadyHostingService(candidates, svc, ...) :1046/:1583
+│   └── build occupiedNodes from placements of not stopped instances → remove from candidates
+│       (a stopped instance keeps its placement until instance GC, which waits for its
+│        replacement; counting it blocked every per-node rollout, M241 2e.2)
 │
 ├── [prefer] rankByPreferences(candidates, prefer, load, cpu, mem)  :939/:1512
 │   └── FOR EACH candidate: count matching prefer labels → preferScore
@@ -466,7 +468,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `filterByRestrictions` | scheduler.go:1495 | filterByConstraints (no constraints path) |
 | `satisfiesRequireLabels` | scheduler.go:1470 | filterByConstraints |
 | `toleratesRestrictions` | scheduler.go:1484 | filterByConstraints, filterByRestrictions |
-| `filterOutNodesAlreadyHostingService` | scheduler.go:1413 | placeBatchedInstances (per-node) |
+| `filterOutNodesAlreadyHostingService` | scheduler.go:1583 | placeBatchedInstances (per-node) |
 | `rankByPreferences` | scheduler.go:1512 | placeBatchedInstances |
 | `rankByAffinityHints` | scheduler.go:1569 | placeBatchedInstances |
 | `findMinZones` | scheduler.go:995 | placeBatchedInstances (zone-spread, maxSkew param) |

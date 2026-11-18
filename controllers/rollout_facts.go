@@ -15,20 +15,22 @@ import (
 
 // rolloutInstanceInfo holds instance details needed for rolling update decisions.
 type rolloutInstanceInfo struct {
-	id           string              // id is the instance ID.
-	service      string              // service is the owning service.
-	state        types.InstanceState // state is the effective state (controller_stopped and node_failure applied).
-	image        string              // image is the recorded image, else the observed one; "" when neither exists yet.
-	restarts     int                 // restarts is observed/instance/{id}/restarts, 0 when absent.
-	nodeFailure  bool                // nodeFailure is true when the instance is on a lost node.
-	statusReason string              // statusReason is observed/instance/{id}/status-reason.
-	exitReason   string              // exitReason is observed/instance/{id}/exit-reason.
-	startedAt    time.Time           // startedAt is observed/instance/{id}/started_at; zero when absent or unreadable.
-	createdAt    time.Time           // createdAt is observed/instance/{id}/created-at; zero when absent or unreadable (D13).
-	lastExit     string              // lastExit is observed/instance/{id}/last_exit, kept across restarts.
-	readiness    string              // readiness is observed/instance/{id}/probe/readiness; "" when absent.
-	healthy      bool                // healthy is set by classification: running long enough, and ready when probed (D10).
-	healthWait   string              // healthWait says what a running, not yet healthy instance waits for ("8s", "readiness not-ready").
+	id            string              // id is the instance ID.
+	service       string              // service is the owning service.
+	state         types.InstanceState // state is the effective state (controller_stopped and node_failure applied).
+	image         string              // image is the recorded image, else the observed one; "" when neither exists yet.
+	recordedImage string              // recordedImage is derived/instance/{id}/image; "" when none was recorded (older server).
+	observedImage string              // observedImage is observed/instance/{id}/image, the image the agent last started.
+	restarts      int                 // restarts is observed/instance/{id}/restarts, 0 when absent.
+	nodeFailure   bool                // nodeFailure is true when the instance is on a lost node.
+	statusReason  string              // statusReason is observed/instance/{id}/status-reason.
+	exitReason    string              // exitReason is observed/instance/{id}/exit-reason.
+	startedAt     time.Time           // startedAt is observed/instance/{id}/started_at; zero when absent or unreadable.
+	createdAt     time.Time           // createdAt is observed/instance/{id}/created-at; zero when absent or unreadable (D13).
+	lastExit      string              // lastExit is observed/instance/{id}/last_exit, kept across restarts.
+	readiness     string              // readiness is observed/instance/{id}/probe/readiness; "" when absent.
+	healthy       bool                // healthy is set by classification: running long enough, and ready when probed (D10).
+	healthWait    string              // healthWait says what a running, not yet healthy instance waits for ("8s", "readiness not-ready").
 }
 
 // rolloutField names one rollout bookkeeping fact under
@@ -286,9 +288,12 @@ func parseUpdatePolicyInteger(serviceName string, suffix string, factValue []byt
 // extractInstancesByService returns all instances grouped by service name and
 // sorted by ID, with effective state from observed and derived facts. The
 // recorded image (derived/instance/{id}/image) shadows the observed image in
-// the merged fields: it is the image the agent starts the instance with.
+// the merged fields: it is the image the agent starts the instance with. Both
+// are also kept apart, for the health rule's "started on its image" (2e.1).
 func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceInfo {
 	instanceFields := parseInstanceFieldsFromFacts(facts)
+	recordedImages := collectStringValuesBySuffix(facts, types.ScanDerivedInstances, "image")
+	observedImages := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "image")
 	result := make(map[string][]rolloutInstanceInfo)
 	for _, instanceID := range sortedMapKeys(instanceFields) {
 		fields := instanceFields[instanceID]
@@ -298,18 +303,20 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 		}
 		restartCount, _ := strconv.Atoi(fields["restarts"])
 		result[serviceName] = append(result[serviceName], rolloutInstanceInfo{
-			id:           instanceID,
-			service:      serviceName,
-			state:        effectiveInstanceState(fields),
-			image:        fields["image"],
-			restarts:     restartCount,
-			nodeFailure:  fields["node_failure"] == "true",
-			statusReason: fields["status-reason"],
-			exitReason:   fields["exit-reason"],
-			startedAt:    parseInstanceTimestamp(instanceID, "started_at", fields["started_at"]),
-			createdAt:    parseInstanceTimestamp(instanceID, "created-at", fields["created-at"]),
-			lastExit:     fields["last_exit"],
-			readiness:    fields["probe/"+string(types.ProbeReadiness)],
+			id:            instanceID,
+			service:       serviceName,
+			state:         effectiveInstanceState(fields),
+			image:         fields["image"],
+			recordedImage: recordedImages[instanceID],
+			observedImage: observedImages[instanceID],
+			restarts:      restartCount,
+			nodeFailure:   fields["node_failure"] == "true",
+			statusReason:  fields["status-reason"],
+			exitReason:    fields["exit-reason"],
+			startedAt:     parseInstanceTimestamp(instanceID, "started_at", fields["started_at"]),
+			createdAt:     parseInstanceTimestamp(instanceID, "created-at", fields["created-at"]),
+			lastExit:      fields["last_exit"],
+			readiness:     fields["probe/"+string(types.ProbeReadiness)],
 		})
 	}
 	return result
@@ -419,11 +426,10 @@ func extractWorkloadKinds(facts []store.Fact) map[string]types.WorkloadKind {
 	statefulServices := collectStringValuesBySuffix(facts, types.ScanEffectiveServices, "stateful")
 	placementModes := collectStringValuesBySuffix(facts, types.ScanEffectiveServices, "placement_mode")
 	workloadKinds := make(map[string]types.WorkloadKind)
-	for _, serviceName := range sortedMapKeys(statefulServices) {
-		workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", placementModes[serviceName])
-	}
-	for _, serviceName := range sortedMapKeys(placementModes) {
-		workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", placementModes[serviceName])
+	for _, kindFacts := range []map[string]string{statefulServices, placementModes} {
+		for serviceName := range kindFacts {
+			workloadKinds[serviceName] = types.WorkloadKindOf(statefulServices[serviceName] == "true", placementModes[serviceName])
+		}
 	}
 	return workloadKinds
 }

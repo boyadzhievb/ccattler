@@ -584,7 +584,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 		if !exists || !runtimeStatus.Running {
 			nodeAgent.reconcileInstanceWithoutRunningContainer(ctx, instanceInfo, runtimeStatus, exists)
-		} else if !nodeAgent.detectConfigChange(ctx, instanceInfo) {
+		} else if !nodeAgent.replaceContainerOnAnotherImage(ctx, instanceInfo) && !nodeAgent.detectConfigChange(ctx, instanceInfo) {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
 			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
@@ -1218,6 +1218,29 @@ func (nodeAgent *Agent) lookupInstanceImageFromStore(ctx context.Context, instan
 			"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", serviceImage)
 	}
 	return serviceImage
+}
+
+// replaceContainerOnAnotherImage ensures a running container runs its
+// instance's recorded image (M241 2e.1): when the image this agent last started
+// (observed image) differs, the ID got a new incarnation while the old container
+// ran, so it is stopped and the next cycle starts the recorded image. Returns
+// true when it stopped the container; a missing fact or read error changes nothing.
+func (nodeAgent *Agent) replaceContainerOnAnotherImage(ctx context.Context, instanceInfo placedInstanceInfo) bool {
+	recordedImageFact, recordedError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceImage(instanceInfo.id))
+	startedImageFact, startedError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceImage(instanceInfo.id))
+	if recordedError != nil || startedError != nil || len(recordedImageFact.Value) == 0 || len(startedImageFact.Value) == 0 ||
+		string(recordedImageFact.Value) == string(startedImageFact.Value) {
+		return false
+	}
+	logging.Default().Info("container runs another image than recorded, replacing it",
+		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,
+		"running_image", string(startedImageFact.Value), "recorded_image", string(recordedImageFact.Value))
+	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "pre_stop")
+	if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceInfo.id, instanceInfo.service); stopError != nil {
+		logging.Default().Error("failed to stop instance on another image", "instance", instanceInfo.id, "error", stopError.Error())
+	}
+	delete(nodeAgent.crashLoopBackoffs, instanceInfo.id) // a new incarnation starts without the old one's back-off
+	return true
 }
 
 // cleanupStaleImageFallbackLogs forgets the logged image fallback of instances

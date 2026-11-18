@@ -42,11 +42,17 @@ type rolloutHealthRule struct {
 }
 
 // evaluate returns whether the instance is healthy and, for a running instance
-// that is not yet, what it waits for: the time it becomes healthy or its
-// readiness. An instance without started_at counts at once (agents before D10).
+// that is not yet, what it waits for: its start on the recorded image, the time
+// it becomes healthy or its readiness. An instance without started_at counts at
+// once (agents before D10) once it was started on its recorded image (2e.1).
 func (healthRule rolloutHealthRule) evaluate(instanceInfo rolloutInstanceInfo) (bool, string) {
 	if instanceInfo.state != types.InstanceRunning {
 		return false, ""
+	}
+	if instanceInfo.recordedImage != "" && instanceInfo.observedImage != instanceInfo.recordedImage {
+		// A recreated ID whose old container still runs: the agent has not
+		// started this incarnation yet, whatever its state says (testbed T1).
+		return false, fmt.Sprintf("still runs %q, not yet started on %s", instanceInfo.observedImage, instanceInfo.recordedImage)
 	}
 	if !instanceInfo.startedAt.IsZero() {
 		if healthyAt := instanceInfo.startedAt.Add(healthRule.minHealthyTime); healthyAt.After(healthRule.now) {
