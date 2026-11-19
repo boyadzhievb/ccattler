@@ -207,43 +207,108 @@ Second run detects the existing inventory and deploys CCattler across your hosts
 | cca agent | Every worker node | `cca-agent.service` |
 | Certificates | `/etc/ccattler/` | Auto-generated CA + node certs |
 
-## Manual multi-host setup
+## Set up a cluster by hand
 
-If you prefer to set things up manually:
+These are the steps the Ansible playbook runs, done by hand. In the commands, replace `CONTROL_PLANE_IP` with the
+control-plane host's address, `WORKER_IP` with the worker's address, and `worker-1` with the worker's name.
 
-### Start the server
+### 1. Control-plane host
 
-```bash
-cca server --listen 0.0.0.0:9770 --tls
-```
-
-Auto-generates an ephemeral CA and server certificate. Writes `ca.pem` to `.ccattler/` for client trust.
-
-### Create a join token
+Install the prerequisites, including etcd ([Prepare a fresh Debian or Ubuntu host](#prepare-a-fresh-debian-or-ubuntu-host)),
+then the `cca` binary ([Quick install](#quick-install)). Then:
 
 ```bash
-cca token create --node-id worker-1 --ttl 15m
-# Token: cca_abc123...
-# Join command: cca join 192.168.1.10:9770 cca_abc123... --node-id worker-1
+# Generate the cluster CA, this host's certificates, the secret root key and a setup script
+cca init --advertise-address CONTROL_PLANE_IP --node-id ctrl -o ~/cca-init
+
+# Review the script, then run it: installs the certificates under /etc/ccattler,
+# configures etcd with TLS and writes the cca-server and cca-agent systemd units
+less ~/cca-init/setup.sh
+sudo ~/cca-init/setup.sh
+
+# Start the server (API, controllers, DNS) and this host's agent
+sudo systemctl enable --now cca-server cca-agent
+
+# Check: the node shows as alive
+sudo cca status
 ```
 
-### Join a node
+`~/cca-init` holds the CA private key and the secret root key. Once `setup.sh` has copied them to `/etc/ccattler`,
+keep a backup of that directory somewhere safe and delete `~/cca-init`.
 
-On each worker:
+If something fails, read the logs: `sudo journalctl -u cca-server -u cca-agent -u etcd -e`.
+
+### 2. Worker hosts
+
+On each worker, install the prerequisites without etcd ([step 3 of Prepare a fresh host](#prepare-a-fresh-debian-or-ubuntu-host))
+and the `cca` binary.
+
+Create a join token **on the control-plane host**. It works once, for this worker name, for 15 minutes:
 
 ```bash
-cca join 192.168.1.10:9770 <token> --node-id worker-1 --ca-cert /path/to/ca.pem
+sudo cca token create --node-id worker-1 --ttl 15m
 ```
 
-The node generates a private key, sends a CSR to the server, receives a signed certificate, and stores credentials in `.ccattler/`.
-
-### Start the agent
+**On the worker**, join and point the agent at the control plane:
 
 ```bash
-cca agent --node-id worker-1
+# Enroll: writes this node's certificate and the cluster CA to /etc/ccattler/pki
+sudo cca join https://CONTROL_PLANE_IP:9770 <token> --node-id worker-1
+
+# Tell the agent where etcd is
+echo "https://CONTROL_PLANE_IP:2379" | sudo tee /etc/ccattler/endpoints
 ```
 
-The agent auto-discovers certificates from `.ccattler/` (created by `cca join`).
+Create `/etc/systemd/system/cca-agent.service` (for example with `sudo nano`):
+
+```ini
+[Unit]
+Description=CCattler Agent
+After=network.target containerd.service
+Requires=containerd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca agent \
+  --node-id worker-1 \
+  --advertise-address WORKER_IP \
+  --api-server CONTROL_PLANE_IP:9770 \
+  --cert /etc/ccattler/pki/node.pem \
+  --key /etc/ccattler/pki/node-key.pem \
+  --ca /etc/ccattler/pki/ca.pem \
+  --etcd-cert /etc/ccattler/pki/node.pem \
+  --etcd-key /etc/ccattler/pki/node-key.pem \
+  --etcd-ca /etc/ccattler/pki/ca.pem \
+  --dns-upstream CONTROL_PLANE_IP:15353
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start it, then check from the control-plane host that the worker shows as alive:
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now cca-agent
+sudo cca status        # on the control-plane host
+```
+
+### 3. Use the CLI without sudo
+
+`sudo cca …` works on the control-plane host because root can read the node's own certificate in `/etc/ccattler/pki`.
+That certificate is the machine's identity, with full rights, so don't use it for daily work. Give yourself a user
+account instead (replace `USERNAME`):
+
+```bash
+sudo cca user create USERNAME
+sudo cca role grant user:USERNAME --capability cluster.admin --scope cluster   # or e.g. workload.read for read-only
+export CCA_TOKEN=$(sudo cca user token USERNAME --ttl 24h)
+cca status
+```
+
+The token is valid for the `--ttl` you chose. Create a new one when it expires. To keep it across logins, put the
+`export` line in `~/.bashrc`.
 
 ### Using external certificates
 
