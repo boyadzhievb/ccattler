@@ -14,29 +14,41 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 
 ### Prepare a fresh Debian or Ubuntu host
 
-A minimal install ships without several tools these instructions use. Run the steps that apply, in order.
+A minimal install ships without several tools these instructions use. Run the steps that apply, in order. Step 1
+works on any distribution; steps 2 and 3 use Debian/Ubuntu package names, the distributions CCattler is tested on.
 
-**1. Get `sudo`.** Debian does not install `sudo` when you set a root password during installation. Check:
+**1. Get `sudo`.** This step is the same on every Linux distribution except for the package manager and the name
+of the admin group. Check:
 
 ```bash
 sudo -v
 ```
 
-If that prints `sudo: command not found` or `user is not in the sudoers file`, become root and add your user
-(replace `USERNAME` with your login name):
+If that prints `sudo: command not found` or `user is not in the sudoers file`, become root, install sudo if it is
+missing, and add your user to the admin group (replace `USERNAME` with your login name):
+
+| Distribution | Install sudo | Admin group |
+|---|---|---|
+| Debian | `apt install -y sudo` (missing when a root password was set during installation) | `sudo` |
+| Ubuntu | preinstalled; the first user already has it | `sudo` |
+| RHEL, AlmaLinux, Rocky, Fedora | `dnf install -y sudo` (usually preinstalled) | `wheel` |
+| Arch, openSUSE | `pacman -S sudo` / `zypper install sudo` | `wheel` (uncomment the `%wheel` line with `visudo`) |
+
+Debian example:
 
 ```bash
 su -
 apt update && apt install -y sudo
-usermod -aG sudo USERNAME
+usermod -aG sudo USERNAME      # wheel instead of sudo on RHEL, Fedora, Arch, openSUSE
 exit
 ```
 
 Log out and back in (group membership is read at login), then run `sudo -v` again.
 
 **Passwordless sudo (only for automation).** Ansible and other non-interactive tools that connect over SSH cannot
-answer a password prompt. On those hosts, allow `USERNAME` to use sudo without a password instead (`su` asks for the
-root password):
+answer a password prompt. On those hosts, allow `USERNAME` to use sudo without a password instead. The drop-in file
+works the same on every distribution; replace `apt install -y sudo` with your distribution's command from the table
+above (`su` asks for the root password):
 
 ```bash
 su -c "apt install -y sudo \
