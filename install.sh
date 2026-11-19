@@ -74,8 +74,14 @@ if [ -n "${CCATTLER_VERSION:-}" ]; then
     version="$CCATTLER_VERSION"
 else
     log_info "Detecting latest release..."
-    version=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
-        | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    # github.com/.../releases/latest redirects to .../releases/tag/<version>. Reading the
+    # redirect avoids the GitHub API, which allows 60 unauthenticated requests per hour per IP.
+    latest_release_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+        "https://github.com/${GITHUB_REPO}/releases/latest" || true)
+    case "$latest_release_url" in
+        */releases/tag/*) version="${latest_release_url##*/releases/tag/}" ;;
+        *) version="" ;;
+    esac
     if [ -z "$version" ]; then
         log_error "Could not detect latest release. Set CCATTLER_VERSION manually."
         exit 1
@@ -148,11 +154,16 @@ echo ""
 INSTALL_GUIDE_URL="https://ccattler.org/installation"
 if [ "$operating_system" = "linux" ]; then
     log_info "Checking cluster-host prerequisites..."
+    # host_has_program also looks in the sbin directories, which are not in a
+    # normal user's PATH on Debian (nft lives in /usr/sbin).
+    host_has_program() {
+        command -v "$1" >/dev/null 2>&1 || [ -x "/usr/sbin/$1" ] || [ -x "/sbin/$1" ]
+    }
     missing_prerequisites=""
-    command -v containerd >/dev/null 2>&1 || missing_prerequisites="$missing_prerequisites containerd"
-    command -v nft >/dev/null 2>&1 || missing_prerequisites="$missing_prerequisites nftables"
+    host_has_program containerd || missing_prerequisites="$missing_prerequisites containerd"
+    host_has_program nft || missing_prerequisites="$missing_prerequisites nftables"
     [ -x /opt/cni/bin/bridge ] || missing_prerequisites="$missing_prerequisites cni-plugins"
-    command -v etcd >/dev/null 2>&1 || missing_prerequisites="$missing_prerequisites etcd(control-plane-only)"
+    host_has_program etcd || missing_prerequisites="$missing_prerequisites etcd(control-plane-only)"
     if [ -z "$missing_prerequisites" ]; then
         log_ok "containerd, nftables, CNI plugins and etcd found"
     else
