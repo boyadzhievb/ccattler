@@ -12,6 +12,76 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 | **Container runtime** | Docker, nerdctl, or Lima — required for `cca run-container`. Optional for simulation and process modes. |
 | **etcd** | Required for multi-node clusters (installed by Ansible) |
 
+### Prepare a fresh Debian or Ubuntu host
+
+A minimal install ships without several tools these instructions use. Run the steps that apply, in order.
+
+**1. Get `sudo`.** Debian does not install `sudo` when you set a root password during installation. Check:
+
+```bash
+sudo -v
+```
+
+If that prints `sudo: command not found` or `user is not in the sudoers file`, become root and add your user
+(replace `USERNAME` with your login name):
+
+```bash
+su -
+apt update && apt install -y sudo
+usermod -aG sudo USERNAME
+exit
+```
+
+Log out and back in (group membership is read at login), then run `sudo -v` again.
+
+**Passwordless sudo (only for automation).** Ansible and other non-interactive tools that connect over SSH cannot
+answer a password prompt. On those hosts, allow `USERNAME` to use sudo without a password instead (`su` asks for the
+root password):
+
+```bash
+su -c "apt install -y sudo \
+  && echo 'USERNAME ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/USERNAME-nopasswd \
+  && chmod 0440 /etc/sudoers.d/USERNAME-nopasswd \
+  && visudo -cf /etc/sudoers.d/USERNAME-nopasswd"
+```
+
+`visudo -cf` checks the syntax, because a broken sudoers file can lock you out of sudo. The file name must not contain
+a `.`, because sudo ignores such files. To remove it: `sudo rm /etc/sudoers.d/USERNAME-nopasswd`. Interactive installs
+do not need this.
+
+**2. Install the download tools** (needed by the quick install below):
+
+```bash
+sudo apt update
+sudo apt install -y curl tar ca-certificates
+```
+
+**3. For a host that runs real containers or joins a cluster**, also install:
+
+```bash
+# Container runtime and the nft tool used by the agent's data plane
+sudo apt install -y containerd nftables
+
+# Control-plane host only: etcd
+sudo apt install -y etcd-server etcd-client
+
+# CNI plugins (container networking)
+CNI_VERSION=1.9.1
+ARCH=$(dpkg --print-architecture)   # amd64 or arm64
+sudo mkdir -p /opt/cni/bin
+curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${ARCH}-v${CNI_VERSION}.tgz" \
+    | sudo tar -xz -C /opt/cni/bin
+```
+
+Verify:
+
+```bash
+systemctl is-active containerd     # active
+command -v nft                     # /usr/sbin/nft
+ls /opt/cni/bin/bridge             # /opt/cni/bin/bridge
+command -v etcd                    # control plane only
+```
+
 ## Quick install
 
 One command — detects your OS and architecture, downloads the right binary, installs to `/usr/local/bin/`:
@@ -22,11 +92,14 @@ curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/inst
 
 Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon).
 
-Pin a specific version:
+Pin a specific version (the variable must be set for `bash`, which runs the script, not for `curl`):
 
 ```bash
-CCATTLER_VERSION=v0.38.0 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh \
+    | CCATTLER_VERSION=v1.92.0-beta bash
 ```
+
+Release tags are listed on [GitHub Releases](https://github.com/boyadzhievb/ccattler/releases).
 
 Verify:
 

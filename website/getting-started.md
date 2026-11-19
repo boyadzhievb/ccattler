@@ -19,6 +19,7 @@ CCattler has three ways to run workloads — understanding this upfront avoids c
 - **Linux or macOS** (amd64 or arm64)
 - **Go 1.22+** (if building from source) or `curl` (if downloading binary)
 - **Container runtime** (for `cca run-container`): Docker Desktop (macOS/Linux), nerdctl+containerd (Linux), or Lima (macOS: `brew install lima`)
+- **`sudo`, `curl` and `tar`**: a fresh Debian or Ubuntu install may lack them. See [Prepare a fresh Debian or Ubuntu host](/installation#prepare-a-fresh-debian-or-ubuntu-host).
 
 ## Install
 
