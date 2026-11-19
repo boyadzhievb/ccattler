@@ -8,7 +8,8 @@ CCattler has three ways to run workloads — understanding this upfront avoids c
 
 | Command | Runtime | What happens | Platform |
 |---|---|---|---|
-| `cca apply` / `cca demo` | **Simulator** | Shows the reconciliation loop in action — no real processes or containers start. | Linux, macOS |
+| `cca apply --simulate` / `cca demo` | **Simulator** | Shows the reconciliation loop in action — no real processes or containers start. | Linux, macOS |
+| `cca apply` | **Your cluster** | Sends the config to the cluster's server; its agents pull images and start containers. Needs a running cluster ([Installation](/installation#set-up-a-cluster-by-hand)). | Linux |
 | `cca run` | **Process** | Starts real OS processes on your machine, managed by the reconciler. The `image` field is used as the command to execute. | Linux, macOS |
 | `cca run-container` | **Container** | Pulls images and starts real OCI containers via docker, nerdctl, or lima. This is what you use in production. | Linux, macOS |
 
@@ -62,25 +63,43 @@ Create a file called `web.cca`:
 
 ```hcl
 service web {
-    image nginx:1.28
+    image "docker.io/library/nginx:1.28"
     instances 3
-    expose 8080
+    expose 80
     resources {
-        cpu 500m
-        memory 512Mi
+        cpu 100m
+        memory 64Mi
     }
 }
 ```
 
-This declares a service named `web` running 3 instances of `nginx:1.28`, each consuming 500m CPU and 512Mi memory, with port 8080 exposed.
+This declares a service named `web` running 3 instances of nginx, each requesting 100m CPU and 64Mi memory, with
+nginx's port 80 exposed.
+
+Write the image with its full registry path (`docker.io/library/nginx:1.28`, not `nginx:1.28`) and in quotes. A value
+containing `/` must be quoted.
 
 ### Simulate it
 
 ```bash
-cca apply web.cca
+cca apply --simulate web.cca
 ```
 
-Runs the reconciliation loop and shows the resulting state — nothing actually starts. This works on any platform and is the quickest way to verify your config.
+Runs the reconciliation loop in memory and shows the resulting state — nothing actually starts. This works on any
+platform and is the quickest way to verify your config.
+
+### Deploy it to your cluster
+
+On a cluster set up as in [Installation](/installation#set-up-a-cluster-by-hand):
+
+```bash
+cca apply web.cca
+cca get instances           # wait until all three are running
+cca describe service web    # shows the service's virtual IP (VIP)
+curl http://<VIP>:80/       # from any cluster host: nginx answers
+```
+
+The DNS name `web.cca.local` resolves inside containers, not on the host itself.
 
 ## Run real containers
 
