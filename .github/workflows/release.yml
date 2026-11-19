@@ -27,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history: the BPF freshness check compares commit times of files.
+          fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -50,18 +53,20 @@ jobs:
           version="${GITHUB_REF#refs/tags/}"
           go build -trimpath -tags cloudprovider -ldflags "-s -w -X main.version=${version}" -o cca-cloud ./cmd/cca/
 
-      - name: Install BPF build dependencies
+      # The BPF object is committed (network/ebpf/cca_dataplane.o, built with
+      # `make bpf`) and embedded as-is, as in every other build. The release no
+      # longer recompiles it: that needed apt packages from Ubuntu's mirrors,
+      # whose outages failed v1.93.0-beta three times. This step refuses a
+      # release whose BPF sources changed after the committed object.
+      - name: Check the committed BPF object is current
         if: matrix.goos == 'linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev linux-headers-generic
-
-      - name: Compile BPF data plane
-        if: matrix.goos == 'linux'
-        run: |
-          clang -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_x86 \
-            -I/usr/include -I/usr/include/x86_64-linux-gnu \
-            -c network/ebpf/cca_dataplane.c -o network/ebpf/cca_dataplane.o
+          object_time=$(git log -1 --format=%ct -- network/ebpf/cca_dataplane.o)
+          source_time=$(git log -1 --format=%ct -- network/ebpf/*.c network/ebpf/*.h)
+          if [ "$source_time" -gt "$object_time" ]; then
+            echo "::error::network/ebpf sources changed after cca_dataplane.o; run 'make bpf' and commit the object"
+            exit 1
+          fi
 
       - name: Build (ebpf)
         if: matrix.goos == 'linux'
