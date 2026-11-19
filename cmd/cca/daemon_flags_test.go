@@ -130,15 +130,15 @@ func extractDaemonInvocations(unitText string) map[string][][]string {
 }
 
 // TestShippedUnitFilesPassOnlyKnownFlags feeds every `cca server` and `cca
-// agent` command line we ship (the `cca init` setup script, install.sh, the
-// Ansible and Lima unit templates) through the real parsers.
+// agent` command line we ship (the `cca init` setup script, the worker unit in
+// the install docs, the Ansible and Lima unit templates) through the real parsers.
 func TestShippedUnitFilesPassOnlyKnownFlags(testContext *testing.T) {
 	unitTextBySource := map[string]string{
 		"cca init setup script": buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24"),
 	}
 	expectedInvocationCount := 2 // setup script: one server unit, one agent unit
 	for _, repositoryPath := range []string{
-		"install.sh", "deploy/lima/lima-deploy.yml",
+		"website/installation.md", "deploy/lima/lima-deploy.yml",
 		"deploy/ansible/roles/ha-controlplane/templates/cca-server.service.j2",
 		"deploy/ansible/roles/worker/templates/cca-agent.service.j2",
 	} {
@@ -148,7 +148,7 @@ func TestShippedUnitFilesPassOnlyKnownFlags(testContext *testing.T) {
 		}
 		unitTextBySource[repositoryPath] = string(fileContent)
 	}
-	expectedInvocationCount += 2 + 2 + 1 + 1 // install.sh and Lima: server and agent; one per template
+	expectedInvocationCount += 1 + 2 + 1 + 1 // install docs: worker agent; Lima: server and agent; one per template
 
 	checkedInvocationCount := 0
 	for sourceName, unitText := range unitTextBySource {
