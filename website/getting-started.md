@@ -101,22 +101,27 @@ curl http://<VIP>:80/       # from any cluster host: nginx answers
 
 The DNS name `web.cca.local` resolves inside containers, not on the host itself.
 
-## Run real containers
+## Run real containers without a cluster
 
-With a container runtime installed (Docker, nerdctl, or Lima), this pulls the nginx image and starts real OCI containers:
+With a container runtime installed (Docker, nerdctl, or Lima), this pulls the nginx image and starts real OCI containers
+on your machine, without a server or agent:
 
 ```bash
-cca run-container web.cca
+sudo cca run-container web.cca
 ```
+
+Each instance's port is published on the host, counting up from the exposed port: the three instances get host ports
+80, 81 and 82. Ports below 1024 need root, so run it with `sudo` (or change `expose` to a port above 1024 for an image
+that listens there), and make sure port 80 is free.
 
 Add `--watch` for live status updates:
 
 ```bash
-cca run-container --watch web.cca
+sudo cca run-container --watch web.cca
 ```
 
 ::: tip No container runtime?
-If you don't have Docker, nerdctl, or Lima installed, use `cca apply` for simulation or `cca run` with a local executable. The install script will tell you what's available.
+If you don't have Docker, nerdctl, or Lima installed, use `cca apply --simulate` for simulation or `cca run` with a local executable. The install script will tell you what's available.
 :::
 
 ## Run local processes (any platform)
