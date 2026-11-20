@@ -27,9 +27,10 @@ Every component that reads these values SHALL give the same value the same meani
 - Test: `TestClassifyQoSComparesParsedQuantities`
 
 ### Requirement: An apply refuses resource values it cannot read
-An apply SHALL be refused, with nothing written, when a resource value does not follow the notation or is finer than
-1 millicore (CPU) or 1 byte (memory). The error SHALL name the service, the field and the value. The check SHALL apply
-to the value after template substitution.
+An apply SHALL be refused, with nothing written, when a resource value does not follow the notation. The error SHALL
+name the service, the field and the value. The check SHALL apply to the value after template substitution. A value
+finer than 1 millicore (CPU) or 1 byte (memory) SHALL be accepted and rounded up to the next millicore or byte. A CPU
+value written without `m` that is 64 cores or more SHALL be accepted with a warning that it is read as cores.
 
 #### Scenario: Unknown suffix
 - **WHEN** the user applies a service with `memory 512MB`
@@ -37,10 +38,16 @@ to the value after template substitution.
   is written or changed
 - Test: `TestCompileRefusesUnparseableResourceValue`
 
-#### Scenario: Too fine
-- **WHEN** the user applies a service with `cpu 0.0005`
-- **THEN** the apply fails with an error naming `cpu` and `0.0005`
-- Test: `TestCompileRefusesUnparseableResourceValue`
+#### Scenario: Finer than the unit rounds up
+- **WHEN** the user applies a service with `cpu 0.0005` and `memory 1.1Gi`
+- **THEN** the apply succeeds, and every reader reads 1 millicore and 1181116007 bytes
+- Test: `TestParseQuantitiesRoundFinerValuesUp`, `TestCompileAcceptsFinerResourceValues`
+
+#### Scenario: Bare CPU of 64 or more
+- **WHEN** the user applies a service with `cpu 500` or `scale { vertical { cpu { max 4000 } } }`
+- **THEN** the apply succeeds and prints a warning naming the service and the value, saying it is read as cores and
+  `500m` was probably meant; `cpu 2` gives no warning
+- Test: `TestDeprecationWarningsFlagBareCPUOfSixtyFourOrMore`
 
 #### Scenario: Vertical scaling bounds
 - **WHEN** the user applies a service with `scale { vertical { cpu { min 250m max lots } } }`
@@ -74,7 +81,8 @@ one exists and the desired request otherwise, and SHALL reconcile again when eit
 - **GIVEN** a service declaring `cpu 250m` whose `effective/service/{svc}/resources/cpu` is `1500m`, and a node with
   1000 millicores available
 - **WHEN** the effective value is written and the controller runner reconciles the scheduler
-- **THEN** a new instance of the service is not placed on that node
+- **THEN** a new instance of the service is not placed on that node, and once the effective value changes to `500m`
+  the scheduler reconciles again and places it
 - Test: `TestSchedulerWatchesEffectiveResourceRequest`
 
 #### Scenario: Capacity shortage reaches cluster scaling and the rollout
@@ -86,9 +94,10 @@ one exists and the desired request otherwise, and SHALL reconcile again when eit
 - Check: `deploy-run:resource-capacity` (by hand)
 
 ### Requirement: A stored value that cannot be read blocks new work for its service
-When a stored request cannot be parsed, the scheduler SHALL NOT place, preempt for or rebalance that service's
-instances, and SHALL give its unplaced instances reason `invalid_resource_request`, which cluster scaling ignores.
-Placed instances SHALL keep running and count as zero in node capacity, and `cca status` SHALL name the service.
+When a stored request cannot be parsed, the scheduler SHALL NOT place, preempt for, preempt or rebalance that
+service's instances, and SHALL give its unplaced instances reason `invalid_resource_request`, which cluster scaling
+ignores. Placed instances SHALL keep running and count as zero in node capacity, and `cca status` SHALL name the
+service.
 
 #### Scenario: Legacy bad value
 - **GIVEN** `desired/service/web/resources/memory` is `512MB` in the store, `web` has one placed, running instance and
@@ -96,7 +105,15 @@ Placed instances SHALL keep running and count as zero in node capacity, and `cca
 - **WHEN** the scheduler reconciles
 - **THEN** the unplaced instance stays unplaced with reason `invalid_resource_request`, no instance of another service
   is preempted, the running instance keeps its node, and `cca status` names `web` and the value
-- Test: `TestSchedulerRefusesUnparseableStoredRequest`
+- Test: `TestSchedulerRefusesUnparseableStoredRequest`, `TestSchedulerRebalanceLeavesInvalidRequestServiceInPlace`,
+  `TestSchedulerWritesInvalidResourceRequestShownByStatus`
+
+#### Scenario: Not a preemption victim
+- **GIVEN** a running instance of a low-priority service whose stored request cannot be read, and a pending
+  higher-priority instance that fits nowhere
+- **WHEN** the scheduler reconciles
+- **THEN** that running instance is not preempted
+- Test: `TestSchedulerNeverPreemptsInvalidRequestService`
 
 #### Scenario: No node asked for
 - **GIVEN** the same stored value and no alive node
@@ -106,9 +123,7 @@ Placed instances SHALL keep running and count as zero in node capacity, and `cca
 
 ### Requirement: Effective requests follow the vertical autoscaler
 The vertical autoscaler SHALL write its CPU recommendation in millicores with the `m` suffix and its memory
-recommendation in `Mi`, rounded up. It SHALL rewrite a stored recommendation that has no unit, and SHALL delete its
-recommendation when the service no longer declares vertical scaling. The effective request SHALL be deleted when no
-recommendation exists, so the desired request applies again.
+recommendation in `Mi`, rounded up, and SHALL make no recommendation for a resource whose bounds cannot be read.
 
 #### Scenario: CPU recommendation
 - **WHEN** the vertical autoscaler recommends 750 millicores for `web`
@@ -121,12 +136,33 @@ recommendation exists, so the desired request applies again.
 - **THEN** its CPU limit is 750 millicores and its memory limit 805306368 bytes
 - Test: `TestAgentReadsEffectiveResourceQuantities`
 
+#### Scenario: Unreadable bound
+- **WHEN** a stored vertical CPU bound cannot be parsed
+- **THEN** the autoscaler makes no CPU recommendation for that service
+- Test: `TestVerticalAutoscalerSkipsResourceWithUnreadableBound`
+
+### Requirement: Legacy recommendations are migrated at server start
+The server SHALL rewrite, once at start and before any controller runs, every autoscaler recommendation and effective
+request stored without a unit, clamped to the service's vertical bounds, and SHALL never rewrite `desired/`.
+
 #### Scenario: Legacy recommendation without a unit
-- **GIVEN** `intent/autoscaler/service/web/resources/cpu` is `750`, written by an older version, and the autoscaler's
-  next recommendation equals the current request
-- **WHEN** the autoscaler reconciles
-- **THEN** the recommendation is rewritten as `750m`
-- Test: `TestVerticalAutoscalerRewritesBareRecommendation`
+- **GIVEN** `intent/autoscaler/service/web/resources/cpu` and `effective/service/web/resources/cpu` are `750`, written
+  by an older version, and the CPU metric is at the target
+- **WHEN** the server starts and the controllers reconcile
+- **THEN** both are `750m` before any controller runs, the recommendation does not jump to the policy max, and `web` is
+  not `insufficient_capacity`; running the migration again changes nothing, and `desired/` is not touched
+- Test: `TestMigrateUnitlessResourceRecommendations`, `TestLegacyBareRecommendationAfterMigrationKeepsItsSize`
+
+#### Scenario: Legacy value outside the bounds
+- **GIVEN** `cpu { min 250m max 4 }` and a legacy recommendation `4` (4 millicores)
+- **WHEN** the migration runs
+- **THEN** the recommendation is `250m`
+- Test: `TestMigrateUnitlessResourceRecommendations`
+
+### Requirement: Removed vertical scaling restores the desired request
+Per resource, the autoscaler SHALL delete its recommendation when the service no longer declares vertical scaling for
+that resource, and the effective request SHALL be deleted when that resource has no recommendation, so the desired
+request applies again. Services with hierarchical names (`team/web`) SHALL behave the same.
 
 #### Scenario: Vertical scaling removed
 - **GIVEN** `web` had `scale vertical`, effective memory `8Gi` and desired memory `256Mi`
@@ -135,3 +171,9 @@ recommendation exists, so the desired request applies again.
 - **THEN** the autoscaler's recommendation and the effective memory are deleted, and the scheduler places `web` with
   256 MiB
 - Test: `TestRemovingVerticalScalingRestoresDesiredRequest`
+
+#### Scenario: One resource removed
+- **GIVEN** `web` (or `team/web`) has cpu and memory recommendations and effective values
+- **WHEN** only the `cpu {}` vertical block is gone
+- **THEN** the CPU recommendation and the effective CPU are deleted, and memory's stay
+- Test: `TestRemovingOnlyCPUVerticalScalingDeletesOnlyCPU`

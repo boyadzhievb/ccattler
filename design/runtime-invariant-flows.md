@@ -181,9 +181,15 @@ A single IP (`--advertise-address`) propagates to:
 
 ## 10. Resource Limit Effective/Desired Fallback
 
-**Chain:** DSL `resources` → `desired/service/{name}/resources/cpu` → vertical autoscaler → `effective/service/{name}/resources/cpu` → `lookupServiceResourcesFromStore` → `nerdctl --cpus`
+**Chain:** DSL `resources` → `validateServiceResourceValues` (apply refuses an unreadable value) → `desired/service/{name}/resources/cpu` → vertical autoscaler → `intent/autoscaler/service/{name}/resources/cpu` → intent resolver → `effective/service/{name}/resources/cpu` → `lookupServiceResourcesFromStore` → `nerdctl --cpus`
 
-- Agent reads `effective/` first, falls back to `desired/`
+- **One parser** (M243): every reader uses `types.ParseCPUMillicores` (millicores; bare = cores) and `types.ParseMemoryBytes` (bytes; bare = bytes). Behaviour: `openspec/specs/resource-requests`.
+- **Effective first, then desired**: the agent, the scheduler (`extractServiceResourcesFromFacts`, which watches `effective/service/`), eviction and the vertical autoscaler's current value. An unreadable effective value does not fall back to desired.
+- **Scheduler**: requests in millicores and MiB rounded up against the node's remaining capacity; no fit → unplaced `insufficient_capacity` (cluster scaling, rollout reason, deadline rollback). An unreadable stored value → `invalid_resource_request`, no placement, preemption or rebalance, running instances count 0, `derived/scheduler/invalid_resource_request/{svc}` shown by `cca status`.
+- **Other readers on a parse error** (logged once): agent → no limit for that resource; eviction → service not ranked; autoscaler → no recommendation; tenant usage → left out.
+- **Units written**: the autoscaler writes `750m` / `768Mi` (MiB rounded up), and deletes a resource's recommendation when the service has no `scale/vertical/{cpu|memory}/` fact (per resource). The intent resolver deletes `effective/service/{name}/resources/{cpu|memory}` when that resource has no recommendation, so the desired request applies again. An unreadable vertical bound means no recommendation for that resource.
+- **Startup migration** (D9): `cca server` runs `MigrateUnitlessResourceRecommendations` and starts the controller runner only once it succeeds (retried with bounded back-off; the API server does not wait). It rewrites bare legacy intent and effective values (CPU millicores → `{n}m`, memory bytes → `{n}Mi`, clamped to the vertical bounds) in CAS transactions; `desired/` is never touched, and a second run changes nothing.
+- Node capacity facts stay plain MiB / millicore integers.
 - `ContainerRuntime.Resize` always returns `ErrResizeUnsupported` — resource changes cause stop-and-restart
 - `appliedInstanceResources` is in-memory only — lost on agent restart
 

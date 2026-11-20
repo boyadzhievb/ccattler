@@ -267,59 +267,40 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fa
 	return facts, nil
 }
 
-// compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
-// It validates the declaration and delegates to per-block sub-compilers for each
-// DSL section (ports, resources, scale, placement, health, config, secrets, etc.).
-func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, fileSource referencedFileSource, connectionDeclsByName map[string]ConnectionDecl) ([]Fact, error) {
+// validateServiceDeclarationFields refuses a service without a name or image,
+// with a negative instance count, or with a resource value that cannot be
+// read (M243 D3), before any fact is built.
+func validateServiceDeclarationFields(serviceDecl ServiceDecl, sourceLines []string) error {
 	if serviceDecl.Name == "" {
-		return nil, &ParseError{
+		return &ParseError{
 			Line: serviceDecl.Line, Message: "service name is required",
 			SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
 		}
 	}
 	if serviceDecl.Image == "" {
-		return nil, &ParseError{
+		return &ParseError{
 			Line: serviceDecl.Line, Message: fmt.Sprintf("service %q requires an image", serviceDecl.Name),
 			SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
 		}
 	}
 	if serviceDecl.Instances < 0 {
-		return nil, &ParseError{
+		return &ParseError{
 			Line: serviceDecl.Line, Message: fmt.Sprintf("service %q instances must be >= 0", serviceDecl.Name),
 			SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
 		}
 	}
+	return validateServiceResourceValues(serviceDecl, sourceLines)
+}
 
-	isPerNode := serviceDecl.Placement != nil && types.PlacementMode(serviceDecl.Placement.Mode) == types.PlacementModePerNode
-
-	facts := []Fact{
-		{Key: types.KeyDesiredService(serviceDecl.Name), Value: ""},
-		{Key: types.KeyDesiredServiceImage(serviceDecl.Name), Value: serviceDecl.Image},
-		{Key: types.KeyDesiredServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
-		{Key: types.KeyIntentUserServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
-	}
-	if !isPerNode {
-		facts = append(facts, Fact{
-			Key: types.KeyEffectiveServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances),
-		})
+// compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
+// It validates the declaration and delegates to per-block sub-compilers for each
+// DSL section (ports, resources, scale, placement, health, config, secrets, etc.).
+func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, fileSource referencedFileSource, connectionDeclsByName map[string]ConnectionDecl) ([]Fact, error) {
+	if validationError := validateServiceDeclarationFields(serviceDecl, sourceLines); validationError != nil {
+		return nil, validationError
 	}
 
-	if serviceDecl.Command != "" {
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceCommand(serviceDecl.Name), Value: serviceDecl.Command,
-		})
-	}
-
-	ownerTenant := serviceDecl.Owner
-	if ownerTenant == "" {
-		ownerTenant = extractTenantFromHierarchicalName(serviceDecl.Name)
-	}
-	if ownerTenant != "" {
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceOwner(serviceDecl.Name), Value: ownerTenant,
-		})
-	}
-
+	facts := compileServiceIdentityFacts(serviceDecl)
 	portFacts, portError := compileServicePortsFacts(serviceDecl.Name, serviceDecl.Ports, serviceDecl.ExternalPorts, serviceDecl.Line, sourceLines)
 	if portError != nil {
 		return nil, portError
@@ -349,7 +330,49 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, fi
 	facts = append(facts, compileServiceTagFacts(serviceDecl.Name, serviceDecl.Tags)...)
 	facts = append(facts, compileServiceLoggingFacts(serviceDecl.Name, serviceDecl.Logging)...)
 	facts = append(facts, compileServiceLifecycleFacts(serviceDecl.Name, serviceDecl.Lifecycle)...)
+	return append(facts, compileServiceOptionalFacts(serviceDecl)...), nil
+}
 
+// compileServiceIdentityFacts produces the service marker, image, instance
+// count intents, command and owner facts that every service has.
+func compileServiceIdentityFacts(serviceDecl ServiceDecl) []Fact {
+	isPerNode := serviceDecl.Placement != nil && types.PlacementMode(serviceDecl.Placement.Mode) == types.PlacementModePerNode
+
+	facts := []Fact{
+		{Key: types.KeyDesiredService(serviceDecl.Name), Value: ""},
+		{Key: types.KeyDesiredServiceImage(serviceDecl.Name), Value: serviceDecl.Image},
+		{Key: types.KeyDesiredServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
+		{Key: types.KeyIntentUserServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
+	}
+	if !isPerNode {
+		facts = append(facts, Fact{
+			Key: types.KeyEffectiveServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances),
+		})
+	}
+
+	if serviceDecl.Command != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceCommand(serviceDecl.Name), Value: serviceDecl.Command,
+		})
+	}
+
+	ownerTenant := serviceDecl.Owner
+	if ownerTenant == "" {
+		ownerTenant = extractTenantFromHierarchicalName(serviceDecl.Name)
+	}
+	if ownerTenant != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceOwner(serviceDecl.Name), Value: ownerTenant,
+		})
+	}
+	return facts
+}
+
+// compileServiceOptionalFacts produces the facts of the optional single-line
+// fields: pull policy and secret, legacy secret API, stateful, termination
+// grace period and priority.
+func compileServiceOptionalFacts(serviceDecl ServiceDecl) []Fact {
+	var facts []Fact
 	if serviceDecl.PullPolicy != "" {
 		facts = append(facts, Fact{
 			Key: types.KeyDesiredServicePullPolicy(serviceDecl.Name), Value: serviceDecl.PullPolicy,
@@ -388,7 +411,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, fi
 		)
 	}
 
-	return facts, nil
+	return facts
 }
 
 // compileServicePortsFacts produces expose and external port facts for a service.
@@ -458,9 +481,66 @@ func compileServiceResourceFacts(serviceName string, resourcesDecl *ResourcesDec
 	return resourceFacts
 }
 
+// declaredResourceValue is one resource value of a service declaration with
+// the field name an error shows and the parser for its kind.
+type declaredResourceValue struct {
+	fieldName   string                      // fieldName is the field as written, e.g. "memory" or "cpu max"
+	valueText   string                      // valueText is the value after template rendering
+	parseValues func(string) (int64, error) // parseValues is types.ParseCPUMillicores or types.ParseMemoryBytes
+}
+
+// validateServiceResourceValues refuses a service whose resources or vertical
+// scaling bounds cannot be parsed or are finer than 1m CPU or 1 byte, naming
+// the service, field and value, so an apply writes nothing (M243 D3).
+func validateServiceResourceValues(serviceDecl ServiceDecl, sourceLines []string) error {
+	var declaredValues []declaredResourceValue
+	if resourcesDecl := serviceDecl.Resources; resourcesDecl != nil {
+		declaredValues = append(declaredValues,
+			declaredResourceValue{"cpu", resourcesDecl.CPU, types.ParseCPUMillicores},
+			declaredResourceValue{"memory", resourcesDecl.Memory, types.ParseMemoryBytes},
+			declaredResourceValue{"cpu_limit", resourcesDecl.CPULimit, types.ParseCPUMillicores},
+			declaredResourceValue{"memory_limit", resourcesDecl.MemoryLimit, types.ParseMemoryBytes},
+		)
+	}
+	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
+		verticalDecl := serviceDecl.Scale.Vertical
+		declaredValues = append(declaredValues,
+			declaredResourceValue{"cpu min", verticalDecl.CPUMin, types.ParseCPUMillicores},
+			declaredResourceValue{"cpu max", verticalDecl.CPUMax, types.ParseCPUMillicores},
+			declaredResourceValue{"memory min", verticalDecl.MemoryMin, types.ParseMemoryBytes},
+			declaredResourceValue{"memory max", verticalDecl.MemoryMax, types.ParseMemoryBytes},
+		)
+	}
+	for _, declaredValue := range declaredValues {
+		if declaredValue.valueText == "" {
+			continue
+		}
+		if _, parseError := declaredValue.parseValues(declaredValue.valueText); parseError != nil {
+			return &ParseError{
+				Line: serviceDecl.Line,
+				Message: fmt.Sprintf("service %q %s %q cannot be read: %v (CPU: 250m, 0.5 or 2; memory: 512Mi, 1Gi, 1G or bytes)",
+					serviceDecl.Name, declaredValue.fieldName, declaredValue.valueText, parseError),
+				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+			}
+		}
+	}
+	return nil
+}
+
+// resourceValuesEqual reports whether two declared values parse to the same
+// quantity, so "1" and "1000m" are equal. Both must be set.
+func resourceValuesEqual(firstText string, secondText string, parseValues func(string) (int64, error)) bool {
+	if firstText == "" || secondText == "" {
+		return false
+	}
+	firstValue, firstError := parseValues(firstText)
+	secondValue, secondError := parseValues(secondText)
+	return firstError == nil && secondError == nil && firstValue == secondValue
+}
+
 // classifyQoS determines the QoS class based on resource requests and limits.
-// Guaranteed: both CPU and memory have requests equal to limits.
-// Burstable: at least one resource request is set.
+// Guaranteed: both CPU and memory have requests equal to limits (compared as
+// parsed quantities). Burstable: at least one resource request is set.
 // BestEffort: no resource requests or limits set.
 func classifyQoS(resourcesDecl *ResourcesDecl) string {
 	hasCPU := resourcesDecl.CPU != ""
@@ -472,8 +552,8 @@ func classifyQoS(resourcesDecl *ResourcesDecl) string {
 		return "BestEffort"
 	}
 
-	cpuGuaranteed := hasCPU && hasCPULimit && resourcesDecl.CPU == resourcesDecl.CPULimit
-	memoryGuaranteed := hasMemory && hasMemoryLimit && resourcesDecl.Memory == resourcesDecl.MemoryLimit
+	cpuGuaranteed := resourceValuesEqual(resourcesDecl.CPU, resourcesDecl.CPULimit, types.ParseCPUMillicores)
+	memoryGuaranteed := resourceValuesEqual(resourcesDecl.Memory, resourcesDecl.MemoryLimit, types.ParseMemoryBytes)
 	if hasCPU && cpuGuaranteed && hasMemory && memoryGuaranteed {
 		return "Guaranteed"
 	}

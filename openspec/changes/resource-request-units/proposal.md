@@ -30,9 +30,10 @@ so `max 8Gi` is 0, and it writes bare integers that the agent then misreads.
   `memory 134217728`), `lang/benchmark_test.go`, `integration/priority_preemption_test.go`,
   `integration/phase10_test.go`, `rollout_kinds_test.go`, `slow_runtime_test.go`, `scheduler/benchmark_test.go`,
   `scheduler/fuzz_test.go` and `controllers/autoscale_test.go`.
-- **BREAKING (apply refusals):** an apply is refused when a `resources` or `scale vertical` value cannot be parsed or
-  is finer than 1m CPU or 1 byte. The error names the service, the field and the value, and nothing is written. A
-  negative value is already refused by the lexer.
+- **BREAKING (apply refusals):** an apply is refused when a `resources` or `scale vertical` value cannot be parsed. The
+  error names the service, the field and the value, and nothing is written. A negative value is already refused by the
+  lexer. A value finer than 1m CPU or 1 byte is rounded up, as in Kubernetes (2026-11-20, D-b).
+  A bare CPU value of 64 or more gets an apply warning (it is read as cores; D-c).
 - **BREAKING (behavior):** vertical scaling starts working. Its bounds were read as 0, so `scale vertical` did nothing;
   configs that declare it will now get their requests resized.
 - **Capacity-correct placement:**
@@ -46,9 +47,11 @@ so `max 8Gi` is 0, and it writes bare integers that the agent then misreads.
   - Its already-running instances are left alone, but their size is unknown, so they count as 0 in node capacity. This
     is a stated exception, and the service is shown in `cca status`.
 - **Effective values follow the autoscaler:**
-  - The autoscaler rewrites any recommendation stored without a unit, and deletes its recommendation when a service has
-    no vertical policy.
-  - The intent controller deletes an effective value whose recommendation is gone, so the user's request applies again.
+  - At server start, a one-time migration rewrites recommendations and effective values stored without a unit
+    (2026-11-20, D-a). The autoscaler deletes a resource's recommendation when the service has no vertical policy for
+    that resource.
+  - The intent controller deletes an effective value whose recommendation is gone, per resource, so the user's
+    request applies again.
 - **The other readers switch to the shared parser:**
   - Agent runtime limits, the autoscaler, tenant usage and the fair scheduler.
   - Eviction, which now reads effective-first.

@@ -336,8 +336,8 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 
 // startControllersWithLeaderElection assembles the full controller list (core
 // controllers plus optional cloud controllers) and starts them inside an HA
-// runner with leader election. The runner goroutine runs until the context is
-// cancelled.
+// runner with leader election. The runner goroutine waits for the startup
+// resource migration (M243 D9) and then runs until the context is cancelled.
 func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig, clusterCertificateAuthority *security.CertificateAuthority, keyringCodec *security.KeyringEnvelopeCodec) {
 	networkController := controllers.NewNetworkController()
 	if parsedConfig.vipCIDR != "" {
@@ -376,12 +376,16 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllerList...)
 	haControllerRunner.SetEventLog(eventLog)
 
-	go func() {
+	// The runner starts only after the startup migration gave legacy bare
+	// recommendations units, so no reader takes old millicores for cores (M243
+	// D9). It retries with back-off in the background; the API server and the
+	// rest of the server come up meanwhile, only the controllers wait.
+	go controllers.RunControllersAfterResourceMigration(ctx, factStore, func() {
+		fmt.Printf("Controllers started with leader election (node: %s)\n", parsedConfig.nodeID)
 		if runError := haControllerRunner.Run(ctx); runError != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "controller runner error: %v\n", runError)
 		}
-	}()
-	fmt.Printf("Controllers started with leader election (node: %s)\n", parsedConfig.nodeID)
+	})
 }
 
 // resolveServerTLSConfiguration determines the TLS configuration for the API
@@ -1059,6 +1063,8 @@ type serviceStatusEntry struct {
 	RolloutState          string `json:"rollout_state,omitempty"`           // rollout state (rolling, rolled-back, stalled, ...), M241
 	RolloutReason         string `json:"rollout_reason,omitempty"`          // what a rollout in progress waits for, M241
 	RolloutRollbackReason string `json:"rollout_rollback_reason,omitempty"` // why the last rollback happened, M241
+
+	InvalidResourceRequest string `json:"invalid_resource_request,omitempty"` // "{key}={value}" of a stored request the scheduler cannot read, M243
 }
 
 // instanceStatusEntry represents one instance in the cluster status output.
@@ -1252,6 +1258,8 @@ func collectServiceStatusEntries(ctx context.Context, factStore store.StateStore
 			RolloutState:          store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutState(serviceName)),
 			RolloutReason:         store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutReason(serviceName)),
 			RolloutRollbackReason: store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
+
+			InvalidResourceRequest: store.ReadValueOrEmpty(ctx, factStore, types.KeyDerivedSchedulerInvalidResourceRequest(serviceName)),
 		})
 	}
 	return serviceEntries
@@ -1418,6 +1426,7 @@ func renderStatusText(statusData clusterStatusResponse, instanceStates []string)
 
 	renderRuntimeHealthSummary(&textBuilder, instanceStates)
 	renderRolloutHealthLines(&textBuilder, statusData.Services)
+	renderInvalidResourceRequestLines(&textBuilder, statusData.Services)
 
 	// Render networking section if VIPs exist.
 	if len(statusData.Networking) > 0 {
@@ -1476,6 +1485,19 @@ func renderRolloutHealthLines(textBuilder *strings.Builder, services []serviceSt
 			reason = strings.ToValidUTF8(reason[:rolloutHealthReasonMaxLength], "") + "..."
 		}
 		fmt.Fprintf(textBuilder, "  Rollouts:    %s %s: %s\n", service.Name, service.RolloutState, reason)
+	}
+}
+
+// renderInvalidResourceRequestLines writes one line per service whose stored
+// resource request the scheduler cannot read: its new instances stay unplaced
+// until the configuration is applied again (M243 D5).
+func renderInvalidResourceRequestLines(textBuilder *strings.Builder, services []serviceStatusEntry) {
+	for _, service := range services {
+		if service.InvalidResourceRequest == "" {
+			continue
+		}
+		fmt.Fprintf(textBuilder, "  Resources:   %s: unreadable request %s; new instances stay unplaced, re-apply to fix\n",
+			service.Name, service.InvalidResourceRequest)
 	}
 }
 

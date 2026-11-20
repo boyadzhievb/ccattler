@@ -129,8 +129,7 @@ service agentd {
     }
 }
 `)
-	// Plain millicores: the scheduler does not read unit suffixes yet (M243).
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("agentd"), []byte("3000"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("agentd"), []byte("3000m"))
 	waitFor(t, rolloutKindsTimeout, "3 running agentd instances", func() bool {
 		return countRunningInstancesForService(ctx, factStore, "agentd") == 3
 	})

@@ -232,7 +232,7 @@ executeReconciliationCycle(ctx, controller, deltaEvents) [controllers/runner.go:
 
 ### startControllersWithLeaderElection → production HA path
 ```
-startControllersWithLeaderElection(ctx, factStore, eventLog, config) [cmd/cca/command_server.go:370]
+startControllersWithLeaderElection(ctx, factStore, eventLog, config) [cmd/cca/command_server.go:341]
 ├── coreControllers()                               [cmd/cca/helpers.go:286]
 │   ├── NewInstanceController()
 │   ├── NewScheduler()
@@ -260,9 +260,13 @@ startControllersWithLeaderElection(ctx, factStore, eventLog, config) [cmd/cca/co
 │   ├── NewNodeLifecycleController(cloudProvider)
 │   ├── NewCloudLoadBalancerController(cloudProvider, factStore)
 │   └── NewCloudRouteController(cloudProvider, factStore)
-├── NewHARunner(factStore, nodeID, metricsCollector, controllerList...)
-├── haRunner.SetEventLog(eventLog)
-└── go haRunner.Run(ctx)                            [goroutine]
+├── NewHARunner(factStore, nodeID, metricsCollector, controllerList...)   [:375]
+├── haRunner.SetEventLog(eventLog)                                        [:377]
+└── go controllers.RunControllersAfterResourceMigration(ctx, factStore, start) [:383, goroutine; returns at once]
+    └── runControllersAfterResourceMigration        [controllers/resource_migration.go:214]
+        ├── MigrateUnitlessResourceRecommendations, retried with back-off (1s doubling to 1min) until it
+        │   succeeds or ctx ends (M243 D9, C2); the API server is not blocked
+        └── on success: start() → haRunner.Run(ctx)  [callback, cmd/cca/command_server.go:385]
 ```
 
 ## Node Failure Detection (controllers/nodefailure.go)
@@ -332,7 +336,7 @@ EventProjector.Run(ctx)                             [controllers/event_projector
 | `relinquishLeadership` | `renewLeaseWithCAS` (holder changed/CAS failed), `handleTransientRenewalFailure` (exceeded lease) |
 | `release` | `LeaderElection.Run` (on ctx.Done) |
 | `parseLeaseTimestamp` | `tryAcquireOrRenew` |
-| `HARunner.Run` | `startControllersWithLeaderElection` (goroutine) |
+| `HARunner.Run` | the start callback of `controllers.RunControllersAfterResourceMigration` (goroutine from `startControllersWithLeaderElection`), after the M243 migration succeeds |
 | `startControllers` | `LeaderElection.onAcquired` callback |
 | `stopControllers` | `LeaderElection.onLost` callback |
 | `awaitPendingOperation` | `HARunner.Run` (before election start) |

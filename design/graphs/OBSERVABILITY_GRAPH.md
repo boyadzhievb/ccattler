@@ -373,14 +373,13 @@ CollectAndReportTelemetry(ctx)                      (agent/telemetry.go:121)
             └── WARN "container OOM kill detected"
 ```
 
-### Resource parsers (agent/telemetry.go:221–274)
+### Resource lookup (agent/telemetry.go:190–231)
 
-| Function | Input | Output | Line |
-|---|---|---|---|
-| `parseMillicores(cpuString)` | `"500m"` or `"0.5"` | `500` int64 | `:221` |
-| `parseMemoryBytes(memString)` | `"512Mi"`, `"1Gi"` | bytes int64 | `:239` |
-
-Supported memory suffixes: `Ki` (1024), `Mi` (1024²), `Gi` (1024³), `Ti` (1024⁴).
+`lookupServiceResourcesFromStore` → `lookupResourceWithFallback(effective key, desired key, parser)` with the
+shared parsers `types.ParseCPUMillicores` (`"500m"`, `"0.5"`, bare = cores) and `types.ParseMemoryBytes`
+(`Ki`…`Ei`, `k`…`E`, bare = bytes) from `types/resource_quantity.go` (M243), the same parser every other reader
+uses. An unreadable chosen value returns 0 (no limit), logged once via
+`types.WarnUnreadableResourceOnce("agent", ...)`; an unreadable effective value does not fall back to desired.
 
 ### Telemetry prefix separation
 
@@ -656,14 +655,15 @@ handleHealthz(w, r)                                  (api/server.go:426)
 
 ### buildStatusFromStore → cluster status (M175 bulk reads)
 
-Called by `handleStatus` (`api/server.go:1157`, 2s cache for cluster scope) and `handleMetrics` (`api/server.go:399`). Store round-trips are constant (14) in instance, node and service count; `TestStatusBuildRoundTripsConstantInClusterSize` and `BenchmarkStatusBuildWithDeployClusterLatency` (api/status_benchmark_test.go) guard it.
+Called by `handleStatus` (`api/server.go:1157`, 2s cache for cluster scope) and `handleMetrics` (`api/server.go:399`). Store round-trips are constant (16, one per `statusScanPrefixes` entry) in instance, node and service count; `TestStatusBuildRoundTripsConstantInClusterSize` and `BenchmarkStatusBuildWithDeployClusterLatency` (api/status_benchmark_test.go) guard it.
 ```
-buildStatusFromStore(ctx, factStore, visibility, includeAll)   (api/status.go:180)
-├── loadStatusFactSnapshot(ctx, factStore)                       (api/status_snapshot.go:59)
+buildStatusFromStore(ctx, factStore, visibility, includeAll)   (api/status.go:183)
+├── loadStatusFactSnapshot(ctx, factStore)                       (api/status_snapshot.go:61)
 │   ├── concurrent Scan per statusScanPrefixes entry:
 │   │   observed/instance/, derived/instance/, observed/telemetry/instance/,
 │   │   observed/node/, observed/volume/, desired/service/, desired/cloud_identity/,
-│   │   desired/route/, derived/route/, derived/crash-loop/, placement/instance/,
+│   │   desired/route/, derived/route/, derived/crash-loop/, derived/service/,
+│   │   derived/scheduler/invalid_resource_request/ (M243: cca status "Resources:" line), placement/instance/,
 │   │   network/vip/service/, endpoint/service/  (required → error)
 │   │   secrets/  (optional: api-server role denies it → empty secret list)
 │   └── index: sortedFacts (prefix ranges via factsUnder), factValueByKey (value)
@@ -672,7 +672,7 @@ buildStatusFromStore(ctx, factStore, visibility, includeAll)   (api/status.go:18
 ├── buildGateStatusList(groupGateFactAttributes(desired/route/), groupGateFactAttributes(derived/route/))   (api/gate.go:58, :117)
 ├── IF team visibility:
 │   └── tenant.FilterServiceNamesByTeams(names, teams, collectServiceOwners) → filter instances, gates
-└── collectServiceStatus (types.ServiceFromFacts, tags, crash loops)   :287
+└── collectServiceStatus (types.ServiceFromFacts, tags, crash loops, rollout and invalid_resource_request fields)   :290
     collectInstanceStatus → buildInstanceStatus (placement, telemetry, probes, progress)   :361, :374
     collectNodeStatus (types.NodesFromFields, placed counts, utilization)   :519
     collectNetworkingStatus :406 · collectVolumeStatus (types.VolumesFromFields) :439
@@ -764,8 +764,7 @@ A lookup outside every loaded prefix panics (`requireCoveredKey`): add the prefi
 | `PublishAliveState` | `Agent.Run` (once at startup) |
 | `CollectAndReportTelemetry` | agent reconcile cycle (1s) |
 | `reportWorkloadTelemetry` | `CollectAndReportTelemetry` |
-| `parseMillicores` | `lookupServiceResourcesFromStore` |
-| `parseMemoryBytes` | `lookupServiceResourcesFromStore` |
+| `lookupResourceWithFallback` | `lookupServiceResourcesFromStore` |
 | `NodeFailureController.Reconcile` | Runner (on watch trigger) |
 | `identifyUnreachableNodes` | `NodeFailureController.Reconcile` |
 | `markInstancesOnUnreachableNodesAsFailed` | `NodeFailureController.Reconcile` |

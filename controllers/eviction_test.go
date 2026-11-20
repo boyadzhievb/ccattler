@@ -18,8 +18,8 @@ func TestEvictionControllerEvictsBestEffortFirst(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 95% utilization: capacity 1Gi, available ~50Mi
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "50Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "50"),
 
 		// Two instances on the node
 		kv(types.KeyObservedInstanceNode("inst-a"), "node01"),
@@ -83,8 +83,8 @@ func TestEvictionControllerNoEvictionBelowThreshold(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 70% utilization: capacity 1Gi, available ~300Mi
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "300Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "300"),
 
 		// Instance on the node
 		kv(types.KeyObservedInstanceNode("inst-a"), "node01"),
@@ -111,8 +111,8 @@ func TestEvictionControllerClearsPressureOnRecovery(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 75% utilization — below soft threshold
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "256Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "256"),
 
 		// Existing pressure marker
 		kv(types.KeyDerivedNodePressure("node01"), "memory"),
@@ -141,8 +141,8 @@ func TestEvictionControllerSkipsNonRunningInstances(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 95% utilization
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "50Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "50"),
 
 		// Pending instance (not running)
 		kv(types.KeyObservedInstanceNode("inst-a"), "node01"),
@@ -177,8 +177,8 @@ func TestEvictionControllerBurstableBeforeGuaranteed(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 95% utilization
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "4Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "100Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "4096"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "100"),
 
 		// Three instances, one per QoS class
 		kv(types.KeyObservedInstanceNode("inst-be"), "node01"),
@@ -240,8 +240,8 @@ func TestEvictionControllerNoChangeInDeadZone(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 85% utilization — between soft (80) and hard (90)
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "153Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "153"),
 	)
 
 	changes, err := evictionController.Reconcile(context.Background(), facts)
@@ -260,8 +260,8 @@ func TestEvictionPrioritySecondarySort(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 95% utilization
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "50Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "50"),
 
 		// Two BestEffort instances with different priorities
 		kv(types.KeyObservedInstanceNode("inst-low"), "node01"),
@@ -314,8 +314,8 @@ func TestEvictionQoSTrumpsPriority(t *testing.T) {
 
 	facts := buildFacts(
 		// Node at 95% utilization
-		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
-		kv(types.KeyObservedNodeAvailableMemory("node01"), "50Mi"),
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1024"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "50"),
 
 		// BestEffort instance with very high priority
 		kv(types.KeyObservedInstanceNode("inst-be"), "node01"),

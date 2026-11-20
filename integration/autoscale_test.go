@@ -641,9 +641,10 @@ service api {
 		t.Logf("initial stats: cpu=%d, memory=%d", initialStats.CPUMillicores, initialStats.MemoryBytes)
 	}
 
-	// Simulate the autoscaler → intent resolver pipeline: write effective resources directly.
-	factStore.Put(ctx, types.KeyEffectiveServiceResourcesCPU("api"), []byte("1000m"))
-	factStore.Put(ctx, types.KeyEffectiveServiceResourcesMemory("api"), []byte("1Gi"))
+	// Simulate the autoscaler: write its recommendation; the intent resolver
+	// copies it to effective (without one it deletes effective values, M243 D7).
+	factStore.Put(ctx, types.KeyIntentAutoscalerServiceResourcesCPU("api"), []byte("1000m"))
+	factStore.Put(ctx, types.KeyIntentAutoscalerServiceResourcesMemory("api"), []byte("1Gi"))
 
 	// The agent should detect the effective resource change and resize the instance.
 	expectedMemory := int64(1024 * 1024 * 1024)

@@ -156,3 +156,28 @@ func TestStatusTextListsStalledAndRolledBackServices(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusTextNamesServiceWithUnreadableResourceRequest: spec
+// resource-requests, "Legacy bad value" (cca status names the service and the
+// value), through the API and in process.
+func TestStatusTextNamesServiceWithUnreadableResourceRequest(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	putStatusFixtureFacts(t, factStore)
+	unreadableRequest := types.KeyDesiredServiceResourcesMemory("web") + "=512MB"
+	if _, putError := factStore.Put(context.Background(), types.KeyDerivedSchedulerInvalidResourceRequest("web"), []byte(unreadableRequest)); putError != nil {
+		t.Fatal(putError)
+	}
+	wantLine := "Resources:   web: unreadable request " + unreadableRequest
+	for renderPath, statusText := range map[string]string{
+		"through API": renderStatusTextThroughAPI(t, factStore),
+		"in process":  buildStatusTextOutput(context.Background(), factStore),
+	} {
+		if !strings.Contains(statusText, wantLine) {
+			t.Errorf("%s: status lacks %q:\n%s", renderPath, wantLine, statusText)
+		}
+		if strings.Contains(statusText, "worker: unreadable") {
+			t.Errorf("%s: status names worker, which has a readable request:\n%s", renderPath, statusText)
+		}
+	}
+}

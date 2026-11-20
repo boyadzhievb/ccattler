@@ -189,32 +189,32 @@ func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
 	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("web"), []byte("500"))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("web"), []byte("512"))
-	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalCPUMin("web"), []byte("250"))
-	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalCPUMax("web"), []byte("4000"))
-	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalMemoryMin("web"), []byte("256"))
-	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalMemoryMax("web"), []byte("8192"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("web"), []byte("500m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("web"), []byte("512Mi"))
+	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalCPUMin("web"), []byte("250m"))
+	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalCPUMax("web"), []byte("4000m"))
+	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalMemoryMin("web"), []byte("256Mi"))
+	factStore.Put(ctx, types.KeyDesiredServiceScaleVerticalMemoryMax("web"), []byte("8192Mi"))
 
 	factStore.Put(ctx, types.KeyObservedMetric("web", "cpu"), []byte("90"))
 	factStore.Put(ctx, types.KeyObservedMetric("web", "memory"), []byte("85"))
 
-	waitFor(t, 3*time.Second, "autoscaler writes CPU recommendation", func() bool {
+	waitFor(t, 3*time.Second, "autoscaler writes CPU recommendation above 500m", func() bool {
 		fact, err := factStore.Get(ctx, types.KeyIntentAutoscalerServiceResourcesCPU("web"))
 		if err != nil {
 			return false
 		}
-		recommended, _ := strconv.Atoi(string(fact.Value))
-		return recommended > 500
+		recommendedMillicores, parseError := types.ParseCPUMillicores(string(fact.Value))
+		return parseError == nil && recommendedMillicores > 500
 	})
 
-	waitFor(t, 3*time.Second, "autoscaler writes memory recommendation", func() bool {
+	waitFor(t, 3*time.Second, "autoscaler writes memory recommendation above 512Mi", func() bool {
 		fact, err := factStore.Get(ctx, types.KeyIntentAutoscalerServiceResourcesMemory("web"))
 		if err != nil {
 			return false
 		}
-		recommended, _ := strconv.Atoi(string(fact.Value))
-		return recommended > 512
+		recommendedBytes, parseError := types.ParseMemoryBytes(string(fact.Value))
+		return parseError == nil && recommendedBytes > 512<<20
 	})
 }
 
@@ -306,7 +306,7 @@ func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("web"), []byte("3"))
 	factStore.Put(ctx, types.KeyIntentUserServiceInstances("web"), []byte("3"))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("web"), []byte("1000"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("web"), []byte("1000m"))
 
 	waitFor(t, 5*time.Second, "infra provider provisions new nodes", func() bool {
 		nodeCount, _ := simulatorInfraProvider.NodeCount(ctx)
@@ -586,12 +586,12 @@ service web {
         }
         vertical {
             cpu {
-                min 250
-                max 4000
+                min 250m
+                max 4000m
             }
             memory {
-                min 512
-                max 8192
+                min 512Mi
+                max 8192Mi
             }
         }
     }
@@ -665,17 +665,17 @@ service web {
 	if service.Scale.Vertical == nil {
 		t.Fatal("expected vertical, got nil")
 	}
-	if service.Scale.Vertical.CPUMin != "250" {
-		t.Errorf("vertical cpu min: expected 250, got %s", service.Scale.Vertical.CPUMin)
+	if service.Scale.Vertical.CPUMin != "250m" {
+		t.Errorf("vertical cpu min: expected 250m, got %s", service.Scale.Vertical.CPUMin)
 	}
-	if service.Scale.Vertical.CPUMax != "4000" {
-		t.Errorf("vertical cpu max: expected 4000, got %s", service.Scale.Vertical.CPUMax)
+	if service.Scale.Vertical.CPUMax != "4000m" {
+		t.Errorf("vertical cpu max: expected 4000m, got %s", service.Scale.Vertical.CPUMax)
 	}
-	if service.Scale.Vertical.MemoryMin != "512" {
-		t.Errorf("vertical memory min: expected 512, got %s", service.Scale.Vertical.MemoryMin)
+	if service.Scale.Vertical.MemoryMin != "512Mi" {
+		t.Errorf("vertical memory min: expected 512Mi, got %s", service.Scale.Vertical.MemoryMin)
 	}
-	if service.Scale.Vertical.MemoryMax != "8192" {
-		t.Errorf("vertical memory max: expected 8192, got %s", service.Scale.Vertical.MemoryMax)
+	if service.Scale.Vertical.MemoryMax != "8192Mi" {
+		t.Errorf("vertical memory max: expected 8192Mi, got %s", service.Scale.Vertical.MemoryMax)
 	}
 
 	// Placement
@@ -722,10 +722,10 @@ service web {
 		types.KeyDesiredServiceScaleScheduleMinimum("web"):                     "10",
 		types.KeyDesiredServiceScaleStabilizationUp("web"):                     "60s",
 		types.KeyDesiredServiceScaleStabilizationDown("web"):                   "300s",
-		types.KeyDesiredServiceScaleVerticalCPUMin("web"):                      "250",
-		types.KeyDesiredServiceScaleVerticalCPUMax("web"):                      "4000",
-		types.KeyDesiredServiceScaleVerticalMemoryMin("web"):                   "512",
-		types.KeyDesiredServiceScaleVerticalMemoryMax("web"):                   "8192",
+		types.KeyDesiredServiceScaleVerticalCPUMin("web"):                      "250m",
+		types.KeyDesiredServiceScaleVerticalCPUMax("web"):                      "4000m",
+		types.KeyDesiredServiceScaleVerticalMemoryMin("web"):                   "512Mi",
+		types.KeyDesiredServiceScaleVerticalMemoryMax("web"):                   "8192Mi",
 		types.KeyDesiredServicePlacementArchitecture("web"):                    "amd64",
 		types.KeyDesiredServicePlacementZonePolicy("web"):                      "spread",
 		types.KeyDesiredServiceUpdateMaxUnavailable("web"):                     "1",

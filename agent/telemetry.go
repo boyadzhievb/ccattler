@@ -179,96 +179,51 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 	}
 }
 
+// agentUnreadableResourceConsequence is logged with a request the agent cannot
+// parse: the container starts without that limit, as when none is set.
+const agentUnreadableResourceConsequence = "the container gets no limit for this resource"
+
 // lookupServiceResourcesFromStore reads the effective CPU and memory resource
 // values for a service, falling back to desired if no effective value exists.
 // The effective values include autoscaler vertical recommendations when active.
-// Returns zero for either value if not configured.
+// Returns zero for a value that is not configured or cannot be parsed (M243 D6).
 func (nodeReporter *NodeReporter) lookupServiceResourcesFromStore(ctx context.Context, serviceName string) (int64, int64) {
 	cpuMillicores := lookupResourceWithFallback(ctx, nodeReporter.factStore,
 		types.KeyEffectiveServiceResourcesCPU(serviceName),
 		types.KeyDesiredServiceResourcesCPU(serviceName),
-		parseMillicores,
+		types.ParseCPUMillicores,
 	)
 	memoryBytes := lookupResourceWithFallback(ctx, nodeReporter.factStore,
 		types.KeyEffectiveServiceResourcesMemory(serviceName),
 		types.KeyDesiredServiceResourcesMemory(serviceName),
-		parseMemoryBytes,
+		types.ParseMemoryBytes,
 	)
 	return cpuMillicores, memoryBytes
 }
 
-// lookupResourceWithFallback tries the primary key first, then the fallback.
-// Returns 0 if neither key has a value.
+// lookupResourceWithFallback parses the primary key's value, or the
+// fallback's when the primary has none. Returns 0 if neither key has a value,
+// or if the chosen value cannot be parsed (logged once; no fallback then).
 func lookupResourceWithFallback(
 	ctx context.Context,
 	factStore store.StateStore,
 	primaryKey string,
 	fallbackKey string,
-	parseFunc func(string) int64,
+	parseQuantity func(string) (int64, error),
 ) int64 {
+	chosenKey := primaryKey
 	fact, err := factStore.Get(ctx, primaryKey)
-	if err == nil && len(fact.Value) > 0 {
-		return parseFunc(string(fact.Value))
+	if err != nil || len(fact.Value) == 0 {
+		chosenKey = fallbackKey
+		fact, err = factStore.Get(ctx, fallbackKey)
 	}
-	fact, err = factStore.Get(ctx, fallbackKey)
-	if err == nil {
-		return parseFunc(string(fact.Value))
-	}
-	return 0
-}
-
-// parseMillicores parses a Kubernetes-style CPU value (e.g. "500m") to millicores.
-func parseMillicores(cpuString string) int64 {
-	if len(cpuString) == 0 {
+	if err != nil || len(fact.Value) == 0 {
 		return 0
 	}
-	if cpuString[len(cpuString)-1] == 'm' {
-		milliValue, parseError := strconv.ParseInt(cpuString[:len(cpuString)-1], 10, 64)
-		if parseError == nil {
-			return milliValue
-		}
-	}
-	coreValue, parseError := strconv.ParseFloat(cpuString, 64)
-	if parseError == nil {
-		return int64(coreValue * 1000)
-	}
-	return 0
-}
-
-// parseMemoryBytes parses a Kubernetes-style memory value (e.g. "512Mi") to bytes.
-func parseMemoryBytes(memString string) int64 {
-	if len(memString) < 2 {
-		parsedValue, parseError := strconv.ParseInt(memString, 10, 64)
-		if parseError == nil {
-			return parsedValue
-		}
-		return 0
-	}
-
-	suffix := memString[len(memString)-2:]
-	numPart := memString[:len(memString)-2]
-
-	var multiplier int64
-	switch suffix {
-	case "Ki":
-		multiplier = 1024
-	case "Mi":
-		multiplier = 1024 * 1024
-	case "Gi":
-		multiplier = 1024 * 1024 * 1024
-	case "Ti":
-		multiplier = 1024 * 1024 * 1024 * 1024
-	default:
-		parsedValue, parseError := strconv.ParseInt(memString, 10, 64)
-		if parseError == nil {
-			return parsedValue
-		}
-		return 0
-	}
-
-	parsedValue, parseError := strconv.ParseInt(numPart, 10, 64)
+	parsedQuantity, parseError := parseQuantity(string(fact.Value))
 	if parseError != nil {
+		types.WarnUnreadableResourceOnce("agent", chosenKey, string(fact.Value), parseError, agentUnreadableResourceConsequence)
 		return 0
 	}
-	return parsedValue * multiplier
+	return parsedQuantity
 }

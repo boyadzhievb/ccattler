@@ -186,9 +186,9 @@ func TestVerticalScalingEndToEnd(t *testing.T) {
 	controller := NewAutoscaleController()
 
 	facts := []store.Fact{
-		{Key: types.KeyDesiredServiceScaleVerticalCPUMin("api"), Value: []byte("100")},
-		{Key: types.KeyDesiredServiceScaleVerticalCPUMax("api"), Value: []byte("4000")},
-		{Key: types.KeyDesiredServiceResourcesCPU("api"), Value: []byte("500")},
+		{Key: types.KeyDesiredServiceScaleVerticalCPUMin("api"), Value: []byte("100m")},
+		{Key: types.KeyDesiredServiceScaleVerticalCPUMax("api"), Value: []byte("4000m")},
+		{Key: types.KeyDesiredServiceResourcesCPU("api"), Value: []byte("500m")},
 	}
 
 	for tick := 0; tick < 20; tick++ {

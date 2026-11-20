@@ -204,6 +204,22 @@ func (admission *QuotaAdmission) countTenantVolumes(ctx context.Context, tenantN
 	return count
 }
 
+// tenantUnreadableCPUConsequence is logged with a CPU request the tenant code
+// cannot parse: it is left out of usage sums, so it never blocks admission.
+const tenantUnreadableCPUConsequence = "left out of the tenant's CPU usage and fair share"
+
+// parseServiceCPUMillicores reads a desired/service/{name}/resources/cpu fact
+// in millicores with the shared parser (M243 D6). An unreadable value returns
+// false and is logged once; it cannot be refused at this point.
+func parseServiceCPUMillicores(fact store.Fact) (int, bool) {
+	cpuMillicores, parseError := types.ParseCPUMillicores(string(fact.Value))
+	if parseError != nil {
+		types.WarnUnreadableResourceOnce("tenant", fact.Key, string(fact.Value), parseError, tenantUnreadableCPUConsequence)
+		return 0, false
+	}
+	return int(cpuMillicores), true
+}
+
 // computeTenantCPUUsage sums the CPU requirements of all services owned by
 // the given tenant, multiplied by their effective instance counts.
 func (admission *QuotaAdmission) computeTenantCPUUsage(ctx context.Context, tenantName string) int {
@@ -229,9 +245,9 @@ func (admission *QuotaAdmission) computeTenantCPUUsage(ctx context.Context, tena
 		case "image":
 			serviceImages[serviceName] = true
 		case "resources/cpu":
-			cpuValue := strings.TrimSuffix(string(fact.Value), "m")
-			parsed, _ := strconv.Atoi(cpuValue)
-			serviceCPU[serviceName] = parsed
+			if cpuMillicores, readable := parseServiceCPUMillicores(fact); readable {
+				serviceCPU[serviceName] = cpuMillicores
+			}
 		case "instances":
 			parsed, _ := strconv.Atoi(string(fact.Value))
 			serviceInstances[serviceName] = parsed

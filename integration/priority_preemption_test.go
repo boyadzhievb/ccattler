@@ -48,8 +48,8 @@ service background {
 		t.Fatalf("apply background failed: %v", err)
 	}
 
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("background"), []byte("1000"))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("background"), []byte("2048"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("background"), []byte("1000m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("background"), []byte("2048Mi"))
 
 	waitFor(t, 5*time.Second, "2 background instances placed", func() bool {
 		return countPlacementsForService(ctx, factStore, "background") == 2
@@ -68,8 +68,8 @@ service critical {
 		t.Fatalf("apply critical failed: %v", err)
 	}
 
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("critical"), []byte("1000"))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("critical"), []byte("2048"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("critical"), []byte("1000m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("critical"), []byte("2048Mi"))
 
 	waitFor(t, 5*time.Second, "a background instance preempted", func() bool {
 		facts, _ := factStore.Scan(ctx, types.ScanDerivedInstances)
@@ -123,8 +123,8 @@ service alpha {
 		t.Fatalf("apply alpha failed: %v", err)
 	}
 
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("alpha"), []byte("1000"))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("alpha"), []byte("2048"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("alpha"), []byte("1000m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("alpha"), []byte("2048Mi"))
 
 	waitFor(t, 5*time.Second, "2 alpha instances placed", func() bool {
 		return countPlacementsForService(ctx, factStore, "alpha") == 2
@@ -141,8 +141,8 @@ service beta {
 		t.Fatalf("apply beta failed: %v", err)
 	}
 
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("beta"), []byte("1000"))
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("beta"), []byte("2048"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("beta"), []byte("1000m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("beta"), []byte("2048Mi"))
 
 	time.Sleep(scaleDuration(500 * time.Millisecond))
 
@@ -185,7 +185,7 @@ service low-priority {
 		t.Fatalf("apply low-priority failed: %v", err)
 	}
 
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("low-priority"), []byte("2048"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("low-priority"), []byte("2048Mi"))
 
 	highPriorityInput := `
 service high-priority {
@@ -198,7 +198,7 @@ service high-priority {
 		t.Fatalf("apply high-priority failed: %v", err)
 	}
 
-	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("high-priority"), []byte("2048"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("high-priority"), []byte("2048Mi"))
 
 	waitFor(t, 5*time.Second, "both services placed", func() bool {
 		return countPlacementsForService(ctx, factStore, "low-priority") == 1 &&

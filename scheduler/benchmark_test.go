@@ -32,8 +32,8 @@ func buildSchedulerBenchFacts(nodeCount int, pendingInstances int) []store.Fact 
 		)
 	}
 	facts = append(facts,
-		store.Fact{Key: types.KeyDesiredServiceResourcesCPU("bench-svc"), Value: []byte("500")},
-		store.Fact{Key: types.KeyDesiredServiceResourcesMemory("bench-svc"), Value: []byte("536870912")},
+		store.Fact{Key: types.KeyDesiredServiceResourcesCPU("bench-svc"), Value: []byte("500m")},
+		store.Fact{Key: types.KeyDesiredServiceResourcesMemory("bench-svc"), Value: []byte("512Mi")},
 	)
 	store.SortFacts(facts)
 	return facts

@@ -619,7 +619,7 @@ func TestFairSchedulerBorrowableGuarantees(t *testing.T) {
 	// Give payments a service using 600 CPU out of 1000 total (guarantee is 500).
 	memoryStore.Put(ctx, types.KeyDesiredService("payments/api"), []byte(""))
 	memoryStore.Put(ctx, types.KeyDesiredServiceImage("payments/api"), []byte("api:v1"))
-	memoryStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("payments/api"), []byte("100"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("payments/api"), []byte("100m"))
 	memoryStore.Put(ctx, types.KeyDesiredServiceInstances("payments/api"), []byte("6"))
 	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/api"), []byte("payments"))
 

@@ -274,9 +274,9 @@ func TestResourceFit(t *testing.T) {
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "pending"),
-		// web requires 2000 CPU, 4096 memory.
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "2000"),
-		kv(types.KeyDesiredServiceResourcesMemory("web"), "4096"),
+		// web requires 2000m CPU, 4096Mi memory.
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "2000m"),
+		kv(types.KeyDesiredServiceResourcesMemory("web"), "4096Mi"),
 		// node-1: only 1000 CPU available — too small.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
@@ -311,7 +311,7 @@ func TestResourceExhaustion(t *testing.T) {
 		kv(types.KeyObservedInstanceState("bbb"), "pending"),
 		kv(types.KeyObservedInstanceService("ccc"), "web"),
 		kv(types.KeyObservedInstanceState("ccc"), "pending"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "2000"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "2000m"),
 		// One node with 4000 CPU — fits 2, not 3.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
@@ -341,7 +341,7 @@ func TestResourceSpreadWithAccounting(t *testing.T) {
 		kv(types.KeyObservedInstanceState("aaa"), "pending"),
 		kv(types.KeyObservedInstanceService("bbb"), "web"),
 		kv(types.KeyObservedInstanceState("bbb"), "pending"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "1000m"),
 		// node-1: 1500 available, node-2: 2500 available.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1500"),
@@ -989,8 +989,10 @@ func TestControllerInterface(t *testing.T) {
 	if placementScheduler.Name() != "scheduler" {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
-	if len(placementScheduler.Watch()) != 8 { // derived/instance/ for controller_stopped (M241 2i.2)
-		t.Fatalf("expected 8 watch prefixes, got %d", len(placementScheduler.Watch()))
+	// derived/instance/ for controller_stopped (M241 2i.2); effective/service/ and
+	// the invalid-request facts (M243 D4, D5).
+	if len(placementScheduler.Watch()) != 10 {
+		t.Fatalf("expected 10 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }
 
@@ -1242,7 +1244,7 @@ func TestUnplacedDemandEmittedForInsufficientCapacity(t *testing.T) {
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "pending"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "8000"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "8000m"),
 		// Node has 4000 CPU — not enough for 8000 requirement.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
@@ -1289,7 +1291,7 @@ func TestUnplacedDemandEmittedForUnsatisfiableConstraint(t *testing.T) {
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "pending"),
 		kv(types.KeyDesiredServicePlacementArchitecture("web"), "arm64"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "8000"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "8000m"),
 		// Node is amd64 with only 4000 CPU.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
@@ -1888,13 +1890,13 @@ func TestPreemptionHigherPriorityPreempts(t *testing.T) {
 		kv(types.KeyPlacementInstance("running-low"), "node-1"),
 		kv(types.KeyPlacementNodeInstance("node-1", "running-low"), ""),
 		kv(types.KeyDesiredServicePriority("cache"), "100"),
-		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000m"),
 
 		// High-priority pending instance that needs 500m CPU
 		kv(types.KeyObservedInstanceService("pending-high"), "web"),
 		kv(types.KeyObservedInstanceState("pending-high"), "pending"),
 		kv(types.KeyDesiredServicePriority("web"), "800"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "500m"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -1923,12 +1925,12 @@ func TestPreemptionEqualPriorityNoPreemption(t *testing.T) {
 		kv(types.KeyPlacementInstance("running-a"), "node-1"),
 		kv(types.KeyPlacementNodeInstance("node-1", "running-a"), ""),
 		kv(types.KeyDesiredServicePriority("cache"), "500"),
-		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000m"),
 
 		kv(types.KeyObservedInstanceService("pending-b"), "web"),
 		kv(types.KeyObservedInstanceState("pending-b"), "pending"),
 		kv(types.KeyDesiredServicePriority("web"), "500"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "500m"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -1952,11 +1954,11 @@ func TestPreemptionZeroPriorityNoPreemption(t *testing.T) {
 		kv(types.KeyObservedInstanceState("running-a"), "running"),
 		kv(types.KeyPlacementInstance("running-a"), "node-1"),
 		kv(types.KeyPlacementNodeInstance("node-1", "running-a"), ""),
-		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000m"),
 
 		kv(types.KeyObservedInstanceService("pending-b"), "web"),
 		kv(types.KeyObservedInstanceState("pending-b"), "pending"),
-		kv(types.KeyDesiredServiceResourcesCPU("web"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "500m"),
 		// web has no priority set (default 0)
 	)
 
@@ -1985,13 +1987,13 @@ func TestPreemptionSkipsPerNodeVictims(t *testing.T) {
 		kv(types.KeyPlacementNodeInstance("node-1", "daemon-inst"), ""),
 		kv(types.KeyDesiredServicePlacementMode("monitor"), "per-node"),
 		kv(types.KeyDesiredServicePriority("monitor"), "100"),
-		kv(types.KeyDesiredServiceResourcesCPU("monitor"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("monitor"), "1000m"),
 
 		// High-priority pending
 		kv(types.KeyObservedInstanceService("pending-high"), "critical"),
 		kv(types.KeyObservedInstanceState("pending-high"), "pending"),
 		kv(types.KeyDesiredServicePriority("critical"), "900"),
-		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500m"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -2019,13 +2021,13 @@ func TestPreemptionSkipsStatefulVictims(t *testing.T) {
 		kv(types.KeyPlacementNodeInstance("node-1", "db-inst"), ""),
 		kv(types.KeyDesiredServiceStateful("postgres"), "true"),
 		kv(types.KeyDesiredServicePriority("postgres"), "100"),
-		kv(types.KeyDesiredServiceResourcesCPU("postgres"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("postgres"), "1000m"),
 
 		// High-priority pending
 		kv(types.KeyObservedInstanceService("pending-high"), "critical"),
 		kv(types.KeyObservedInstanceState("pending-high"), "pending"),
 		kv(types.KeyDesiredServicePriority("critical"), "900"),
-		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500m"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -2059,7 +2061,7 @@ func TestPreemptionMaxCap(t *testing.T) {
 	}
 	entries = append(entries,
 		kv(types.KeyDesiredServicePriority("filler"), "50"),
-		kv(types.KeyDesiredServiceResourcesCPU("filler"), "1000"),
+		kv(types.KeyDesiredServiceResourcesCPU("filler"), "1000m"),
 	)
 
 	// 5 high-priority pending instances that need CPU
@@ -2072,7 +2074,7 @@ func TestPreemptionMaxCap(t *testing.T) {
 	}
 	entries = append(entries,
 		kv(types.KeyDesiredServicePriority("critical"), "900"),
-		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500m"),
 	)
 
 	facts := buildFacts(entries...)

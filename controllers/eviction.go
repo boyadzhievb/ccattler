@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -39,11 +40,11 @@ var qosPriority = map[string]int{
 // evict: its ID, parent service, QoS class priority, service priority, and
 // memory footprint.
 type evictionCandidate struct {
-	instanceID         string // instanceID is the unique instance identifier.
-	serviceName        string // serviceName is the parent service.
-	qosPriorityValue   int    // qosPriorityValue is the eviction order (lower = evicted first).
-	servicePriority    int    // servicePriority is the user-declared priority (0–1000, lower evicted first).
-	memoryRequestBytes int    // memoryRequestBytes is the service's memory request in bytes.
+	instanceID       string // instanceID is the unique instance identifier.
+	serviceName      string // serviceName is the parent service.
+	qosPriorityValue int    // qosPriorityValue is the eviction order (lower = evicted first).
+	servicePriority  int    // servicePriority is the user-declared priority (0–1000, lower evicted first).
+	memoryRequestMiB int    // memoryRequestMiB is the service's memory request in whole MiB, rounded up.
 }
 
 // EvictionController watches node resource utilization and evicts instances
@@ -64,7 +65,7 @@ func (evictionController *EvictionController) Name() string { return "eviction" 
 // Watch returns the fact prefixes that the eviction controller needs: observed
 // nodes (capacity/available), observed instances (node mapping), desired
 // services (memory requests), derived services (QoS class), and effective
-// services (priority).
+// services (priority and the effective memory request, read first).
 func (evictionController *EvictionController) Watch() []string {
 	return []string{
 		types.ScanObservedNodes,
@@ -81,10 +82,10 @@ func (evictionController *EvictionController) Reconcile(ctx context.Context, fac
 	nodeCapacity := extractNodeMemoryCapacity(facts)
 	nodeAvailable := extractNodeMemoryAvailable(facts)
 	instanceNodes := extractInstanceNodeMapping(facts)
-	instanceServices := extractInstanceServiceMapping(facts)
+	serviceMemoryRequests, unreadableServices := extractServiceMemoryRequests(facts)
+	instanceServices := excludeUnreadableServiceInstances(extractInstanceServiceMapping(facts), unreadableServices)
 	instanceStates := extractInstanceStates(facts)
 	serviceQoSClasses := extractServiceQoSClasses(facts)
-	serviceMemoryRequests := extractServiceMemoryRequests(facts)
 	servicePriorities := extractServicePrioritiesFromFacts(facts)
 	existingPressure := extractExistingNodePressure(facts)
 
@@ -92,15 +93,15 @@ func (evictionController *EvictionController) Reconcile(ctx context.Context, fac
 
 	nodeIDs := sortedNodeIDs(nodeCapacity, nodeAvailable)
 	for _, nodeID := range nodeIDs {
-		capacityBytes, hasCapacity := nodeCapacity[nodeID]
-		availableBytes, hasAvailable := nodeAvailable[nodeID]
-		if !hasCapacity || !hasAvailable || capacityBytes == 0 {
+		capacityMiB, hasCapacity := nodeCapacity[nodeID]
+		availableMiB, hasAvailable := nodeAvailable[nodeID]
+		if !hasCapacity || !hasAvailable || capacityMiB == 0 {
 			continue
 		}
 
-		utilizationPercent := calculateMemoryUtilizationPercent(capacityBytes, availableBytes)
+		utilizationPercent := calculateMemoryUtilizationPercent(capacityMiB, availableMiB)
 		nodeChanges := reconcileNodePressure(
-			nodeID, utilizationPercent, capacityBytes, availableBytes,
+			nodeID, utilizationPercent, capacityMiB, availableMiB,
 			instanceNodes, instanceServices, instanceStates,
 			serviceQoSClasses, serviceMemoryRequests, servicePriorities,
 			existingPressure,
@@ -116,8 +117,8 @@ func (evictionController *EvictionController) Reconcile(ctx context.Context, fac
 func reconcileNodePressure(
 	nodeID string,
 	utilizationPercent int,
-	capacityBytes int,
-	availableBytes int,
+	capacityMiB int,
+	availableMiB int,
 	instanceNodes map[string]string,
 	instanceServices map[string]string,
 	instanceStates map[string]string,
@@ -153,7 +154,7 @@ func reconcileNodePressure(
 		return candidates[i].instanceID < candidates[j].instanceID
 	})
 
-	changes := buildEvictionChanges(candidates, capacityBytes, availableBytes)
+	changes := buildEvictionChanges(candidates, capacityMiB, availableMiB)
 
 	if !alreadyUnderPressure {
 		changes = append(changes, Change{
@@ -194,11 +195,11 @@ func buildEvictionCandidates(
 			priority = qosPriority["BestEffort"]
 		}
 		candidates = append(candidates, evictionCandidate{
-			instanceID:         instanceID,
-			serviceName:        serviceName,
-			qosPriorityValue:   priority,
-			servicePriority:    servicePriorities[serviceName],
-			memoryRequestBytes: serviceMemoryRequests[serviceName],
+			instanceID:       instanceID,
+			serviceName:      serviceName,
+			qosPriorityValue: priority,
+			servicePriority:  servicePriorities[serviceName],
+			memoryRequestMiB: serviceMemoryRequests[serviceName],
 		})
 	}
 	return candidates
@@ -208,18 +209,18 @@ func buildEvictionCandidates(
 // drops below the soft threshold or the per-cycle cap is reached.
 func buildEvictionChanges(
 	candidates []evictionCandidate,
-	capacityBytes int,
-	availableBytes int,
+	capacityMiB int,
+	availableMiB int,
 ) []Change {
 	var changes []Change
-	projectedAvailable := availableBytes
+	projectedAvailable := availableMiB
 	evictionCount := 0
 
 	for _, candidate := range candidates {
 		if evictionCount >= maxEvictionsPerCycle {
 			break
 		}
-		projectedUtilization := calculateMemoryUtilizationPercent(capacityBytes, projectedAvailable)
+		projectedUtilization := calculateMemoryUtilizationPercent(capacityMiB, projectedAvailable)
 		if projectedUtilization < softEvictionMemoryThresholdPercent {
 			break
 		}
@@ -227,7 +228,7 @@ func buildEvictionChanges(
 			Key:   types.KeyDerivedInstanceControllerStopped(candidate.instanceID),
 			Value: []byte("true"),
 		})
-		projectedAvailable += candidate.memoryRequestBytes
+		projectedAvailable += candidate.memoryRequestMiB
 		evictionCount++
 	}
 
@@ -236,39 +237,32 @@ func buildEvictionChanges(
 
 // calculateMemoryUtilizationPercent computes the integer percentage of memory
 // used on a node: (capacity - available) / capacity * 100.
-func calculateMemoryUtilizationPercent(capacityBytes int, availableBytes int) int {
-	usedBytes := capacityBytes - availableBytes
-	if usedBytes < 0 {
+func calculateMemoryUtilizationPercent(capacityMiB int, availableMiB int) int {
+	usedMiB := capacityMiB - availableMiB
+	if usedMiB < 0 {
 		return 0
 	}
-	return (usedBytes * 100) / capacityBytes
+	return (usedMiB * 100) / capacityMiB
 }
 
 // extractNodeMemoryCapacity reads observed/node/{id}/capacity/memory facts and
-// returns a map of nodeID → capacity in bytes.
+// returns a map of nodeID → capacity in MiB.
 func extractNodeMemoryCapacity(facts []store.Fact) map[string]int {
-	capacities := make(map[string]int)
-	prefix := "observed/node/"
-	suffix := "/capacity/memory"
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, prefix) || !strings.HasSuffix(fact.Key, suffix) {
-			continue
-		}
-		nodeID := extractMiddleSegment(fact.Key, prefix, suffix)
-		if nodeID == "" {
-			continue
-		}
-		capacities[nodeID] = parseResourceQuantity(string(fact.Value))
-	}
-	return capacities
+	return extractNodeMemoryMiB(facts, "/capacity/memory")
 }
 
 // extractNodeMemoryAvailable reads observed/node/{id}/available/memory facts
-// and returns a map of nodeID → available bytes.
+// and returns a map of nodeID → available MiB.
 func extractNodeMemoryAvailable(facts []store.Fact) map[string]int {
-	available := make(map[string]int)
+	return extractNodeMemoryMiB(facts, "/available/memory")
+}
+
+// extractNodeMemoryMiB reads the observed/node/{id}{suffix} facts, which the
+// agent writes as plain MiB integers (never with units, M243 D6). A corrupt
+// value leaves the node out, so it is not judged on a guess.
+func extractNodeMemoryMiB(facts []store.Fact, suffix string) map[string]int {
+	memoryByNode := make(map[string]int)
 	prefix := "observed/node/"
-	suffix := "/available/memory"
 	for _, fact := range facts {
 		if !strings.HasPrefix(fact.Key, prefix) || !strings.HasSuffix(fact.Key, suffix) {
 			continue
@@ -277,9 +271,14 @@ func extractNodeMemoryAvailable(facts []store.Fact) map[string]int {
 		if nodeID == "" {
 			continue
 		}
-		available[nodeID] = parseResourceQuantity(string(fact.Value))
+		memoryMiB, parseError := strconv.Atoi(string(fact.Value))
+		if parseError != nil {
+			logging.Default().Warn("eviction: corrupt node memory fact, node skipped", "key", fact.Key, "value", string(fact.Value))
+			continue
+		}
+		memoryByNode[nodeID] = memoryMiB
 	}
-	return available
+	return memoryByNode
 }
 
 // extractInstanceNodeMapping reads observed/instance/{id}/node facts and
@@ -363,23 +362,36 @@ func extractServiceQoSClasses(facts []store.Fact) map[string]string {
 	return classes
 }
 
-// extractServiceMemoryRequests reads desired/service/{name}/resources/memory
-// facts and returns a map of serviceName → memory request in bytes.
-func extractServiceMemoryRequests(facts []store.Fact) map[string]int {
-	requests := make(map[string]int)
-	prefix := "desired/service/"
-	suffix := "/resources/memory"
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, prefix) || !strings.HasSuffix(fact.Key, suffix) {
-			continue
-		}
-		serviceName := extractMiddleSegment(fact.Key, prefix, suffix)
-		if serviceName == "" {
-			continue
-		}
-		requests[serviceName] = parseResourceQuantity(string(fact.Value))
+// evictionUnreadableRequestConsequence is logged with an unreadable memory request.
+const evictionUnreadableRequestConsequence = "its instances are not ranked for eviction"
+
+// extractServiceMemoryRequests returns each service's memory request in whole
+// MiB (rounded up, the unit of node facts), effective-first, and separately
+// the services whose request cannot be parsed (M243 D6).
+func extractServiceMemoryRequests(facts []store.Fact) (map[string]int, map[string]bool) {
+	memoryBytesByService, unreadableServices := collectMemoryBytesBySuffix(
+		facts, "resources/memory", "eviction", evictionUnreadableRequestConsequence)
+	requests := make(map[string]int, len(memoryBytesByService))
+	for serviceName, memoryBytes := range memoryBytesByService {
+		requests[serviceName] = int(types.MemoryBytesToMiBRoundedUp(memoryBytes))
 	}
-	return requests
+	return requests, unreadableServices
+}
+
+// excludeUnreadableServiceInstances drops the instances of services whose
+// request cannot be read, so they are skipped when ranking eviction
+// candidates instead of counting as using 0 (which would protect them).
+func excludeUnreadableServiceInstances(instanceServices map[string]string, unreadableServices map[string]bool) map[string]string {
+	if len(unreadableServices) == 0 {
+		return instanceServices
+	}
+	evictableServices := make(map[string]string, len(instanceServices))
+	for instanceID, serviceName := range instanceServices {
+		if !unreadableServices[serviceName] {
+			evictableServices[instanceID] = serviceName
+		}
+	}
+	return evictableServices
 }
 
 // extractExistingNodePressure reads derived/node/{id}/pressure facts and

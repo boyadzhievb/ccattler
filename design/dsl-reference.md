@@ -138,6 +138,32 @@ gate web-public {
 }
 ```
 
+## Resource Units
+
+`resources { cpu, memory, cpu_limit, memory_limit }` and `scale { vertical { cpu { min max } memory { min max } } }`
+use Kubernetes notation. Every component reads a stored value through one parser (`types/resource_quantity.go`), so
+it has one meaning everywhere: CPU in millicores, memory in bytes.
+
+| Value | Accepted forms | Meaning |
+|---|---|---|
+| CPU | `250m` (millicores); `0.5`, `2` (cores) | `250m` = 250m, `0.5` = 500m, **bare `2` = 2 cores = 2000m** |
+| Memory | a number with a binary suffix `Ki Mi Gi Ti Pi Ei` (powers of 1024), a decimal suffix `k M G T P E` (powers of 1000), or no suffix | `512Mi` = 536870912 bytes, `1.5Gi` = 1610612736, `1G` = 10⁹, **bare `2048` = 2048 bytes** |
+
+A value finer than 1 millicore or 1 byte is rounded **up**, as in Kubernetes: `cpu 0.0005` = 1m, `1.5m` = 2m,
+`memory 1.1Gi` = 1181116007 bytes, `memory 1.5` = 2 bytes. `cca apply` refuses, and writes nothing, when a value is not
+one of these forms (the check runs on the value after template substitution). The error names the service, the field
+and the value. Refused, for example: `512MB` and `512mi` (unknown suffix), `1e3` (exponent), values that overflow 64
+bits, and negative values (a lexer error). `cpu 0` is allowed. A CPU value written without `m` that is 64 cores or more
+(`cpu 500`, `cpu { max 4000 }`) is accepted with a warning from `cca apply` and `cca lint`: it is read as cores and was
+probably meant as `500m`. Stored `desired/` values are never migrated; re-apply with units.
+
+The scheduler places an instance only on a node whose remaining CPU (millicores) and memory (MiB, the request rounded
+up to whole MiB) cover the request; when no node can, the instance is unplaced with `insufficient_capacity`, which
+cluster scaling and the rollout reason use. It reads the effective request (from the vertical autoscaler) before the
+desired one. A stored value that cannot be read (written before this check existed) leaves new instances of the
+service unplaced with `invalid_resource_request`, shown by `cca status`; re-apply the configuration to fix it.
+Behaviour: `openspec/specs/resource-requests`; the chain: Flow 10 of `runtime-invariant-flows.md`.
+
 ## Rolling Updates
 
 Changing a service's `image` starts a rollout: old-image instances are replaced so that no more than `update { max_unavailable }` of the expected instances are not healthy at once (crash-looping or failed old ones are replaced first, without using the budget), `max_extra` extra new-image instances may run meanwhile, and the rollout rolls back to the previous image when the new image fails (restarts plus failed instances of the rollout's own new instances reach half the desired count, between 3 and 200) or makes no progress for `progress_deadline` (a positive Go duration such as `10m` or `1h30m`; an invalid or zero value is a parse error). A new instance counts (for stopping old instances, progress and finishing) only once it has run for `min_healthy_time` since its last start and, when the service has a readiness probe, is ready (a Go duration of 0 or more, default `10s`; `0s` means running is enough; a negative or invalid value is a parse error). `update { progress_deadline }` compiles to `desired/service/{svc}/update/progress_deadline`. `update { min_healthy_time }` compiles to `desired/service/{svc}/update/min_healthy_time`. Unset `max_unavailable` and `max_extra` take Kubernetes' defaults for the service's kind, each on its own:

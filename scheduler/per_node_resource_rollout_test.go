@@ -56,7 +56,7 @@ func newPerNodeReplayCluster(t *testing.T, agentUsesCAS bool) *perNodeReplayClus
 		types.KeyDesiredServicePlacementMode("agentd"):        string(types.PlacementModePerNode),
 		types.KeyEffectiveServicePlacementMode("agentd"):      string(types.PlacementModePerNode),
 		types.KeyEffectiveServiceInstances("agentd"):          "3",
-		types.KeyDesiredServiceResourcesCPU("agentd"):         "1500",
+		types.KeyDesiredServiceResourcesCPU("agentd"):         "1500m",
 		types.KeyDesiredServiceUpdateMinHealthyTime("agentd"): "0s",
 	} {
 		cluster.facts[factKey] = factValue

@@ -104,8 +104,8 @@ func buildSyntheticFactSlice(serviceName string, instanceCount uint8, nodeCount 
 		store.Fact{Key: types.KeyDesiredService(serviceName), Value: []byte("")},
 		store.Fact{Key: types.KeyDesiredServiceImage(serviceName), Value: []byte("nginx:1.27")},
 		store.Fact{Key: types.KeyDesiredServiceInstances(serviceName), Value: fmt.Appendf(nil, "%d", instanceCount)},
-		store.Fact{Key: types.KeyDesiredServiceResourcesCPU(serviceName), Value: []byte("500")},
-		store.Fact{Key: types.KeyDesiredServiceResourcesMemory(serviceName), Value: []byte("512")},
+		store.Fact{Key: types.KeyDesiredServiceResourcesCPU(serviceName), Value: []byte("500m")},
+		store.Fact{Key: types.KeyDesiredServiceResourcesMemory(serviceName), Value: []byte("512Mi")},
 	)
 
 	// Sort by key to match the store's scan ordering contract, which the

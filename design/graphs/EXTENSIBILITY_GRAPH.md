@@ -580,6 +580,8 @@ coreControllers():
 ### Leader-election controllers (cmd/cca/command_server.go:370)
 ```
 startControllersWithLeaderElection():
+  (HARunner.Run is started by controllers.RunControllersAfterResourceMigration once the M243 startup
+   migration succeeded; see CONTROLLER_DATA_FLOW_GRAPH "Startup migration")
   17. node-failure           controllers/nodefailure.go
   18. drain                  controllers/drain.go
   19. network                controllers/network.go
@@ -666,7 +668,7 @@ IF --cloud-provider set:
 | `NewCustomController` | Plugin authors via SDK |
 | `NewFactMap` | `CustomController.Reconcile` |
 | `Runner.Run` | `HARunner.startControllers`, `cca run` (single-node) |
-| `HARunner.Run` | `cmd/cca/command_server.go` (server startup) |
+| `HARunner.Run` | `cmd/cca/command_server.go` (server startup, via `controllers.RunControllersAfterResourceMigration`) |
 
 ---
 

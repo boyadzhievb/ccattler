@@ -99,58 +99,54 @@ func collectIntValuesBySuffix(facts []store.Fact, prefix string, matchSuffix str
 	return collectedValues
 }
 
-// parseResourceQuantity parses a Kubernetes-style resource quantity string into
-// an integer. CPU values ending in "m" are treated as millicores (e.g. "500m" → 500).
-// Memory values with binary suffixes are converted to bytes (e.g. "512Mi" → 536870912).
-// Plain integers are returned as-is.
-func parseResourceQuantity(rawValue string) int {
-	if len(rawValue) == 0 {
-		return 0
-	}
-	if rawValue[len(rawValue)-1] == 'm' {
-		parsedValue, parseError := strconv.Atoi(rawValue[:len(rawValue)-1])
-		if parseError == nil {
-			return parsedValue
-		}
-	}
-	if len(rawValue) >= 3 {
-		suffix := rawValue[len(rawValue)-2:]
-		numberPart := rawValue[:len(rawValue)-2]
-		var multiplier int
-		switch suffix {
-		case "Ki":
-			multiplier = 1024
-		case "Mi":
-			multiplier = 1024 * 1024
-		case "Gi":
-			multiplier = 1024 * 1024 * 1024
-		}
-		if multiplier > 0 {
-			parsedValue, parseError := strconv.Atoi(numberPart)
-			if parseError == nil {
-				return parsedValue * multiplier
+// collectCPUMillicoresBySuffix reads each service's CPU value under
+// matchSuffix (e.g. "resources/cpu") in millicores, effective-first. Services
+// whose value cannot be parsed are left out, returned separately and logged
+// once under readerName (M243 D6).
+func collectCPUMillicoresBySuffix(facts []store.Fact, matchSuffix string, readerName string, consequence string) (map[string]int64, map[string]bool) {
+	return collectResourceQuantitiesEffectiveFirst(facts, matchSuffix, types.ParseCPUMillicores, readerName, consequence)
+}
+
+// collectMemoryBytesBySuffix reads each service's memory value under
+// matchSuffix (e.g. "resources/memory") in bytes, effective-first. Services
+// whose value cannot be parsed are left out, returned separately and logged
+// once under readerName (M243 D6).
+func collectMemoryBytesBySuffix(facts []store.Fact, matchSuffix string, readerName string, consequence string) (map[string]int64, map[string]bool) {
+	return collectResourceQuantitiesEffectiveFirst(facts, matchSuffix, types.ParseMemoryBytes, readerName, consequence)
+}
+
+// collectResourceQuantitiesEffectiveFirst parses each service's value under
+// matchSuffix from effective/service/, or desired/service/ when no effective
+// value exists. An unreadable effective value does not fall back to desired.
+func collectResourceQuantitiesEffectiveFirst(
+	facts []store.Fact,
+	matchSuffix string,
+	parseQuantity func(string) (int64, error),
+	readerName string,
+	consequence string,
+) (map[string]int64, map[string]bool) {
+	chosenFacts := make(map[string]store.Fact)
+	for _, servicePrefix := range []string{types.ScanDesiredServices, types.ScanEffectiveServices} {
+		for _, fact := range store.FactsWithPrefix(facts, servicePrefix) {
+			// Match the key's suffix, not its first segment, so team/web works (B5).
+			serviceName, matched := strings.CutSuffix(strings.TrimPrefix(fact.Key, servicePrefix), "/"+matchSuffix)
+			if matched && serviceName != "" && len(fact.Value) > 0 {
+				chosenFacts[serviceName] = fact
 			}
 		}
 	}
-	parsedValue, parseError := strconv.Atoi(rawValue)
-	if parseError != nil {
-		return 0
-	}
-	return parsedValue
-}
-
-// collectResourceValuesBySuffix is like collectIntValuesBySuffix but parses
-// Kubernetes-style resource quantities (e.g. "500m", "512Mi") instead of
-// plain integers.
-func collectResourceValuesBySuffix(facts []store.Fact, prefix string, matchSuffix string) map[string]int {
-	collectedValues := make(map[string]int)
-	for _, fact := range store.FactsWithPrefix(facts, prefix) {
-		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
-		if hasSuffix && suffix == matchSuffix {
-			collectedValues[entityName] = parseResourceQuantity(string(fact.Value))
+	parsedQuantities := make(map[string]int64, len(chosenFacts))
+	unreadableServices := make(map[string]bool)
+	for serviceName, fact := range chosenFacts {
+		parsedQuantity, parseError := parseQuantity(string(fact.Value))
+		if parseError != nil {
+			types.WarnUnreadableResourceOnce(readerName, fact.Key, string(fact.Value), parseError, consequence)
+			unreadableServices[serviceName] = true
+			continue
 		}
+		parsedQuantities[serviceName] = parsedQuantity
 	}
-	return collectedValues
+	return parsedQuantities, unreadableServices
 }
 
 // parseInstanceFieldsFromFacts scans observed and derived instance facts and

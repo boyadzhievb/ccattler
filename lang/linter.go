@@ -6,6 +6,9 @@ package lang
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // maxValidPort is the highest valid TCP/UDP port number.
@@ -380,9 +383,9 @@ func FormatDiagnostics(diagnostics []LintDiagnostic) string {
 	return result
 }
 
-// DeprecationWarnings returns warnings for deprecated constructs. cca lint
-// and cca apply both print them. Today: legacy_secret_api (decision C, M174),
-// which is removed in the release after M174.
+// DeprecationWarnings returns warnings for deprecated or ambiguous constructs.
+// cca lint and cca apply both print them. Today: legacy_secret_api (decision
+// C, M174), and bare CPU values of 64 cores or more (M243 D10).
 func DeprecationWarnings(file *File) []LintDiagnostic {
 	var diagnostics []LintDiagnostic
 	for _, serviceDecl := range file.Services {
@@ -393,6 +396,42 @@ func DeprecationWarnings(file *File) []LintDiagnostic {
 				Line:     serviceDecl.Line,
 			})
 		}
+		diagnostics = append(diagnostics, bareCPUValueWarnings(serviceDecl)...)
+	}
+	return diagnostics
+}
+
+// bareCPUWarningMillicores is the smallest CPU value written without m that
+// draws a warning: 64 cores, more than most nodes have, so a bare value this
+// large was probably meant as millicores (M243 D10).
+const bareCPUWarningMillicores = 64 * 1000
+
+// bareCPUValueWarnings warns for each CPU request, limit or vertical bound of
+// a service written without m that reads as 64 cores or more. Bare CPU means
+// cores since M243; such a value was probably meant as millicores.
+func bareCPUValueWarnings(serviceDecl ServiceDecl) []LintDiagnostic {
+	var namedCPUValues [][2]string
+	if serviceDecl.Resources != nil {
+		namedCPUValues = append(namedCPUValues, [2]string{"cpu", serviceDecl.Resources.CPU}, [2]string{"cpu_limit", serviceDecl.Resources.CPULimit})
+	}
+	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
+		namedCPUValues = append(namedCPUValues, [2]string{"cpu min", serviceDecl.Scale.Vertical.CPUMin}, [2]string{"cpu max", serviceDecl.Scale.Vertical.CPUMax})
+	}
+	var diagnostics []LintDiagnostic
+	for _, namedValue := range namedCPUValues {
+		fieldName, valueText := namedValue[0], namedValue[1]
+		if valueText == "" || strings.HasSuffix(valueText, "m") {
+			continue
+		}
+		if millicores, parseError := types.ParseCPUMillicores(valueText); parseError != nil || millicores < bareCPUWarningMillicores {
+			continue
+		}
+		diagnostics = append(diagnostics, LintDiagnostic{
+			Severity: "warning",
+			Message: fmt.Sprintf("service %q %s %s is read as %s cores (a CPU value without m means cores since M243); write %sm if you meant millicores",
+				serviceDecl.Name, fieldName, valueText, valueText, valueText),
+			Line: serviceDecl.Line,
+		})
 	}
 	return diagnostics
 }

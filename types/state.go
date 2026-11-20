@@ -349,6 +349,11 @@ const (
 	// UnplacedVolumeHomeNodeUnavailable means the service mounts a node-local
 	// volume whose home node is not alive or cannot host the instance (Flow 26).
 	UnplacedVolumeHomeNodeUnavailable UnplacedReason = "volume_home_node_unavailable"
+
+	// UnplacedInvalidResourceRequest means the service's stored CPU or memory
+	// request cannot be parsed, so its size is unknown and it is not placed
+	// (M243 D5). Cluster scaling does not count it as demand for a node.
+	UnplacedInvalidResourceRequest UnplacedReason = "invalid_resource_request"
 )
 
 // RolloutState is the state of a service's image rollout, stored in

@@ -10,30 +10,33 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-func TestParseResourceQuantity(t *testing.T) {
-	testCases := []struct {
-		input    string
-		expected int
-	}{
-		{"500m", 500},
-		{"1000m", 1000},
-		{"0m", 0},
-		{"256Mi", 256 * 1024 * 1024},
-		{"512Mi", 512 * 1024 * 1024},
-		{"1Gi", 1024 * 1024 * 1024},
-		{"2Gi", 2 * 1024 * 1024 * 1024},
-		{"100Ki", 100 * 1024},
-		{"3", 3},
-		{"1024", 1024},
-		{"0", 0},
-		{"", 0},
-		{"bogus", 0},
+// TestCollectResourceQuantitiesReadEffectiveFirst checks the controllers'
+// request readers (M243 D6): effective wins over desired, CPU and memory each
+// use their own parser, and an unreadable effective value is reported, never
+// replaced by the desired one or read as 0.
+func TestCollectResourceQuantitiesReadEffectiveFirst(t *testing.T) {
+	facts := []store.Fact{
+		{Key: types.KeyDesiredServiceResourcesCPU("web"), Value: []byte("250m")},
+		{Key: types.KeyEffectiveServiceResourcesCPU("web"), Value: []byte("1.5")},
+		{Key: types.KeyDesiredServiceResourcesCPU("api"), Value: []byte("2")},
+		{Key: types.KeyDesiredServiceResourcesCPU("db"), Value: []byte("500m")},
+		{Key: types.KeyEffectiveServiceResourcesCPU("db"), Value: []byte("lots")},
+		{Key: types.KeyDesiredServiceResourcesMemory("web"), Value: []byte("1G")},
+		{Key: types.KeyDesiredServiceResourcesMemory("api"), Value: []byte("512MB")},
 	}
-	for _, testCase := range testCases {
-		result := parseResourceQuantity(testCase.input)
-		if result != testCase.expected {
-			t.Errorf("parseResourceQuantity(%q): got %d, want %d", testCase.input, result, testCase.expected)
-		}
+	store.SortFacts(facts)
+
+	cpuMillicores, unreadableCPU := collectCPUMillicoresBySuffix(facts, "resources/cpu", "test", "skipped")
+	if cpuMillicores["web"] != 1500 || cpuMillicores["api"] != 2000 {
+		t.Errorf("cpu = %v, want web 1500 (effective) and api 2000 (bare cores)", cpuMillicores)
+	}
+	if _, hasDB := cpuMillicores["db"]; hasDB || !unreadableCPU["db"] {
+		t.Errorf("db's unreadable effective cpu: values %v, unreadable %v; want db only unreadable", cpuMillicores, unreadableCPU)
+	}
+
+	memoryBytes, unreadableMemory := collectMemoryBytesBySuffix(facts, "resources/memory", "test", "skipped")
+	if memoryBytes["web"] != 1000000000 || !unreadableMemory["api"] || len(memoryBytes) != 1 {
+		t.Errorf("memory = %v, unreadable %v; want web 1000000000 and api unreadable", memoryBytes, unreadableMemory)
 	}
 }
 

@@ -87,7 +87,7 @@ func controllerOutputPrefixes() map[string][]string {
 	return map[string][]string{
 		"intent-resolver":      {"effective/service/"},
 		"instance":             {"observed/instance/", "derived/instance/"},
-		"scheduler":            {"placement/", "derived/scheduler/unplaced/", "derived/instance/"},
+		"scheduler":            {"placement/", "derived/scheduler/unplaced/", "derived/scheduler/invalid_resource_request/", "derived/instance/"},
 		"endpoint":             {"endpoint/"},
 		"failure":              {"observed/instance/", "derived/instance/", "derived/crash-loop/"},
 		"node-failure":         {"observed/node/", "derived/instance/"},

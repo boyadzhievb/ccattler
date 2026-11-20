@@ -141,8 +141,8 @@ service nginx-frontend {
     volume web-content /usr/share/nginx/html
 
     resources {
-        cpu 200
-        memory 134217728
+        cpu 200m
+        memory 128Mi
     }
 }
 ```

@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
@@ -61,7 +62,6 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 	quotaCeilings := extractQuotaCeilings(facts)
 	autoscalerResourceIntents := extractAutoscalerResourceIntents(facts)
 	currentEffectiveResources := extractEffectiveResources(facts)
-	userResources := extractUserResources(facts)
 	placementModes := extractDesiredPlacementModes(facts)
 	currentEffectiveModes := extractEffectivePlacementModes(facts)
 	aliveNodeCount := countAliveNodesFromFacts(facts)
@@ -83,7 +83,10 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 	)...)
 
 	changes = append(changes, resolveEffectiveResourceChanges(
-		autoscalerResourceIntents, currentEffectiveResources, userResources,
+		autoscalerResourceIntents, currentEffectiveResources,
+	)...)
+	changes = append(changes, deleteEffectiveResourcesWithoutIntent(
+		autoscalerResourceIntents, currentEffectiveResources,
 	)...)
 
 	return changes, nil
@@ -198,62 +201,52 @@ func resolveEffectiveInstanceCountChanges(
 	return changes
 }
 
-// resolveEffectiveResourceChanges computes effective CPU and memory values for
-// each service by merging autoscaler resource recommendations with user-declared
-// resources. Autoscaler recommendations take precedence when present. Returns
-// changes only when the effective value differs from the current value.
+// resolveEffectiveResourceChanges sets, per resource, effective cpu or memory
+// to the autoscaler's recommendation for that resource, for services in
+// sorted order. A resource without a recommendation is left to
+// deleteEffectiveResourcesWithoutIntent (desired applies, M243 B3).
 func resolveEffectiveResourceChanges(
 	autoscalerResourceIntents map[string]autoscalerResourceIntent,
 	currentEffectiveResources map[string]string,
-	userResources map[string]string,
 ) []Change {
 	var changes []Change
-
-	for serviceName, autoscalerResources := range autoscalerResourceIntents {
-		if autoscalerResources.cpu != "" {
-			effectiveCPU := autoscalerResources.cpu
-			currentEffCPU := currentEffectiveResources[serviceName+"/cpu"]
-			if effectiveCPU != currentEffCPU {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyEffectiveServiceResourcesCPU(serviceName),
-					Value: []byte(effectiveCPU),
-				})
-			}
-		} else if userCPU := userResources[serviceName+"/cpu"]; userCPU != "" {
-			currentEffCPU := currentEffectiveResources[serviceName+"/cpu"]
-			if userCPU != currentEffCPU {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyEffectiveServiceResourcesCPU(serviceName),
-					Value: []byte(userCPU),
-				})
-			}
+	for _, serviceName := range sortedMapKeys(autoscalerResourceIntents) {
+		recommendations := autoscalerResourceIntents[serviceName]
+		if recommendations.cpu != "" && recommendations.cpu != currentEffectiveResources[serviceName+"/cpu"] {
+			changes = append(changes, Change{
+				Type: store.OpPut, Key: types.KeyEffectiveServiceResourcesCPU(serviceName), Value: []byte(recommendations.cpu),
+			})
 		}
-
-		if autoscalerResources.memory != "" {
-			effectiveMemory := autoscalerResources.memory
-			currentEffMemory := currentEffectiveResources[serviceName+"/memory"]
-			if effectiveMemory != currentEffMemory {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyEffectiveServiceResourcesMemory(serviceName),
-					Value: []byte(effectiveMemory),
-				})
-			}
-		} else if userMemory := userResources[serviceName+"/memory"]; userMemory != "" {
-			currentEffMemory := currentEffectiveResources[serviceName+"/memory"]
-			if userMemory != currentEffMemory {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyEffectiveServiceResourcesMemory(serviceName),
-					Value: []byte(userMemory),
-				})
-			}
+		if recommendations.memory != "" && recommendations.memory != currentEffectiveResources[serviceName+"/memory"] {
+			changes = append(changes, Change{
+				Type: store.OpPut, Key: types.KeyEffectiveServiceResourcesMemory(serviceName), Value: []byte(recommendations.memory),
+			})
 		}
 	}
-
 	return changes
+}
+
+// deleteEffectiveResourcesWithoutIntent deletes effective cpu or memory when
+// THAT resource has no autoscaler recommendation, whether or not desired has a
+// value, so the desired request applies again (M243 D7, B3). Keys are
+// "{svc}/{cpu|memory}", split at the LAST slash for team/web (B5), sorted.
+func deleteEffectiveResourcesWithoutIntent(
+	autoscalerResourceIntents map[string]autoscalerResourceIntent,
+	currentEffectiveResources map[string]string,
+) []Change {
+	var deletions []Change
+	for _, effectiveResourceKey := range sortedMapKeys(currentEffectiveResources) {
+		lastSlash := strings.LastIndex(effectiveResourceKey, "/")
+		serviceName, resourceKind := effectiveResourceKey[:lastSlash], effectiveResourceKey[lastSlash+1:]
+		recommendations := autoscalerResourceIntents[serviceName]
+		if resourceKind == "cpu" && recommendations.cpu == "" {
+			deletions = append(deletions, DeleteChange(types.KeyEffectiveServiceResourcesCPU(serviceName)))
+		}
+		if resourceKind == "memory" && recommendations.memory == "" {
+			deletions = append(deletions, DeleteChange(types.KeyEffectiveServiceResourcesMemory(serviceName)))
+		}
+	}
+	return deletions
 }
 
 // extractIntentCounts scans facts under the given intent prefix and returns
@@ -319,43 +312,43 @@ type autoscalerResourceIntent struct {
 	memory string
 }
 
-// extractAutoscalerResourceIntents scans autoscaler intent facts for resource recommendations.
+// extractAutoscalerResourceIntents returns the autoscaler's CPU and memory
+// recommendations per service; only services with one appear. Names are found
+// by the key suffix, so hierarchical names (team/web) work (M243 B5).
 func extractAutoscalerResourceIntents(facts []store.Fact) map[string]autoscalerResourceIntent {
 	intents := make(map[string]autoscalerResourceIntent)
-	prefix := types.ScanIntentAutoscalerServices
-	for _, fact := range store.FactsWithPrefix(facts, prefix) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
-		if !hasSuffix {
-			continue
-		}
+	for resourceKey, resourceValue := range collectServiceResourceValues(facts, types.ScanIntentAutoscalerServices) {
+		lastSlash := strings.LastIndex(resourceKey, "/")
+		serviceName := resourceKey[:lastSlash]
 		intent := intents[serviceName]
-		switch suffix {
-		case "resources/cpu":
-			intent.cpu = string(fact.Value)
-		case "resources/memory":
-			intent.memory = string(fact.Value)
+		if resourceKey[lastSlash+1:] == "cpu" {
+			intent.cpu = resourceValue
+		} else {
+			intent.memory = resourceValue
 		}
 		intents[serviceName] = intent
 	}
 	return intents
 }
 
-// extractEffectiveResources scans effective service facts for current resource values.
+// extractEffectiveResources returns the current effective resource values,
+// keyed "{svc}/{cpu|memory}" (hierarchical names included).
 func extractEffectiveResources(facts []store.Fact) map[string]string {
-	resources := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanEffectiveServices)
-		if !hasSuffix {
-			continue
-		}
-		switch suffix {
-		case "resources/cpu":
-			resources[serviceName+"/cpu"] = string(fact.Value)
-		case "resources/memory":
-			resources[serviceName+"/memory"] = string(fact.Value)
+	return collectServiceResourceValues(facts, types.ScanEffectiveServices)
+}
+
+// collectServiceResourceValues returns the non-empty {prefix}{svc}/resources/{cpu|memory}
+// values keyed "{svc}/{cpu|memory}", matching the key suffix, not its first
+// segment, so team/web is one service (M243 B5).
+func collectServiceResourceValues(facts []store.Fact, servicePrefix string) map[string]string {
+	resourceValues := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, servicePrefix) {
+		serviceName, resourceKind := splitServiceResourceKey(fact.Key, servicePrefix)
+		if resourceKind != "" && len(fact.Value) > 0 {
+			resourceValues[serviceName+"/"+resourceKind] = string(fact.Value)
 		}
 	}
-	return resources
+	return resourceValues
 }
 
 // extractDesiredPlacementModes scans desired service facts for placement mode
@@ -440,22 +433,4 @@ func resolvePerNodePlacementChanges(
 	}
 
 	return changes
-}
-
-// extractUserResources scans desired service facts for user-declared resources.
-func extractUserResources(facts []store.Fact) map[string]string {
-	resources := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
-		if !hasSuffix {
-			continue
-		}
-		switch suffix {
-		case "resources/cpu":
-			resources[serviceName+"/cpu"] = string(fact.Value)
-		case "resources/memory":
-			resources[serviceName+"/memory"] = string(fact.Value)
-		}
-	}
-	return resources
 }

@@ -46,6 +46,8 @@ type ServiceStatus struct {
 	RolloutState          string `json:"rollout_state,omitempty"`           // RolloutState is derived/service/{svc}/rollout/state (M241 D8).
 	RolloutReason         string `json:"rollout_reason,omitempty"`          // RolloutReason says what a rollout in progress waits for.
 	RolloutRollbackReason string `json:"rollout_rollback_reason,omitempty"` // RolloutRollbackReason says why the last rollback happened.
+
+	InvalidResourceRequest string `json:"invalid_resource_request,omitempty"` // InvalidResourceRequest is the "{key}={value}" of a stored request the scheduler cannot read (M243 D5).
 }
 
 // InstanceStatus represents one instance in the cluster status.
@@ -306,6 +308,8 @@ func collectServiceStatus(snapshot *statusFactSnapshot, sortedServiceNames []str
 			RolloutState:          snapshot.valueOrEmpty(types.KeyDerivedServiceRolloutState(serviceName)),
 			RolloutReason:         snapshot.valueOrEmpty(types.KeyDerivedServiceRolloutReason(serviceName)),
 			RolloutRollbackReason: snapshot.valueOrEmpty(types.KeyDerivedServiceRolloutRollbackReason(serviceName)),
+
+			InvalidResourceRequest: snapshot.valueOrEmpty(types.KeyDerivedSchedulerInvalidResourceRequest(serviceName)),
 		}
 		if counter, hasCounter := crashLoopCounters[serviceName]; hasCounter {
 			serviceStatus.CrashLoopCount = counter.count

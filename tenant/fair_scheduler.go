@@ -173,9 +173,9 @@ func (fairScheduler *FairScheduler) computeTenantCPU(ctx context.Context, tenant
 		case "":
 			serviceExists[serviceName] = true
 		case "resources/cpu":
-			cpuValue := strings.TrimSuffix(string(fact.Value), "m")
-			parsed, _ := strconv.Atoi(cpuValue)
-			serviceCPU[serviceName] = parsed
+			if cpuMillicores, readable := parseServiceCPUMillicores(fact); readable {
+				serviceCPU[serviceName] = cpuMillicores
+			}
 			serviceExists[serviceName] = true
 		case "instances":
 			parsed, _ := strconv.Atoi(string(fact.Value))

@@ -379,6 +379,8 @@ startCCattlerServer()                                          :334
 │
 ├── startControllersWithLeaderElection(factStore, eventLog, config) :341
 │   └── HARunner.SetEventLog(eventLog)                         :398
+│   └── go RunControllersAfterResourceMigration → HARunner.Run only after the M243 startup migration succeeds
+│       (retried with back-off; see CONTROLLER_DATA_FLOW_GRAPH "Startup migration")
 │       └── on leader acquire:
 │           └── Runner.SetEventLog(eventLog)
 │               └── Runner.Run():

@@ -73,7 +73,9 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanDesiredGroups,
 		types.ScanDerivedSchedulerUnplaced,
 		types.ScanObservedVolumes,
-		types.ScanDerivedInstances, // controller_stopped: a surplus or replaced instance is stopped (M241 2i.2)
+		types.ScanDerivedInstances,                        // controller_stopped: a surplus or replaced instance is stopped (M241 2i.2)
+		types.ScanEffectiveServices,                       // effective resources from the vertical autoscaler win over desired (M243 D4)
+		types.ScanDerivedSchedulerInvalidResourceRequests, // own invalid-request facts, deleted once fixed (M243 D5)
 	}
 }
 
@@ -95,7 +97,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
 	placements := extractPlacementsFromFacts(facts)
-	serviceResources := extractServiceResourcesFromFacts(facts)
+	serviceResources, invalidResourceRequests := extractServiceResourcesFromFacts(facts)
 	placementConstraints := extractPlacementConstraints(facts)
 	applyVolumeHomeNodeConstraints(placementConstraints, facts)
 	serviceToGroup := extractServiceGroupMemberships(facts)
@@ -104,13 +106,14 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	markInstancesStillStarting(instances, extractServicesWithStartupProbe(facts))
 
 	unplaced := findUnplacedPendingInstances(instances, placements)
-	var changes []controllers.Change
+	placeableUnplaced := excludeInvalidRequestInstances(unplaced, instances, invalidResourceRequests)
+	changes := buildInvalidResourceRequestChanges(facts, invalidResourceRequests)
 
 	if placementScheduler.shouldDeferInitialPlacement(placements, unplaced, nodes) {
 		// Grace period active — skip placement but still emit unplaced demand facts
-	} else if len(unplaced) > 0 {
+	} else if len(placeableUnplaced) > 0 {
 		changes = append(changes, attemptPlacements(
-			unplaced, nodes, instances, placements, serviceResources,
+			placeableUnplaced, nodes, instances, placements, serviceResources,
 			placementConstraints, serviceToGroup,
 		)...)
 	}
@@ -118,14 +121,15 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	placedInThisCycle := collectPlacedInstanceIDs(changes)
 
 	preemptionChanges := attemptPreemptions(
-		unplaced, placedInThisCycle, nodes, instances, placements,
+		placeableUnplaced, placedInThisCycle, nodes, instances, placements,
 		placementConstraints, servicePriorities, statefulServices,
+		invalidResourceRequests,
 	)
 	changes = append(changes, preemptionChanges...)
 
 	unplacedChanges := emitUnplacedDemandFacts(
 		unplaced, placedInThisCycle, nodes, instances,
-		serviceResources, placementConstraints,
+		serviceResources, placementConstraints, invalidResourceRequests,
 	)
 	changes = append(changes, unplacedChanges...)
 	changes = append(changes, cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)...)
@@ -133,7 +137,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	rebalanceChanges := rebalancePlacedInstances(
 		nodes, instances, placements, serviceResources,
 		placementConstraints, serviceToGroup, placedInThisCycle,
-		extractRebalancePinnedServices(facts, statefulServices),
+		extractRebalancePinnedServices(facts, statefulServices, invalidResourceRequests),
 	)
 	changes = append(changes, rebalanceChanges...)
 
@@ -210,6 +214,7 @@ func attemptPreemptions(
 	placementConstraints map[string]*servicePlacementConstraint,
 	servicePriorities map[string]int,
 	statefulServices map[string]bool,
+	invalidResourceRequests map[string]string,
 ) []controllers.Change {
 	var stillUnplaced []string
 	for _, instanceID := range unplaced {
@@ -252,7 +257,7 @@ func attemptPreemptions(
 			instanceInfo.service, requesterPriority,
 			nodes, instances, placements,
 			servicePriorities, placementConstraints,
-			statefulServices, preemptedInstances,
+			statefulServices, invalidResourceRequests, preemptedInstances,
 		)
 		if victimID == "" {
 			continue
@@ -280,7 +285,8 @@ func attemptPreemptions(
 
 // findPreemptionVictim finds the lowest-priority running instance on an
 // eligible node that can be preempted by a service with the given priority.
-// Skips per-node and stateful services. Returns empty strings if no victim.
+// Skips per-node and stateful services, and services whose request cannot
+// be read (stopping one frees an unknown amount). Returns "" if no victim.
 func findPreemptionVictim(
 	requesterService string,
 	requesterPriority int,
@@ -290,6 +296,7 @@ func findPreemptionVictim(
 	servicePriorities map[string]int,
 	placementConstraints map[string]*servicePlacementConstraint,
 	statefulServices map[string]bool,
+	invalidResourceRequests map[string]string,
 	alreadyPreempted map[string]bool,
 ) (string, string) {
 	type victimCandidate struct {
@@ -323,8 +330,8 @@ func findPreemptionVictim(
 		if constraint != nil && constraint.mode == types.PlacementModePerNode {
 			continue
 		}
-		if statefulServices[victimService] {
-			continue
+		if statefulServices[victimService] || invalidResourceRequests[victimService] != "" {
+			continue // stateful: volume affinity; unreadable request: size unknown (M243 B4)
 		}
 		candidates = append(candidates, victimCandidate{
 			instanceID: instanceID,
@@ -401,12 +408,16 @@ const serviceVolumeKeySegment = "volume"
 const volumeAccessKeySegment = "access"
 
 // extractRebalancePinnedServices returns the services the rebalancer must not
-// move: stateful services and services that mount any volume not observed as
+// move: stateful services, services with an unreadable resource request (their
+// size is unknown, M243 D5) and services that mount any volume not observed as
 // shared. A volume without a recorded access mode counts as exclusive.
-func extractRebalancePinnedServices(facts []store.Fact, statefulServices map[string]bool) map[string]bool {
+func extractRebalancePinnedServices(facts []store.Fact, statefulServices map[string]bool, invalidResourceRequests map[string]string) map[string]bool {
 	sharedVolumeNames := extractSharedVolumeNames(facts)
-	pinnedServices := make(map[string]bool, len(statefulServices))
+	pinnedServices := make(map[string]bool, len(statefulServices)+len(invalidResourceRequests))
 	for serviceName := range statefulServices {
+		pinnedServices[serviceName] = true
+	}
+	for serviceName := range invalidResourceRequests {
 		pinnedServices[serviceName] = true
 	}
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
@@ -789,6 +800,7 @@ func emitUnplacedDemandFacts(
 	instances map[string]*schedulerInstanceInfo,
 	serviceResources map[string]serviceResourceRequirements,
 	placementConstraints map[string]*servicePlacementConstraint,
+	invalidResourceRequests map[string]string,
 ) []controllers.Change {
 	aliveCount := countAliveNodes(nodes)
 	var changes []controllers.Change
@@ -797,7 +809,7 @@ func emitUnplacedDemandFacts(
 			continue
 		}
 		instanceInfo := instances[instanceID]
-		reason := classifyUnplacedReason(instanceInfo, aliveCount, nodes, placementConstraints)
+		reason := classifyUnplacedReason(instanceInfo, aliveCount, nodes, placementConstraints, invalidResourceRequests)
 		changes = append(changes, buildUnplacedFactChanges(instanceID, instanceInfo, reason, serviceResources, placementConstraints)...)
 	}
 	return changes
@@ -814,13 +826,19 @@ func countAliveNodes(nodes map[string]*schedulerNodeInfo) int {
 	return count
 }
 
-// classifyUnplacedReason determines why an instance could not be placed.
+// classifyUnplacedReason determines why an instance could not be placed. An
+// unreadable resource request is checked first, so it never reads as no_nodes,
+// which cluster scaling counts as demand for a node (M243 D5).
 func classifyUnplacedReason(
 	instanceInfo *schedulerInstanceInfo,
 	aliveCount int,
 	nodes map[string]*schedulerNodeInfo,
 	placementConstraints map[string]*servicePlacementConstraint,
+	invalidResourceRequests map[string]string,
 ) types.UnplacedReason {
+	if instanceInfo != nil && invalidResourceRequests[instanceInfo.service] != "" {
+		return types.UnplacedInvalidResourceRequest
+	}
 	if aliveCount == 0 {
 		return types.UnplacedNoNodes
 	}
@@ -1346,13 +1364,13 @@ func selectLeastLoadedNode(alive []candidateNode, load map[string]int, reqCPU, r
 	return selectFromHeap(&heapData)
 }
 
-// serviceResourceRequirements holds the CPU and memory resources that a
-// service declares it needs per instance. These values come from the
-// desired-services facts in the store.
+// serviceResourceRequirements holds the CPU and memory a service requests per
+// instance, from its effective request or else its desired one (M243 D4), in
+// the units of the node capacity facts.
 type serviceResourceRequirements struct {
-	// cpu is the CPU requirement in millicores (e.g. 500 for 500m).
+	// cpu is the CPU requirement in millicores (e.g. 500 for 500m, 2000 for 2).
 	cpu int64
-	// memory is the memory requirement in MiB (e.g. 512 for 512Mi).
+	// memory is the memory requirement in whole MiB, rounded up (e.g. 512 for 512Mi).
 	memory int64
 }
 
@@ -2027,30 +2045,4 @@ func computeGroupResourceTotal(instanceIDs []string, state *placementState) (int
 		totalMemory += reqMemory
 	}
 	return totalCPU, totalMemory
-}
-
-// extractServiceResourcesFromFacts parses the flat list of store facts and
-// returns a map of service name to serviceResourceRequirements, extracting the
-// CPU and memory requirements from the desired-services key prefix.
-func extractServiceResourcesFromFacts(facts []store.Fact) map[string]serviceResourceRequirements {
-	resources := make(map[string]serviceResourceRequirements)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		// relativePath = "{name}/resources/cpu" or "{name}/resources/memory"
-		parts := strings.SplitN(relativePath, "/", 3)
-		if len(parts) != 3 || parts[1] != "resources" {
-			continue
-		}
-		name := parts[0]
-		resource := resources[name]
-		parsedValue, _ := strconv.ParseInt(string(fact.Value), 10, 64)
-		switch parts[2] {
-		case "cpu":
-			resource.cpu = parsedValue
-		case "memory":
-			resource.memory = parsedValue
-		}
-		resources[name] = resource
-	}
-	return resources
 }

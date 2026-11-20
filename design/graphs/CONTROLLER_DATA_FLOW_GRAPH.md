@@ -120,12 +120,18 @@ IntentResolverController.Reconcile(ctx, facts)               :53
 │           (never delete: the instance controller only sees names with an
 │            effective count, so 0 is what stops the orphan instances)
 │
-├── resolveEffectiveResourceChanges(...)                     :202
-│   └── FOR EACH service with autoscaler resource intents:
-│       └── PUT effective/service/{svc}/resources/{cpu,memory}
+├── extractAutoscalerResourceIntents(facts)                  :318  (by key suffix: team/web works, M243 B5)
+│   └── collectServiceResourceValues(facts, intent/autoscaler/service/) :343
+│       └── splitServiceResourceKey(key, prefix)             [resource_migration.go:99]
+├── extractEffectiveResources(facts)                         :336  → "{svc}/{cpu|memory}" → value
 │
-└── extractUserResources(facts)                              :383
-    └── reads intent/user/service/{svc}/resources/{cpu,memory}
+├── resolveEffectiveResourceChanges(intents, effective)      :208
+│   └── FOR EACH service (sorted), FOR cpu, memory WITH a recommendation:
+│       └── PUT effective/service/{svc}/resources/{kind} = recommendation (when it differs)
+└── deleteEffectiveResourcesWithoutIntent(intents, effective) :233  (M243 D7, B3)
+    └── FOR EACH effective "{svc}/{kind}" (sorted; split at the LAST slash) whose kind has
+        no recommendation (also when desired has none):
+        └── DELETE effective/service/{svc}/resources/{kind} (desired applies again)
 ```
 
 **Watch:** `intent/user/service/`, `intent/autoscaler/service/`, `desired/service/`, `effective/service/`, `observed/node/`
@@ -146,8 +152,8 @@ See INSTANCE_LIFECYCLE_GRAPH.md §1 for full call tree.
 
 See SCHEDULING_GRAPH.md for full call tree.
 
-**Watch:** `placement/instance/`, `observed/node/`, `observed/instance/`, `desired/service/`, `desired/group/`, `derived/scheduler/unplaced/`
-**Writes:** `placement/instance/{id}`, `placement/node/{nodeID}/{id}`, `derived/scheduler/unplaced/{id}/*`, `derived/instance/{id}/*`
+**Watch:** `placement/instance/`, `observed/node/`, `observed/instance/`, `desired/service/`, `desired/group/`, `derived/scheduler/unplaced/`, `observed/volume/`, `derived/instance/`, `effective/service/` (M243), `derived/scheduler/invalid_resource_request/` (M243)
+**Writes:** `placement/instance/{id}`, `placement/node/{nodeID}/{id}`, `derived/scheduler/unplaced/{id}/*`, `derived/scheduler/invalid_resource_request/{svc}` (M243), `derived/instance/{id}/*`
 
 ---
 
@@ -332,7 +338,16 @@ AutoscaleController.Reconcile(ctx, facts)                    :123
 ├── extractStabilizationWindows(facts)                       :538
 ├── extractEventTargets(facts)                               :630
 ├── extractScheduleRules(facts)                              :671
-├── extractVerticalPolicies(facts)                           :743
+├── extractVerticalBoundsByResource(facts)                   :799
+│   └── "{svc}/{cpu|memory}" → verticalResourceBounds{minimum, maximum, unreadable}, found by the
+│       /scale/vertical/ segment (team/web works); types.ParseCPUMillicores / ParseMemoryBytes;
+│       unreadable → logged once, flagged (no recommendation for that resource, S4)
+├── extractCurrentResources(facts)                           :837
+│   ├── collectCPUMillicoresBySuffix(facts, "resources/cpu")     [helpers.go:106]
+│   └── collectMemoryBytesBySuffix(facts, "resources/memory")    [helpers.go:114]
+│       └── collectResourceQuantitiesEffectiveFirst              [helpers.go:121]
+│           (effective/service/ first, then desired/service/; unreadable → left out,
+│            logged once → no recommendation)
 │
 ├── buildHorizontalScalingChanges(facts, policies, ...)      :154
 │   └── FOR EACH service with scale policy:
@@ -345,17 +360,45 @@ AutoscaleController.Reconcile(ctx, facts)                    :123
 │       │   └── enforce minimum during window
 │       └── PUT intent/autoscaler/service/{svc}/instances = N
 │
-└── buildVerticalScalingChanges(facts, policies, ...)        :263
-    └── FOR EACH service with vertical policy:
-        ├── recordVerticalMetricSamples(...)                  :300
-        ├── computeVerticalResourceChange(...)                :319
-        │   └── computeP95FromSamples(samples)               :413
-        ├── applyVerticalStabilization(...)                   :362
-        └── PUT intent/autoscaler/service/{svc}/resources/{cpu,memory}
+└── buildVerticalScalingChanges(bounds, cpu, memory, metrics, intents, now) :278
+    ├── recordVerticalMetricSamples(...)                      :337
+    ├── FOR EACH declared "{svc}/{kind}" (sorted; split at the LAST slash):
+    │   └── computeVerticalResourceChange(svc, dimension, now) :357
+    │       ├── current unknown, a bound unreadable (S4) or no max → no recommendation
+    │       ├── computeP95FromSamples(samples)               :446
+    │       ├── applyVerticalStabilization(...)               :397
+    │       └── PUT intent/autoscaler/service/{svc}/resources/{kind}
+    │           = types.FormatCPUMillicores / types.FormatMemoryMiB (rounded up)
+    └── buildRemovedVerticalPolicyDeletions(bounds, intents)  :313  (per resource, B3)
+        └── kind with no scale/vertical/{kind}/ fact → DELETE intent/autoscaler/service/{svc}/resources/{kind}
+    (bare legacy recommendations are no longer rewritten here: startup migration, below)
 ```
 
-**Watch:** `desired/service/`, `observed/metric/`, `observed/instance/`, `derived/instance/`, `intent/autoscaler/service/`, `derived/service/`
-**Writes:** `intent/autoscaler/service/{svc}/instances`, `intent/autoscaler/service/{svc}/resources/{cpu,memory}`
+### Startup migration (controllers/resource_migration.go, M243 D9)
+
+```
+cca server → startControllersWithLeaderElection (cmd/cca/command_server.go) builds the HA runner, then
+└── go RunControllersAfterResourceMigration(ctx, store, start)  :206  (returns at once to the server: API comes up)
+    └── runControllersAfterResourceMigration(ctx, store, backoff, start) :214
+        ├── LOOP attempt = 1, 2, …:
+        │   ├── MigrateUnitlessResourceRecommendations(ctx, store)   :57   (up to resourceMigrationMaxAttempts = 5)
+        │   │   ├── planUnitlessResourceRewrites(ctx, store)         :77
+        │   │   │   ├── Scan desired/service/ → extractVerticalBoundsByResource (bounds only; desired/ never written)
+        │   │   │   └── Scan intent/autoscaler/service/ and effective/service/:
+        │   │   │       ├── splitServiceResourceKey(key, prefix)     :111  (suffix /resources/{cpu|memory})
+        │   │   │       ├── skip unless types.IsBareInteger(value) (idempotent: unit values untouched)
+        │   │   │       └── formatLegacyQuantity(kind, bounds.clamp(n)) :123 (cpu "{n}m"; memory MiB rounded up; B2)
+        │   │   └── commitResourceRewrites(ctx, store, rewrites)     :133
+        │   │       ├── batchRewritesByService(rewrites)             :155  (whole services; 2 items per rewrite
+        │   │       │                                                       (compare + put) ≤ etcdTransactionOperationLimit, C1)
+        │   │       └── store.Transaction(Compare{key, scanned revision}, Put{key, unit value}); lost CAS → scan again
+        │   ├── success → start() = haControllerRunner.Run(ctx); RETURN true   (controllers start only now, C2)
+        │   └── failure → log attempt + next delay; wait resourceMigrationBackoff.delayAfterAttempt(attempt) :194
+        │                 (1s doubling to 1min) or ctx.Done() → RETURN false (controllers never start)
+```
+
+**Watch:** `desired/service/`, `observed/metric/`, `observed/instance/`, `derived/instance/`, `intent/autoscaler/service/`, `derived/service/`, `effective/service/` (current request, M243)
+**Writes:** `intent/autoscaler/service/{svc}/instances`, `intent/autoscaler/service/{svc}/resources/{cpu,memory}` (put and delete)
 
 ---
 
@@ -393,30 +436,34 @@ DrainController.Reconcile(ctx, facts)                        :52
 ### eviction (controllers/eviction.go)
 
 ```
-EvictionController.Reconcile(ctx, facts)                     :80
-├── extractNodeMemoryCapacity(facts)                         :249
-├── extractNodeMemoryAvailable(facts)                        :268
-├── extractInstanceNodeMapping(facts)                        :287
-├── extractInstanceServiceMapping(facts)                     :306
-├── extractInstanceStates(facts)                             :325
-├── extractServiceQoSClasses(facts)                          :349
-├── extractServiceMemoryRequests(facts)                      :368
-├── extractServicePrioritiesFromFacts(facts)                 :419
-├── extractExistingNodePressure(facts)                       :387
+EvictionController.Reconcile(ctx, facts)                     :81
+├── extractNodeMemoryCapacity(facts)                         :250
+├── extractNodeMemoryAvailable(facts)                        :256
+│   └── extractNodeMemoryMiB(facts, suffix)                  :263  (plain MiB integers via Atoi, M243 D6;
+│       corrupt → node skipped)
+├── extractInstanceNodeMapping(facts)                        :286
+├── extractServiceMemoryRequests(facts)                      :371
+│   └── collectMemoryBytesBySuffix (effective-first) → MiB rounded up; unreadable services returned apart
+├── excludeUnreadableServiceInstances(extractInstanceServiceMapping(facts) :305, unreadable) :384
+│   └── instances of a service with an unreadable request are not ranked (logged once)
+├── extractInstanceStates(facts)                             :324
+├── extractServiceQoSClasses(facts)                          :348
+├── extractServicePrioritiesFromFacts(facts)                 :431
+├── extractExistingNodePressure(facts)                       :399
 │
-├── reconcileNodePressure(capacity, available, existing)     :116
-│   └── FOR EACH node:
-│       ├── calculateMemoryUtilizationPercent(cap, avail)    :239
+├── reconcileNodePressure(capacity, available, existing)     :117
+│   └── FOR EACH node (all in MiB):
+│       ├── calculateMemoryUtilizationPercent(cap, avail)    :240
 │       ├── IF util >= threshold AND NOT pressured:
 │       │   └── PUT derived/node/{nodeID}/pressure = "true"
 │       └── IF util < threshold AND pressured:
 │           └── DELETE derived/node/{nodeID}/pressure
 │
 └── FOR EACH pressured node:
-    ├── buildEvictionCandidates(nodeID, ...)                 :170
+    ├── buildEvictionCandidates(nodeID, ...)                 :171
     │   └── priority: BestEffort > Burstable > Guaranteed
     │       within same QoS: lowest priority first
-    └── buildEvictionChanges(candidates, ...)                :209
+    └── buildEvictionChanges(candidates, ...)                :210
         └── PUT derived/instance/{id}/controller_stopped = "true"
             (enough to free memory below threshold)
 ```
@@ -519,7 +566,7 @@ SortControllersByDependency(controllers)                     :164
 |---|---|
 | `intent-resolver` | `effective/service/` |
 | `instance` | `observed/instance/`, `derived/instance/` |
-| `scheduler` | `placement/`, `derived/scheduler/unplaced/`, `derived/instance/` |
+| `scheduler` | `placement/`, `derived/scheduler/unplaced/`, `derived/scheduler/invalid_resource_request/`, `derived/instance/` |
 | `endpoint` | `endpoint/` |
 | `failure` | `observed/instance/`, `derived/instance/`, `derived/crash-loop/` |
 | `node-failure` | `observed/node/`, `derived/instance/` |
@@ -690,7 +737,14 @@ The node agent is NOT a controller — it runs its own loop (1s ticker + watch e
 | `parseInstanceFieldsFromFacts` | InstanceController, FailureController, EndpointController, InstanceGCController, EvictionController, NodeFailureController |
 | `effectiveInstanceState` | buildInstanceMapsFromFields, processInstanceForRecovery, markInstancesOnUnreachableNodesAsFailed |
 | `endpointEligibleState` | buildDesiredEndpoints |
-| `splitFactKeyIntoEntityAndSuffix` | collectStringValuesBySuffix, collectIntValuesBySuffix, collectResourceValuesBySuffix |
+| `splitFactKeyIntoEntityAndSuffix` | collectStringValuesBySuffix, collectIntValuesBySuffix |
+| `splitServiceResourceKey` | planUnitlessResourceRewrites, collectServiceResourceValues |
+| `extractVerticalBoundsByResource` | AutoscaleController.Reconcile, planUnitlessResourceRewrites |
+| `MigrateUnitlessResourceRecommendations` | runControllersAfterResourceMigration (retried until it succeeds) |
+| `RunControllersAfterResourceMigration` | startControllersWithLeaderElection (cmd/cca/command_server.go), in a goroutine; starts the HA runner |
+| `collectCPUMillicoresBySuffix` | extractCurrentResources (autoscale) |
+| `collectMemoryBytesBySuffix` | extractCurrentResources (autoscale), extractServiceMemoryRequests (eviction) |
+| `collectResourceQuantitiesEffectiveFirst` | collectCPUMillicoresBySuffix, collectMemoryBytesBySuffix |
 | `collectStringValuesBySuffix` | parseCurrentNodeStates, parseNodeAdvertiseAddresses |
 | `extractServiceExposedPorts` | EndpointController.Reconcile |
 | `controllerOutputPrefixes` | buildControllerDependencyGraph, enforceWriteDomain, appendInputKeyGuards |

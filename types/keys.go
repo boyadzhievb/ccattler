@@ -499,6 +499,10 @@ const (
 	// ScanDerivedSchedulerUnplaced scans all scheduler unplaced-demand facts
 	// explaining why instances could not be placed.
 	ScanDerivedSchedulerUnplaced = PrefixDerived + "/scheduler/unplaced/"
+
+	// ScanDerivedSchedulerInvalidResourceRequests scans the services whose
+	// stored resource request the scheduler cannot parse (M243 D5).
+	ScanDerivedSchedulerInvalidResourceRequests = PrefixDerived + "/scheduler/invalid_resource_request/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -2177,6 +2181,14 @@ func KeyDerivedSchedulerUnplacedReason(instanceID string) string {
 // Path: derived/scheduler/unplaced/{instanceID}/requirements
 func KeyDerivedSchedulerUnplacedRequirements(instanceID string) string {
 	return fmt.Sprintf("%s/scheduler/unplaced/%s/requirements", PrefixDerived, instanceID)
+}
+
+// KeyDerivedSchedulerInvalidResourceRequest returns the store path the
+// scheduler writes for a service whose stored request it cannot parse; the
+// value is "{key}={value}" of the unreadable fact (M243 D5).
+// Path: derived/scheduler/invalid_resource_request/{serviceName}
+func KeyDerivedSchedulerInvalidResourceRequest(serviceName string) string {
+	return ScanDerivedSchedulerInvalidResourceRequests + serviceName
 }
 
 // --- Route keys ---
