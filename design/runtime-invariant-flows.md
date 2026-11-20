@@ -1036,6 +1036,9 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
    instance placed here, needs secrets?
      material in /run/ccattler/secrets/{id}/ from this boot → reuse (step 8)
      else → state waiting-for-secrets, POST /api/node/secrets {instance_id} (mTLS)
+   API address (resolveAgentAPIServerAddress; none → delivery off): init host →
+     --api-server {advertise}:9770 in setup.sh's unit (M248); joined worker →
+     --api-server, else /etc/ccattler/server-address from cca join; Ansible → template
    this happens before pulling, also when the image is cached:
      placed → waiting-for-secrets → pulling → starting → running   (Flow 14)
    the image pull secret is part of the delivered material (Flow 22)

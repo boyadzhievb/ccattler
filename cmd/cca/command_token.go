@@ -108,7 +108,7 @@ func createJoinTokenThroughAPI(ctx context.Context, parsedConfig tokenCommandCon
 	}
 	fmt.Println()
 	fmt.Println("Join command:")
-	fmt.Printf("  cca join https://<server>:9770 %s --node-id <id>\n", created.Token)
+	fmt.Printf("  cca join https://<server>:%s %s --node-id <id>\n", defaultAPIListenPort, created.Token)
 	return nil
 }
 

@@ -28,9 +28,6 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// defaultStatusAPIPort is the port for the CCattler API server.
-const defaultStatusAPIPort = "9770"
-
 // caCertSearchPaths lists locations where the CLI looks for the server CA
 // certificate to enable TLS. Checked in order; first match wins.
 var caCertSearchPaths = []string{
@@ -73,7 +70,7 @@ func resolveStatusAPIListenAddress() string {
 			return trimmed
 		}
 	}
-	return "127.0.0.1:" + defaultStatusAPIPort
+	return "127.0.0.1:" + defaultAPIListenPort
 }
 
 func resolveStatusAPIScheme() string {

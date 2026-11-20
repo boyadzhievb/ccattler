@@ -387,7 +387,7 @@ startCCattlerServer()                                          :334
 │                   └── go EventProjector.Run()                [runner.go:204]
 │
 ├── coreControllers() includes:
-│   └── NewAuditLogGCController()                              [helpers.go:303]
+│   └── NewAuditLogGCController()                              [helpers.go:312]
 │
 └── configureAndStartAPIServer(factStore, authorizedStore,
         rbacAuthorizer, auditLog, eventLog, config)            :345
@@ -500,7 +500,7 @@ watchPrefixWithReconnect (reconnect path)                      :80
 | `EventLog.Count` | API handler |
 | `trimOldEvents` | EventLog.Emit (if maxEvents > 0) |
 | `AuditLogGCController.Reconcile` | Runner.runControllerLoop (on audit/ watch) |
-| `NewAuditLogGCController` | coreControllers (helpers.go:303) |
+| `NewAuditLogGCController` | coreControllers (helpers.go:312) |
 | `handleAudit` | API server (GET /api/audit) |
 | `handleAuditFollow` | API server (GET /api/audit?follow=true) |
 
@@ -549,7 +549,7 @@ watchPrefixWithReconnect (reconnect path)                      :80
 | types/keys.go:63 | PrefixAudit ("audit") |
 | cmd/cca/command_audit.go:33 | CLI: cca audit query/follow |
 | cmd/cca/command_server.go:334 | Wiring: audit log + event log + projector + API |
-| cmd/cca/helpers.go:303 | AuditLogGCController registration in coreControllers |
+| cmd/cca/helpers.go:312 | AuditLogGCController registration in coreControllers |
 | api/server.go:1221 | handleAudit — query endpoint |
 | api/server.go:1287 | handleAuditFollow — SSE streaming endpoint |
 | api/server.go:1339 | Tenant scoping for non-platform principals |

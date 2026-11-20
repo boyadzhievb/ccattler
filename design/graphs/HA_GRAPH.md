@@ -233,7 +233,7 @@ executeReconciliationCycle(ctx, controller, deltaEvents) [controllers/runner.go:
 ### startControllersWithLeaderElection → production HA path
 ```
 startControllersWithLeaderElection(ctx, factStore, eventLog, config) [cmd/cca/command_server.go:341]
-├── coreControllers()                               [cmd/cca/helpers.go:286]
+├── coreControllers()                               [cmd/cca/helpers.go:294]
 │   ├── NewInstanceController()
 │   ├── NewScheduler()
 │   ├── NewEndpointController()
@@ -488,6 +488,6 @@ release() CAS-deletes leader/controlplane + holder
 | `store/store.go` | StateStore interface: Get/Put/Delete/Scan/Watch/Transaction/Lease |
 | `store/write_rate_limiter.go` | Token-bucket write rate limiter (500 writes/s, burst 1000) |
 | `cmd/cca/command_server.go` | Server startup: startControllersWithLeaderElection |
-| `cmd/cca/helpers.go:286` | coreControllers(): 16 built-in controllers |
+| `cmd/cca/helpers.go:294` | coreControllers(): 16 built-in controllers |
 | `security/enrollment.go` | Node enrollment: join tokens, re-enrollment after CA loss |
 | `security/rotator.go` | CertificateRotator: auto-renewal before expiry |

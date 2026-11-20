@@ -556,7 +556,7 @@ HARunner.Run(ctx)                                    (controllers/ha_runner.go:7
 
 ## Controller Registration (cmd/cca/helpers.go, cmd/cca/command_server.go)
 
-### Core controllers — always registered (cmd/cca/helpers.go:286)
+### Core controllers — always registered (cmd/cca/helpers.go:294)
 ```
 coreControllers():
   1.  instance              controllers/instance.go

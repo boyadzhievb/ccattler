@@ -6,10 +6,12 @@ package main
 import (
 	"errors"
 	"flag"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,6 +171,56 @@ func TestShippedUnitFilesPassOnlyKnownFlags(testContext *testing.T) {
 	if checkedInvocationCount != expectedInvocationCount {
 		testContext.Errorf("checked %d shipped command lines, want %d: a unit file moved or the extraction broke",
 			checkedInvocationCount, expectedInvocationCount)
+	}
+}
+
+// TestSetupScriptAgentUsesLocalAPIServer: the agent unit that `cca init`
+// writes into setup.sh names the API server installed by the same script, on a
+// host the server listens on and the node certificate covers, so an init host
+// (which never ran `cca join`) has secret delivery (M248).
+func TestSetupScriptAgentUsesLocalAPIServer(testContext *testing.T) {
+	testCases := []struct {
+		advertiseAddress         string // advertiseAddress is the address given to `cca init`
+		expectedAPIServerAddress string // expectedAPIServerAddress is the agent's --api-server value
+	}{
+		{advertiseAddress: "192.0.2.10", expectedAPIServerAddress: "192.0.2.10:" + defaultAPIListenPort},
+		{advertiseAddress: "fd00::1", expectedAPIServerAddress: "[fd00::1]:" + defaultAPIListenPort},
+	}
+	for _, testCase := range testCases {
+		testContext.Run(testCase.advertiseAddress, func(subtestContext *testing.T) {
+			setupScript := buildSetupScript(testCase.advertiseAddress, "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24")
+			invocationsByCommand := extractDaemonInvocations(setupScript)
+			if len(invocationsByCommand["agent"]) != 1 || len(invocationsByCommand["server"]) != 1 {
+				subtestContext.Fatalf("setup.sh has %d agent and %d server units, want one of each",
+					len(invocationsByCommand["agent"]), len(invocationsByCommand["server"]))
+			}
+
+			agentConfig, agentParseError := parseAgentCommandArgs(invocationsByCommand["agent"][0])
+			if agentParseError != nil {
+				subtestContext.Fatalf("parse setup.sh agent unit: %v", agentParseError)
+			}
+			if agentConfig.apiServerAddress != testCase.expectedAPIServerAddress {
+				subtestContext.Errorf("setup.sh agent --api-server = %q, want %q",
+					agentConfig.apiServerAddress, testCase.expectedAPIServerAddress)
+			}
+
+			serverConfig, serverParseError := parseServerCommandArgs(invocationsByCommand["server"][0])
+			if serverParseError != nil {
+				subtestContext.Fatalf("parse setup.sh server unit: %v", serverParseError)
+			}
+			listenHost, listenPort, splitError := net.SplitHostPort(serverConfig.listenAddress)
+			if splitError != nil || listenPort != defaultAPIListenPort ||
+				(listenHost != "0.0.0.0" && listenHost != testCase.advertiseAddress) {
+				subtestContext.Errorf("setup.sh server --listen = %q, want 0.0.0.0 or %s on port %s (the agent's --api-server)",
+					serverConfig.listenAddress, testCase.advertiseAddress, defaultAPIListenPort)
+			}
+
+			certificateIPAddresses, _ := buildCertificateSANs(initCommandConfig{advertiseAddress: testCase.advertiseAddress, nodeID: "node-1"})
+			if !slices.ContainsFunc(certificateIPAddresses, net.ParseIP(testCase.advertiseAddress).Equal) {
+				subtestContext.Errorf("node certificate IP SANs %v lack %s, so the agent's TLS check would fail",
+					certificateIPAddresses, testCase.advertiseAddress)
+			}
+		})
 	}
 }
 
