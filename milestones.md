@@ -552,6 +552,98 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 259 — Code Rules Checked in CI (M259)
+
+Found 2026-11-23. CLAUDE.md, `design/Anti-pattern.md` and the `code-quality` agent all state the same rules: comment every function, no magic numbers, the 80-line limit, no duplication and typed enums. `design/Anti-pattern.md` said violations are caught "in code review and CI linting". Only code review checks them: `.golangci.yml` has never enabled `funlen`, `mnd`, `dupl`, `gocognit` or `revive`, and no test or script checks them. The M243 patterns review found typed-enum and duplication violations in fresh code that passed CI.
+
+A one-off measurement (temporary config, 83.8k lines of non-test Go):
+- 9 functions over 80 lines;
+- 15 functions with cognitive complexity over 30 (`cmd/cca main` 64);
+- 8 duplicated blocks;
+- 52 exported identifiers without a proper doc comment;
+- 362 numeric literals, many of them legitimate (file modes, `2`, `1024`);
+- five files of 2,200–2,700 lines (`lang/parser.go`, `types/keys.go`, `cmd/cca/command_status.go`, `api/server.go`, `agent/agent.go`).
+
+Wanted:
+- **Linters as a ratchet:** `funlen` (80, comments ignored, tests excluded), `gocognit`, `dupl`, `mnd` with an allow-list, and `revive` `exported`, enforced on new and changed code (`new-from-rev` / `new-from-merge-base`) so the existing hits don't block work. Publish a baseline count and pay it down.
+- **Architecture test:** a Go test over the import graph that enforces the layers. For example, `types` imports nothing above it, controllers don't import `agent`/`api`, and only the runner commits to the store. It is the machine check for the fact-based anti-patterns.
+- **"How to add a controller" guide** with a small example controller (Watch, Reconcile, tests, graph entry), the skeleton a new contributor copies.
+- **Comprehension check:** a repeatable cold-read test. A reader with no context (a fresh agent as a proxy) answers set questions ("how does an instance get placed", "where would you change the eviction order") from the docs and code only. Answers are checked against the truth, and repeated per milestone to find unclear areas.
+- **Docs:** `design/Anti-pattern.md` names the linters once they exist.
+
+To be proposed as an OpenSpec change.
+
+### Phase 258 — Placement Ignores Priority Order (M258, bug)
+
+Found in the M243 round-2 review (2026-11-23), verified in the code. `placeUngroupedInstances` (`scheduler/scheduler.go:1047`) places services in name order (`sortedServiceNames`), not by priority. After a preemption, the victim's replacement is placed in the same or next cycle and can take the room freed for the higher-priority requester. The requester stays unplaced and preempts again, so one requester can stop several lower-priority instances before it places. The reviewer's integration probe did this in 1 of 3 runs. `TestPriorityPreemptionLifecycle` asserts only that a background instance was preempted, never that the critical one is placed or that preemption stops.
+
+Also, grouped requesters (`placeOneGroup`, `:2002`) need the group's combined request on one node, while preemption (M243 D12) checks a single instance, so a group member can trigger a stop that does not let the group place.
+
+How others do it: kube-scheduler's queue pops pods by priority, and a preemptor gets `nominatedNodeName`. Lower-priority pods are not placed into room reserved for a nominated pod.
+
+Wanted:
+- Placement in priority order (then name), or a nominated-node reservation that lower priorities respect.
+- Preemption for groups checks the group's combined request.
+- The lifecycle test asserts that the critical instance is placed and that the preemption count stops growing.
+
+To be proposed as an OpenSpec change.
+
+### Phase 257 — Vertical Autoscaler Percentile Counts Reconciles, Not Time (M257, bug)
+
+Found in the data-structures review (2026-11-23), verified in the code. `recordVerticalMetricSamples` (`controllers/autoscale.go:339-351`) appends one sample per service and resource on every reconcile, and reconciles are event-driven: any watched fact change runs one. So the 5-minute window holds as many copies of the same metric reading as there were reconciles, and `computeP95FromSamples` (`:450`) returns a percentile weighted by cluster activity, not by time. A burst of unrelated changes floods the window with the current reading and shifts the recommendation. The window size grows with the reconcile rate, and every cycle sorts it (`sort.Ints`, O(n log n)).
+
+The horizontal autoscaler is not affected: its stabilization takes the maximum or minimum of recommendations over the window, which does not depend on how often it runs.
+
+How others do it: the Kubernetes Vertical Pod Autoscaler samples usage at a fixed interval (default 1 minute) into decaying histograms, so every period counts once.
+
+Wanted: a sample is added only when the metric fact changes (its revision or reported timestamp), or once per fixed interval. The percentile is then over time-spaced samples. The `0.95` literal becomes a named constant. A test shows that extra reconciles with no new metric do not change the recommendation.
+
+Folded in (same review, determinism rule): `topologicalSort` (`controllers/topological_sort.go:27-37`) builds the list of dependents while iterating a map, so two controllers that depend on the same one come out in either order between runs; sort the dependents before queuing them. To be proposed as an OpenSpec change.
+
+### Phase 256 — Zone-Spread Placement Picks the Wrong Node (M256, bug)
+
+Found in the data-structures review (2026-11-23), verified in the code. `NodeCapacityCache.BestNodeInZones` (`scheduler/cache.go:48-64`) walks the heap's backing array and returns the first entry in an allowed zone. A heap's array is ordered only at index 0, so the result is often not the least-loaded node in the allowed zones, although its comment says it is. When no node in an allowed zone is left in the heap, it falls back to the overall best node, which can be in a zone already over `zoneMaxSkew`. The zone limit is then broken silently.
+
+How others do it: kube-scheduler's `PodTopologySpread` filters out nodes in a zone over the skew before scoring, and leaves the pod pending rather than break `maxSkew` (for `whenUnsatisfiable: DoNotSchedule`).
+
+Wanted:
+- Choose the minimum among nodes in the allowed zones, using the same order as the heap (`nodeSelectionHeap.Less`). That is a linear scan, or per-zone heaps if benchmarks show the need.
+- With no node in an allowed zone, leave the instance unplaced with a typed reason instead of falling back.
+- Tests: several nodes per zone with differing loads, and the case where the allowed zones are full.
+
+Folded in (same review): `selectLeastLoadedNode` (`scheduler/scheduler.go:1386-1391`) builds a heap to read one minimum. That is O(n) plus allocation, not the O(log n) its comment claims; replace it with a linear minimum scan. To be proposed as an OpenSpec change.
+
+### Phase 255 — Image Signature Verification (M255, feature)
+
+From the CRI-O comparison (2026-11-23): CRI-O verifies images against a signature policy (`policy.json`), and CCattler pulls whatever an image name resolves to. Nothing checks who built an image, and a tag can be moved to another image after it was tested.
+
+How others do it:
+- **CRI-O / Podman** (`containers/image`): `policy.json` gives a rule per registry or repository scope: `reject`, `insecureAcceptAnything`, `signedBy` (GPG key) or `sigstoreSigned` (cosign key, or Fulcio/Rekor keyless). It is checked on every pull on the node.
+- **Kubernetes:** nothing built in. Admission controllers (Sigstore policy-controller, Kyverno `verifyImages`, Connaisseur) verify at admission and usually rewrite the tag to the verified digest, so every node runs exactly the verified image.
+- **containerd:** no policy in the CRI pull path by default. Verification comes from configuration or plugins, not a policy file.
+- **Nomad:** none built in.
+
+Decisions for the proposal:
+- **Where to verify:**
+  - *At apply (server):* resolve tag → digest, verify, store the digest. One check, and nodes run the verified digest. Needs registry access from the server.
+  - *On the node before start (agent):* catches images pulled outside apply. Every node needs the keys and registry access.
+  - *Both.*
+- **Signature format:** cosign/sigstore with a public key, as the default because it works air-gapped. Keyless Fulcio/Rekor needs internet access, so optional.
+- **Policy scope and syntax:**
+  - Scope: cluster-wide, per tenant, or per registry/repository prefix (like `policy.json`).
+  - Syntax: DSL (`image_policy { … }`) versus a server config file.
+  - Typed modes: `enforce`, `warn`, `off`.
+- **Failure:** fail-closed under `enforce`. An unverifiable image is refused at apply with the reason, or the instance stays not started with a typed reason shown in `cca describe` and `cca status`.
+- **Digest pinning:** whether `desired/service/{svc}/image` stores the verified digest, and how that fits M241's recorded image and rollbacks.
+
+Depends on M252 (one normalized image reference before any policy match). Security-relevant: `security-audit` review required. To be proposed as an OpenSpec change.
+
+### Phase 254 — Declared Limits Are Never Applied (M254, bug)
+
+Found in the M243 code review (2026-11-23), verified in the code by the main session and Codex. The compiler validates and stores `cpu_limit` and `memory_limit` (`lang/compiler.go`, `KeyDesiredServiceResourcesCPULimit` / `MemoryLimit`), but nothing else reads them: the agent's `lookupServiceResourcesFromStore` (`agent/telemetry.go`) reads only the request keys and uses the request as the container's CPU and memory limit. A declared limit therefore only changes the QoS class (eviction order). Related: a service with requests and no limits is classed `Guaranteed` (pinned in M243's spec), while Kubernetes would class it Burstable.
+
+Wanted: the agent applies a declared limit as the container limit and the request where no limit is declared (Kubernetes precedence), effective-first like the request; a request above its limit refused at apply; the QoS rule revisited once limits are applied. To be proposed as an OpenSpec change.
+
 ### Phase 253 — The Lima Demo Never Delivers Secrets (M253, bug)
 
 Found in the M248 code review (2026-11-20), verified in the code, not yet run. `deploy/lima/lima-deploy.yml` builds its own PKI with openssl and writes its own single-node units instead of using `cca init` + `setup.sh`. It has the same symptom as M248 for two reasons:
@@ -563,6 +655,26 @@ Wanted: the Lima playbook delegates PKI and units to `cca init` + `setup.sh` (as
 ### Phase 252 — Short Image Names Do Not Pull (M252, bug)
 
 Found testing the install docs on 192.168.100.99 (2026-11-19, v1.92.0-beta, `--runtime containerd`). Getting Started's `image nginx:1.28` stays in `image-pull-backoff`: `failed to resolve reference "nginx:1.28": parse "dummy://nginx:1.28": invalid port ":1.28" after host`. `ContainerdRuntime.PullImage` (runtime/containerd.go) hands the reference to `client.Pull` unchanged, and containerd needs a fully qualified name. The deploy cluster never hit this, because its images come from the local registry `192.168.124.1:5000`. `"docker.io/library/nginx:1.28"` works. Wanted: normalize with `github.com/distribution/reference` (`ParseDockerRef`) before the pull and when comparing the recorded image (M241), and test with short names. Getting Started uses the full name until then. Also seen: the DSL needs quotes for an image containing `/` (`expected identifier, got Slash`). Consider accepting it unquoted. To be proposed as an OpenSpec change.
+
+How others resolve short names (CRI-O comparison, 2026-11-23):
+- **Docker, Kubernetes, nerdctl, containerd's CRI plugin:**
+  - A short name always means Docker Hub. `nginx:1.28` → `docker.io/library/nginx:1.28`, and `user/app` → `docker.io/user/app`.
+  - A missing tag means `:latest`.
+  - The result is fixed, the same on every host, with no configuration.
+- **CRI-O / Podman** (`containers/image`, `registries.conf`):
+  - `unqualified-search-registries` lists registries to try in turn.
+  - `[aliases]` (and `registries.conf.d/*.conf`) map a short name to a full one.
+  - `short-name-mode` decides what happens when a name is ambiguous. `enforcing` refuses it when there is no TTY and no alias. `permissive` tries the list. `disabled` never resolves.
+  - Search lists exist for distributions that ship their own registries. The enforcing mode was added because search lists allow short-name squatting: the same name can resolve to an attacker's image on a registry earlier in the list.
+- **Mirrors** are separate from naming in both:
+  - CRI-O uses `[[registry]] location` / `[[registry.mirror]]`.
+  - containerd uses `certs.d/<registry>/hosts.toml`.
+  - A mirror changes where an image is fetched from, not its name. This is the air-gap route, as the deploy cluster's `192.168.124.1:5000` shows.
+
+Recommendation for M252:
+- **Normalization:** use Docker normalization only, with no search list and no per-node aliases. It is fixed and matches Kubernetes users' expectations. It can't be squatted, and every node and the server agree on one name.
+- **Where it happens:** normalize at apply, so the stored and displayed image is the full name. Also normalize in the agent for values stored before M252, and when comparing the recorded image (M241).
+- **Later, separately:** cluster-level aliases or mirrors (air-gap), if needed. Signature policy (M255) matches on the normalized name.
 
 ### Phase 250 — Subcommands Read `--help` as an Argument (M250, bug)
 
@@ -1154,6 +1266,10 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M250 — Subcommands Read `--help` as an Argument | 250 | Bug fix (found testing the install docs, 2026-11-19): `cca user create --help`, `cca user token --help` and `cca login --help` treated `--help` as a user name or server address and sent it to the API. Every subcommand now prints its usage for `--help` and refuses unknown flags. |
 | M252 — Short Image Names Do Not Pull | 252 | Bug fix (found testing the install docs, 2026-11-19): the containerd runtime passed image names as written, so a Docker Hub short name such as `nginx:1.28` or `redis:7-alpine` failed to pull (`parse "dummy://nginx:1.28": invalid port`). Names are now normalized as Docker and Kubernetes do (`nginx:1.28` → `docker.io/library/nginx:1.28`). |
 | M253 — The Lima Demo Never Delivers Secrets | 253 | Bug fix (found in the M248 review, 2026-11-20): the Lima demo built its own certificates and units, so its agent had no API address and its certificate named another node than the agent, and instances that need a secret waited forever. The Lima playbook now sets the VM up with `cca init` and `setup.sh`, like a real host. |
+| M254 — Declared Limits Are Never Applied | 254 | Bug fix (found in the M243 review, 2026-11-23): `cpu_limit` and `memory_limit` were validated and stored but never applied; the agent used the request as the container's limit, so a declared limit only changed the QoS class. The agent now applies a declared limit, and the request where none is declared. |
+| M256 — Zone-Spread Placement Picks the Wrong Node | 256 | Bug fix (found in the data-structures review, 2026-11-23): with zone spread, the scheduler took the first node of an allowed zone in the heap's internal order instead of the least-loaded one, and when the allowed zones were full it placed the instance in a zone already over its skew. It now picks the least-loaded node in the allowed zones and otherwise leaves the instance unplaced. |
+| M257 — Vertical Autoscaler Percentile Counts Reconciles, Not Time | 257 | Bug fix (found in the data-structures review, 2026-11-23): the vertical autoscaler added a metric sample on every reconcile, so its 95th percentile followed how busy the cluster was rather than usage over time, and its window grew with the reconcile rate. A sample is now added only when the metric changes. Controller ordering is also made fully deterministic. |
+| M258 — Placement Ignores Priority Order | 258 | Bug fix (found in the M243 review, 2026-11-23): the scheduler placed services in name order, so after a preemption the stopped instance's replacement could take the freed room before the higher-priority instance it was stopped for, which then preempted again. Placement now goes by priority, and preemption for a group checks the group's combined request. |
 | M241 — Rollout Correctness | 241 | Bug fix (found in the M238 review): a rollout whose new image crash-loops rolls back again, counting only this rollout's instances on the new image; a node loss no longer counts as an application failure; crash-looping old instances are replaced first; a rollback reverts to the image right before the rollout, not an older one. Each instance records its image, and the agent replaces a container that runs another image, so stateful and per-node rollouts really change the running container (a re-created instance starts at once, without the old image's back-off or restart count). A new instance counts once it stays healthy for `min_healthy_time` (default 10s); a rollout without progress for `progress_deadline` (default 10m) rolls back, and a waiting rollout always says why (`cca describe service`); stalled and rolled-back services show in `cca status` and the deploy health check. Pacing follows Kubernetes: `max_unavailable`/`max_extra` default to 25%/25% for stateless, 1/0 for stateful and per-node services, a disruption budget caps them, and surge is only added while old instances remain. Per-node rollouts no longer deadlock: a stopped or controller-stopped instance no longer holds its node's slot or requests, and the agent never overwrites a stop with a stale state. Applying a rolled-back image warns. Known limits: a stop request releases node resources before the container is gone (M246); capacity stalls need M243. |
 | M240 — Log Reads Load Whole Files Into Memory | 240 | Bug fix (found in the M238 security audit): reading container logs loaded the whole file into memory and containerd logs had no size limit, so large logs could exhaust the agent's memory. Logs are now read from the end in bounded blocks and capped in size. |
 | M239 — Config Changes Roll Out Progressively | 239 | A change to a service's configuration (env vars, config files, secrets, connections) rolls out to its instances a few at a time within the service's `maxUnavailable`, like an image update, instead of restarting every replica at once. |
@@ -1179,6 +1295,8 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M185 — Etcd Backup & Restore | 185 | `cca backup create/restore`. Scheduled automatic backups. Retention policy. Point-in-time restore. |
 | **Tier 1 — High value for effort** | | |
 | M251 — Host Preflight Checks | 251 | `cca preflight` checks a host before setup and lists every problem at once with its fix, like `kubeadm init phase preflight`: root or sudo, container runtime running, CNI plugins, etcd (control plane), nft or iptables, `br_netfilter` and IP forwarding, free ports (9770, 2379, 15353, 4789/udp), RAM and CPU minimums. `cca init` and `setup.sh` run it first. Found testing the install docs on a fresh Debian 13 host (2026-11-19), where each missing piece surfaced only when a later step failed. |
+| M259 — Code Rules Checked in CI | 259 | The project's code rules (80-line functions, no magic numbers, no duplication, doc comments, complexity) are now checked by linters in CI for new and changed code, and a test enforces the package layers. Before, only code review checked them, though the docs said CI did. A "how to add a controller" guide with an example controller and a repeatable comprehension check help new contributors. |
+| M255 — Image Signature Verification | 255 | Images can be required to carry a valid cosign/sigstore signature, by policy per registry or repository, like CRI-O's `policy.json` and Kubernetes' admission policy controllers. A public key works air-gapped. Under `enforce`, an unsigned or wrongly signed image is refused with its reason, and a verified image runs by digest. |
 | M186 — Debug & Explain CLI | 186 | Existing: `cca describe` (service/node/instance/gate), `cca diff`, `cca events`. Remaining: `cca debug <service>` (one-shot health report: instances, probes, recent events, placement failures) and `cca explain <service>` (scheduler placement reasoning per node). |
 | M187 — Network Policy Egress Rules | 187 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
 | M188 — Prometheus Metrics Gaps | 188 | Existing: `/metrics` in Prometheus format (`metrics/metrics.go`) with API, reconciliation (duration, changes, conflicts), activation, and node/service/instance gauges. Remaining: per-controller labels on reconciliation metrics, autoscaler decision metrics, instance counts by state, scrape config docs. |

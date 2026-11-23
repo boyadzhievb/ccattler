@@ -1,6 +1,7 @@
 # CCattler Anti-Pattern Rules
 
-Enforced from Phase 50. Violations are caught in code review and CI linting.
+Enforced from Phase 50. Violations are caught in code review (the `code-reviewer` and `code-quality` agents). CI
+linting does not check these rules yet; that is M259.
 
 ## No Dead Code
 

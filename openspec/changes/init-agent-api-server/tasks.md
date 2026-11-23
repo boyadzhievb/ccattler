@@ -90,13 +90,29 @@ and `configureAgentSecretDelivery` / `resolveAgentAPIServerAddress` (cmd/cca/com
     | C2 | The test checked only the listen port suffix and not the certificate SAN | **fixed** in 2b.2 |
     | Q6 | `defaultStatusAPIPort` duplicates `defaultAPIListenPort` | **fixed** in 2b.3; the token join hint also uses the constant |
     | Q3 | The Lima demo writes its own agent unit with no `--api-server`, and its certificate CN `cca-ctrl` does not match `--node-id node-1` | **out of scope**: not the `cca init` path; separate bug, decision pending |
-- [ ] 3.2 By hand on a fresh host (`install-host:secret-delivery`): follow the install docs with the new binary
+- [x] 3.2 By hand on a fresh host (`install-host:secret-delivery`): follow the install docs with the new binary
   (`cca init`, `setup.sh`), then apply a service that mounts a secret. Record three things: the agent log line
   `secret delivery from <advertise>:9770`, the instance reaching `running`, and the secret file inside the container
   (`cca exec` or `nerdctl exec`). Host: the Debian 13 install-docs host 192.168.100.99 or any fresh VM; it is not
   the deploy cluster, because Ansible overwrites this unit there.
-- [ ] 3.3 Closing full Deploy Testbed run (CLAUDE.md, M231). Its job summary must say `full run`. Record the run
+  - 2026-11-23 on 192.168.100.99 (Debian 13), binary built from 1024e46. The host ran v1.93 from an earlier
+    `cca init`; `/etc/ccattler`, both units, the binary and `~/cca-init` were backed up first
+    (`/etc/ccattler.bak-v193`, `/usr/local/bin/cca.v193`, `~/cca-init.v193`).
+  - Steps as in website/installation.md: `cca init --advertise-address 192.168.100.99 --node-id debian -o ~/cca-init`,
+    `sudo ~/cca-init/setup.sh`, `sudo systemctl enable --now cca-server cca-agent` (+ restart). The written unit has
+    `--api-server 192.168.100.99:9770` (cca-agent.service:11).
+  - Agent log: `Agent debian: secret delivery from 192.168.100.99:9770 (material on /run/ccattler/secrets)`.
+  - `sudo cca secret set m248.greeting hello-m248`, then `sudo cca apply ~/secret-check.cca` (nginx 1.28,
+    `secret m248.greeting "/run/secrets/greeting"`): `secretcheck-c905614e2e state=running`.
+  - Inside the container (`ctr -n ccattler tasks exec … cat /run/secrets/greeting`): `hello-m248`; the file is
+    `-r--r--r-- root root 10`. (`cca exec` fails there: the setup.sh unit has no `--debug-listen`; nerdctl is not
+    installed on this host.)
+  - No code change, so the closing run 45132907087 (3.3) still covers the final diff.
+- [x] 3.3 Closing full Deploy Testbed run (CLAUDE.md, M231). Its job summary must say `full run`. Record the run
   ID. It shows no regression elsewhere, although it does not run the `setup.sh` agent unit.
+  - Run 45132907087 on 1024e46 (2026-11-23): `run_kind=full`, success; skipped check groups: none; node failure,
+    scale-down and certificate rotation checks passed; adversarial replay 32 passed, 0 failed, 0 skipped.
+  - Recorded before 3.2. If 3.2 leads to a code change, this run no longer covers the final diff and must be repeated.
 
 ## Workflow follow-up
 
