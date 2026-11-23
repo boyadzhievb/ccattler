@@ -84,6 +84,12 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   changed and the source's transaction fails; the target's publish always wins. `pending` is not final (only
   `stopped` is), so the target can still publish. The endpoint controller builds endpoints only for `running`
   instances, so the source's backend leaves the VIP.
+- **A source that is behind never overwrites the target (review round 2 R2-1).** A source still in a long cycle
+  (pull, init) that read its desired set before the move would otherwise publish `running` + `node = source` after
+  the target did, and its next cleanup would mark the instance `pending` while it runs on the target. Every agent
+  state publish therefore also compares the revision of `placement/node/{self}/{id}` that its cycle's placement scan
+  read (`placedInstanceInfo.placementRevision`); the move deletes that key, so the late publish fails. Store errors
+  in these transactions are logged as errors with the error, not as "changed meanwhile" (R2-3).
 - **A failed target startup never looks healthy.** The target publishes `image_pull_backoff` (pull failure) or
   `failed` (start failure, replaced by the failure controller) with `node` = target. A dead target agent publishes
   nothing: the instance stays `pending` with its placement on the dead node, which node-failure handling marks
@@ -91,8 +97,10 @@ target, started and ready before the old one stops, as a rollout does) are a lat
 - **No flapping.** A moved instance is not moved again within `rebalanceMoveCooldown` (10 min). The scheduler
   records the move time in `derived/scheduler/rebalanced/{id}` (RFC3339, in the move's change group), reads it
   back from the facts (the clock is injectable, so a reconcile is deterministic given facts and time), and deletes
-  it once the instance is gone, within a per-cycle budget as M262 does for unplaced facts. A move still needs a
-  strict count improvement (`nodeLoad[target] < nodeLoad[source]-1`).
+  it once the instance is gone, within what the unplaced facts left of their shared 40-change budget (M262 D4), so a
+  cycle without placements writes at most 51 changes and the runner's 60 leave room for placements (R2-2). A move
+  still needs a strict count improvement (`nodeLoad[target] < nodeLoad[source]-1`). Clock skew between HA leaders
+  shifts the cooldown by at most the skew (a move time in the future lengthens it); accepted, no code (R2-4).
 - **Removal is never evidence of the new placement running.** Only the target's own publish (`running` with
   `node` = target, then readiness) brings the instance back into endpoints.
 

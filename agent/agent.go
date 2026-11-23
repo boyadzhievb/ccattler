@@ -590,7 +590,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
 			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeStatus.IP)
+			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeStatus.IP)
 			nodeAgent.deleteExitReason(ctx, instanceInfo.id)
 		}
 		delete(runningByID, instanceInfo.id)
@@ -655,8 +655,9 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 // placed on this node. It is used internally during reconciliation to pair
 // each instance with its owning service.
 type placedInstanceInfo struct {
-	id      string // id is the unique instance identifier (e.g. "aaa").
-	service string // service is the name of the service this instance belongs to (e.g. "web").
+	id                string // id is the unique instance identifier (e.g. "aaa").
+	service           string // service is the name of the service this instance belongs to (e.g. "web").
+	placementRevision int64  // placementRevision is placement/node/{self}/{id}'s revision at the scan; 0 = unknown, no guard (M267 R2-1).
 }
 
 // appliedResourceAllocation tracks the CPU and memory resources that were
@@ -722,8 +723,9 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 		}
 
 		result = append(result, placedInstanceInfo{
-			id:      instanceID,
-			service: serviceName,
+			id:                instanceID,
+			service:           serviceName,
+			placementRevision: placementFact.Revision,
 		})
 	}
 	return result, nil
@@ -839,7 +841,7 @@ func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo p
 		}
 	}
 
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstancePulling, "")
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePulling, "")
 	logging.Default().Info("pulling image", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", image)
 
 	pullContext, cancelPull := context.WithTimeout(ctx, imagePullTimeout)
@@ -874,7 +876,7 @@ func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo
 		"attempt", strconv.Itoa(backoffEntry.attempts), "retry_after", backoffEntry.retryAfter.Format(time.RFC3339),
 		"error", errorMessage)
 
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceImagePullBackoff, "")
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceImagePullBackoff, "")
 
 	pullStatus := imagePullStatus{
 		Error:      errorMessage,
@@ -1004,7 +1006,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	// A container that has already exited is observed as starting and left to
 	// the next cycle, which records the exit and backs off in place (Flow 33, M238).
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeIP)
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP)
 	if observedState == types.InstanceRunning {
 		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "running")
 	}
@@ -1035,7 +1037,7 @@ func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceIn
 		nodeAgent.recordInstanceStartFailure(ctx, instanceInfo, processError)
 		return true
 	}
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed, "")
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceFailed, "")
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
 	return false
 }
@@ -1173,7 +1175,7 @@ func (nodeAgent *Agent) markMovedInstancePending(ctx context.Context, instanceID
 		logging.Default().Info("moved instance not published by this node, leaving its state", "agent", nodeAgent.nodeID, "instance", instanceID)
 		return
 	case nodeReadError != nil:
-		logging.Default().Warn("cannot read moved instance's node, leaving its state", "agent", nodeAgent.nodeID, "instance", instanceID, "error", nodeReadError.Error())
+		logging.Default().Error("cannot read moved instance's node, leaving its state", "agent", nodeAgent.nodeID, "instance", instanceID, "error", nodeReadError.Error())
 		return
 	}
 	stateKey := types.KeyObservedInstanceState(instanceID)
@@ -1185,7 +1187,7 @@ func (nodeAgent *Agent) markMovedInstancePending(ctx context.Context, instanceID
 	case stateReadError == nil:
 		stateRevision = stateFact.Revision
 	case !errors.Is(stateReadError, store.ErrKeyNotFound):
-		logging.Default().Warn("cannot read moved instance's state, leaving it", "agent", nodeAgent.nodeID, "instance", instanceID, "error", stateReadError.Error())
+		logging.Default().Error("cannot read moved instance's state, leaving it", "agent", nodeAgent.nodeID, "instance", instanceID, "error", stateReadError.Error())
 		return
 	}
 	swapped, transactionError := nodeAgent.store.Transaction(ctx,
@@ -1194,7 +1196,12 @@ func (nodeAgent *Agent) markMovedInstancePending(ctx context.Context, instanceID
 			{Type: store.OpPut, Key: stateKey, Value: []byte(string(types.InstancePending))},
 			{Type: store.OpDelete, Key: types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness)},
 		}, nil)
-	if transactionError != nil || !swapped {
+	if transactionError != nil {
+		logging.Default().Error("failed to mark moved instance pending", "agent", nodeAgent.nodeID, "instance", instanceID,
+			"error", transactionError.Error())
+		return
+	}
+	if !swapped {
 		logging.Default().Info("moved instance changed meanwhile (the target published it), leaving its state",
 			"agent", nodeAgent.nodeID, "instance", instanceID)
 		return
@@ -2192,9 +2199,10 @@ func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID str
 // compare-and-swap on the revision read just before, and never over stopped:
 // a stop is final for the agent (findInstancesPlacedOnThisNode skips it), and
 // the instance leaves the desired set next cycle (M241 2i.1). observed node is
-// written in the same transaction, so a moved instance's source sees the
-// target's publish (M267 D4). Returns true when written.
-func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, instanceID string, state types.InstanceState) bool {
+// written in the same transaction (M267 D4), which also compares the scanned
+// placement/node/{self}/{id} revision when known (R2-1). True when written.
+func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState) bool {
+	instanceID := instanceInfo.id
 	stateKey := types.KeyObservedInstanceState(instanceID)
 	var expectedRevision int64 // 0: the key must not exist yet
 	currentStateFact, getError := nodeAgent.store.Get(ctx, stateKey)
@@ -2209,14 +2217,24 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 		logging.Default().Error("failed to read instance state, publishing next cycle", "instance", instanceID, "error", getError.Error())
 		return false
 	}
-	swapped, transactionError := nodeAgent.store.Transaction(ctx,
-		[]store.Compare{{Key: stateKey, Revision: expectedRevision}},
+	compares := []store.Compare{{Key: stateKey, Revision: expectedRevision}}
+	if instanceInfo.placementRevision > 0 {
+		// A move deletes this key: a source still in the cycle that scanned before it never publishes (M267 R2-1).
+		compares = append(compares, store.Compare{
+			Key: types.KeyPlacementNodeInstance(nodeAgent.nodeID, instanceID), Revision: instanceInfo.placementRevision,
+		})
+	}
+	swapped, transactionError := nodeAgent.store.Transaction(ctx, compares,
 		[]store.Op{
 			{Type: store.OpPut, Key: stateKey, Value: []byte(string(state))},
 			{Type: store.OpPut, Key: types.KeyObservedInstanceNode(instanceID), Value: []byte(nodeAgent.nodeID)},
 		}, nil)
-	if transactionError != nil || !swapped {
-		logging.Default().Info("instance state changed meanwhile, publishing next cycle", "agent", nodeAgent.nodeID, "instance", instanceID)
+	if transactionError != nil {
+		logging.Default().Error("failed to publish instance state, publishing next cycle", "instance", instanceID, "error", transactionError.Error())
+		return false
+	}
+	if !swapped {
+		logging.Default().Info("instance state or placement changed meanwhile, publishing next cycle", "agent", nodeAgent.nodeID, "instance", instanceID)
 		return false
 	}
 	return true
@@ -2228,8 +2246,9 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 // an IP is allocated from the node's subnet. Without a provider, the container's
 // bridge IP from the runtime is published if available. Nothing is written when
 // another component stopped the instance meanwhile (M241 2i.1).
-func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState, runtimeIP string) {
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceID, state) {
+func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string) {
+	instanceID, service := instanceInfo.id, instanceInfo.service
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state) {
 		return
 	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte("")); putError != nil {

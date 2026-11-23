@@ -185,7 +185,7 @@ func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, insta
 	}
 	if _, wasWaiting := nodeAgent.secretDeliveryWaits[instanceInfo.id]; wasWaiting {
 		// Leave waiting-for-secrets; with a cached image nothing else would change the state before start.
-		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstancePending, "")
+		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePending, "")
 	}
 	nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
 	logging.Default().Info("secrets delivered", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "count", strconv.Itoa(len(deliveredValues)))
@@ -233,7 +233,7 @@ func (nodeAgent *Agent) recordSecretDeliveryWait(ctx context.Context, instanceIn
 	waitEntry.requirementsVersion = requirements.requirementsVersion
 	waitEntry.retryAfter = time.Now().Add(secretDeliveryRetryDelay(deliveryFailure.Reason, waitEntry.attempts))
 
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceWaitingForSecrets, "")
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "")
 	statusJSON, _ := json.Marshal(secretWaitStatus{Reason: string(waitEntry.reason), Secrets: waitEntry.secretNames, NextRetry: waitEntry.retryAfter.Format(time.RFC3339)})
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceSecretWait(instanceInfo.id), statusJSON); putError != nil {
 		logging.Default().Error("failed to write secret wait status", "instance", instanceInfo.id, "error", putError.Error())

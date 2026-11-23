@@ -1913,7 +1913,7 @@ scheduler (instance-count spread > rebalanceLoadImbalanceThreshold, opted-in ser
     {target}/{id}, PUT derived/scheduler/rebalanced/{id} = now (RFC3339); same instance ID;
     the target's remaining capacity −= requests, the source's += requests
   no target → the instance stays where it is
-  derived/scheduler/rebalanced/{id} of an instance that is gone → DELETE (≤ 10 per cycle)
+  derived/scheduler/rebalanced/{id} of an instance that is gone → DELETE (within what the unplaced facts left of their 40-change budget)
 source agent (container no longer in its desired set), first, before removing anything:
   read placement/instance/{id} (and controller_stopped when it names another node)
   read error → leave container, local state and store as they are (logged); the container is
@@ -1927,6 +1927,9 @@ source agent (container no longer in its desired set), first, before removing an
     DELETE pull-status and network/allocation/{id}
 target agent: starts the instance and publishes state and node in one transaction (so the
   source's transaction fails once the target published); readiness only once its probe passes
+every agent's state publish also compares the revision of placement/node/{self}/{id} it scanned
+  at the start of its cycle: the move deletes that key, so a source still in a long cycle (pull,
+  init) that scanned before the move cannot publish running + node = source over the target
   pull failure → image_pull_backoff, start failure → failed (failure controller replaces it),
   target agent dead → stays pending, placement on the dead node → node-failure marks it
 ```

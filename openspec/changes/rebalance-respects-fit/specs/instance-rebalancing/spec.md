@@ -47,15 +47,10 @@ moves already chosen in the same cycle, cover the instance's requests, and that 
 - Test: `TestRebalanceMovesToTargetWithRoom`
 
 ### Requirement: A moved instance keeps running under its ID
-When an instance's placement moves to another node, the source node's agent SHALL remove its local container
-without writing `stopped` for that instance ID, and the target node's agent SHALL start it and publish its state as
-for any instance placed there. The source agent SHALL still write `stopped` when the instance has no placement or a
-controller stopped it.
-
-A move is stop-old-then-start-new for one ID: a multi-instance service has one backend fewer, a single-instance
-service a short outage, until the target runs it. During this gap the instance SHALL NOT look running or ready, the
-source removal SHALL never count as evidence that the new placement runs, and a moved instance SHALL NOT move again
-within `rebalanceMoveCooldown` (10 minutes); see the scenarios below.
+A moved instance SHALL keep its ID and end running on the target. The source agent SHALL remove its container
+without writing `stopped` (it SHALL still write it without a placement or after a controller stop). During the gap
+(one backend fewer; a short outage for a single instance) the instance SHALL NOT look running or ready, and it SHALL
+NOT move again within `rebalanceMoveCooldown` (10 minutes).
 
 #### Scenario: Source agent after a move
 - **GIVEN** instance `web-1` running on node A, then `placement/instance/web-1` changed to B
@@ -76,6 +71,13 @@ within `rebalanceMoveCooldown` (10 minutes); see the scenarios below.
   `running` on B with an endpoint; and when B published before A's removal, A changes nothing
 - Test: `TestSourceAgentMarksMovedInstancePending`
 
+#### Scenario: A source that is behind never overwrites the target
+- **GIVEN** A's agent read its desired set (with `web-1`) before the move and is still in that cycle
+- **WHEN** B publishes `web-1` running, then A publishes `web-1` running, then A cleans up
+- **THEN** `web-1` stays `running` on B with its readiness and endpoint: A's publish fails because the move deleted
+  `placement/node/A/web-1`, whose revision A's publish compares
+- Test: `TestSourceAgentMarksMovedInstancePending` (sub-case `source behind`)
+
 #### Scenario: A failed target startup does not look healthy
 - **GIVEN** `web-1` moved to B and left `pending` by A
 - **WHEN** B cannot pull the image, cannot start it, or B's agent is dead
@@ -88,6 +90,7 @@ within `rebalanceMoveCooldown` (10 minutes); see the scenarios below.
 - **WHEN** the source removed the moved container and the target has not published yet
 - **THEN** the two-instance service keeps one endpoint; the single-instance service has none and its instance is
   `pending`, not `running`; both are back to full once the target publishes `running`
+  and its readiness passes; the source removal is never evidence that the new placement runs
 - Test: `TestMoveGapMultiInstanceKeepsReadyBackend`, `TestMoveGapSingleInstanceShowsNotReady`
 
 #### Scenario: A moved instance is not moved again within the cooldown

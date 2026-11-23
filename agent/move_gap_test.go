@@ -57,7 +57,7 @@ func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store
 		if startError := cluster.sourceRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: "web", Image: "nginx:1.27"}); startError != nil {
 			t.Fatal(startError)
 		}
-		cluster.sourceAgent.publishInstanceStateToStore(ctx, instanceID, "web", types.InstanceRunning, "")
+		cluster.sourceAgent.publishInstanceStateToStore(ctx, scannedInstanceInfo(t, ctx, cluster.sourceAgent, instanceID), types.InstanceRunning, "")
 		cluster.passReadiness(ctx, instanceID)
 	}
 	return cluster
@@ -68,17 +68,42 @@ func (cluster *moveGapCluster) passReadiness(ctx context.Context, instanceID str
 	_, _ = cluster.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness), []byte(types.ReadinessProbeReady))
 }
 
+// moveToTarget moves the instance's placement from node-1 to node-2 as the
+// scheduler's rebalance move does (buildRebalanceMoveChanges).
+func (cluster *moveGapCluster) moveToTarget(ctx context.Context, instanceID string) {
+	_ = types.DeletePlacement(ctx, cluster.factStore, "node-1", instanceID)
+	types.WritePlacement(ctx, cluster.factStore, types.Placement{InstanceID: instanceID, NodeID: "node-2"})
+}
+
 // moveAndRemoveOnSource moves the instance's placement to node-2 and runs
 // node-1's cleanup of the container that is no longer desired there.
 func (cluster *moveGapCluster) moveAndRemoveOnSource(ctx context.Context, instanceID string) {
-	types.WritePlacement(ctx, cluster.factStore, types.Placement{InstanceID: instanceID, NodeID: "node-2"})
+	cluster.moveToTarget(ctx, instanceID)
 	cluster.sourceAgent.cleanupUndesiredInstance(ctx, instanceID)
 }
 
+// scannedInstanceInfo returns the instance as nodeAgent's placement scan sees
+// it (with the placement revision its publish compares).
+func scannedInstanceInfo(t *testing.T, ctx context.Context, nodeAgent *Agent, instanceID string) placedInstanceInfo {
+	t.Helper()
+	placedInstances, scanError := nodeAgent.findInstancesPlacedOnThisNode(ctx)
+	if scanError != nil {
+		t.Fatal(scanError)
+	}
+	for _, instanceInfo := range placedInstances {
+		if instanceInfo.id == instanceID {
+			return instanceInfo
+		}
+	}
+	t.Fatalf("%s is not placed on %s", instanceID, nodeAgent.nodeID)
+	return placedInstanceInfo{}
+}
+
 // publishOnTarget publishes the instance running on node-2, as node-2's agent
-// does after it started the container.
-func (cluster *moveGapCluster) publishOnTarget(ctx context.Context, instanceID string) {
-	cluster.targetAgent.publishInstanceStateToStore(ctx, instanceID, "web", types.InstanceRunning, "")
+// does after it started the container (placement moved to node-2 first).
+func (cluster *moveGapCluster) publishOnTarget(t *testing.T, ctx context.Context, instanceID string) {
+	t.Helper()
+	cluster.targetAgent.publishInstanceStateToStore(ctx, scannedInstanceInfo(t, ctx, cluster.targetAgent, instanceID), types.InstanceRunning, "")
 }
 
 // endpointInstanceIDs returns the sorted IDs of the web instances the endpoint
@@ -160,18 +185,33 @@ func TestSourceAgentMarksMovedInstancePending(t *testing.T) {
 		cluster.moveAndRemoveOnSource(ctx, "web-1")
 		cluster.checkMovedInstanceFacts(t, ctx, "after the source removal", "web-1", types.InstancePending, "node-1", "")
 		cluster.checkEndpointInstanceIDs(t, ctx, "after the source removal")
-		cluster.publishOnTarget(ctx, "web-1")
+		cluster.publishOnTarget(t, ctx, "web-1")
 		cluster.passReadiness(ctx, "web-1")
 		cluster.checkMovedInstanceFacts(t, ctx, "after the target publish", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
 		cluster.checkEndpointInstanceIDs(t, ctx, "after the target publish", "web-1")
 	})
 	t.Run("target published first", func(t *testing.T) {
 		cluster := newMoveGapCluster(t, nil, "web-1")
-		cluster.publishOnTarget(ctx, "web-1")
+		cluster.moveToTarget(ctx, "web-1")
+		cluster.publishOnTarget(t, ctx, "web-1")
 		cluster.passReadiness(ctx, "web-1")
-		cluster.moveAndRemoveOnSource(ctx, "web-1")
+		cluster.sourceAgent.cleanupUndesiredInstance(ctx, "web-1")
 		cluster.checkMovedInstanceFacts(t, ctx, "after the source removal", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
 		cluster.checkEndpointInstanceIDs(t, ctx, "after the source removal", "web-1")
+	})
+	// Review round 2 R2-1: the source scanned before the move, is still in that cycle
+	// (long pull or init) and publishes after the target did; its next cycle cleans up.
+	t.Run("source behind: scans, move, target publishes, source publishes, source cleanup", func(t *testing.T) {
+		cluster := newMoveGapCluster(t, nil, "web-1")
+		sourceScannedInfo := scannedInstanceInfo(t, ctx, cluster.sourceAgent, "web-1")
+		cluster.moveToTarget(ctx, "web-1")
+		cluster.publishOnTarget(t, ctx, "web-1")
+		cluster.passReadiness(ctx, "web-1")
+		cluster.sourceAgent.publishInstanceStateToStore(ctx, sourceScannedInfo, types.InstanceRunning, "")
+		cluster.checkMovedInstanceFacts(t, ctx, "after the behind source's publish", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
+		cluster.sourceAgent.cleanupUndesiredInstance(ctx, "web-1")
+		cluster.checkMovedInstanceFacts(t, ctx, "after the source cleanup", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
+		cluster.checkEndpointInstanceIDs(t, ctx, "after the source cleanup", "web-1")
 	})
 	t.Run("target publishes between the source's read and write", func(t *testing.T) {
 		var cluster *moveGapCluster
@@ -182,7 +222,7 @@ func TestSourceAgentMarksMovedInstancePending(t *testing.T) {
 		}, "web-1")
 		// Only the state transaction: the target is between its state write and the rest of its publish.
 		racingStore.publishOnTarget = func(ctx context.Context) {
-			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, "web-1", types.InstanceRunning)
+			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, placedInstanceInfo{id: "web-1", service: "web"}, types.InstanceRunning)
 		}
 		cluster.moveAndRemoveOnSource(ctx, "web-1")
 		if !racingStore.targetHasPublished.Load() {
@@ -205,7 +245,7 @@ func TestMoveGapMultiInstanceKeepsReadyBackend(t *testing.T) {
 	cluster.checkEndpointInstanceIDs(t, ctx, "before the move", "web-1", "web-2")
 	cluster.moveAndRemoveOnSource(ctx, "web-1")
 	cluster.checkEndpointInstanceIDs(t, ctx, "during the gap", "web-2")
-	cluster.publishOnTarget(ctx, "web-1")
+	cluster.publishOnTarget(t, ctx, "web-1")
 	cluster.checkEndpointInstanceIDs(t, ctx, "target running, probe not passed yet", "web-2")
 	cluster.passReadiness(ctx, "web-1")
 	cluster.checkEndpointInstanceIDs(t, ctx, "target ready", "web-1", "web-2")
@@ -221,7 +261,7 @@ func TestMoveGapSingleInstanceShowsNotReady(t *testing.T) {
 	cluster.moveAndRemoveOnSource(ctx, "web-1")
 	cluster.checkMovedInstanceFacts(t, ctx, "during the gap", "web-1", types.InstancePending, "node-1", "")
 	cluster.checkEndpointInstanceIDs(t, ctx, "during the gap")
-	cluster.publishOnTarget(ctx, "web-1")
+	cluster.publishOnTarget(t, ctx, "web-1")
 	cluster.checkEndpointInstanceIDs(t, ctx, "target running, probe not passed yet")
 	cluster.passReadiness(ctx, "web-1")
 	cluster.checkEndpointInstanceIDs(t, ctx, "target ready", "web-1")

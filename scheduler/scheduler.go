@@ -39,17 +39,14 @@ const (
 	// so it cannot flap between nodes (M267 D4).
 	rebalanceMoveCooldown = 10 * time.Minute
 
-	// maxRebalanceCooldownDeletesPerCycle caps the deletes of cooldown facts of
-	// instances that are gone; the rest go in later cycles (as M262 D4).
-	maxRebalanceCooldownDeletesPerCycle = 10
-
 	// nodeAllocationPressurePercent triggers a warning when allocation exceeds this ratio.
 	nodeAllocationPressurePercent = 80
 
-	// maxUnplacedFactChangesPerCycle caps the unplaced-demand puts and deletes
-	// of one cycle together (whole instances, 2 changes each). The runner
-	// commits at most 60 changes per cycle, so 20 stay for placements; the
-	// rest are written or deleted in later cycles (M262 D4).
+	// maxUnplacedFactChangesPerCycle caps the scheduler's bookkeeping facts of
+	// one cycle together: unplaced-demand puts and deletes (whole instances, 2
+	// changes each), then deletes of gone instances' move times (M267 R2-2).
+	// The runner commits at most 60 changes; with 3 preemptions and 2 moves
+	// (8 changes) at most, 9 stay for placements. The rest wait (M262 D4).
 	maxUnplacedFactChangesPerCycle = 40
 
 	// unplacedFactsPerInstance is the reason and requirements fact of one
@@ -170,8 +167,9 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 		extractStoredUnplacedValues(facts), maxUnplacedFactChangesPerCycle,
 	)
 	changes = append(changes, unplacedChanges...)
-	changes = append(changes, cleanupStaleUnplacedFacts(
-		facts, waitingInstanceIDs, maxUnplacedFactChangesPerCycle-len(unplacedChanges))...)
+	unplacedCleanupChanges := cleanupStaleUnplacedFacts(
+		facts, waitingInstanceIDs, maxUnplacedFactChangesPerCycle-len(unplacedChanges))
+	changes = append(changes, unplacedCleanupChanges...)
 
 	rebalanceMoveTimes := extractRebalanceMoveTimes(facts)
 	rebalanceTime := placementScheduler.currentRebalanceTime()
@@ -185,7 +183,8 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 		moveTimestamp:      rebalanceTime.UTC().Format(time.RFC3339),
 	})
 	changes = append(changes, rebalanceChanges...)
-	changes = append(changes, cleanupGoneInstanceRebalanceFacts(rebalanceMoveTimes, instances)...)
+	changes = append(changes, cleanupGoneInstanceRebalanceFacts(rebalanceMoveTimes, instances,
+		maxUnplacedFactChangesPerCycle-len(unplacedChanges)-len(unplacedCleanupChanges))...)
 
 	detectAndLogNodePressure(nodes, placements, instances, serviceResources)
 
@@ -606,10 +605,10 @@ func findInstancesInRebalanceCooldown(moveTimes map[string]time.Time, now time.T
 }
 
 // cleanupGoneInstanceRebalanceFacts deletes the move time of instances that no
-// longer exist, in sorted order, at most maxRebalanceCooldownDeletesPerCycle
-// per cycle (as M262 D4). A live instance keeps its fact; its next move
-// overwrites it, so the two never meet in one cycle.
-func cleanupGoneInstanceRebalanceFacts(moveTimes map[string]time.Time, instances map[string]*schedulerInstanceInfo) []controllers.Change {
+// longer exist, in sorted order, within changeBudget: what the unplaced facts
+// left of their shared budget (M262 D4, M267 R2-2). A live instance keeps its
+// fact; its next move overwrites it, so the two never meet in one cycle.
+func cleanupGoneInstanceRebalanceFacts(moveTimes map[string]time.Time, instances map[string]*schedulerInstanceInfo, changeBudget int) []controllers.Change {
 	var goneInstanceIDs []string
 	for instanceID := range moveTimes {
 		if instances[instanceID] == nil {
@@ -617,8 +616,8 @@ func cleanupGoneInstanceRebalanceFacts(moveTimes map[string]time.Time, instances
 		}
 	}
 	sort.Strings(goneInstanceIDs)
-	if len(goneInstanceIDs) > maxRebalanceCooldownDeletesPerCycle {
-		goneInstanceIDs = goneInstanceIDs[:maxRebalanceCooldownDeletesPerCycle]
+	if len(goneInstanceIDs) > max(changeBudget, 0) {
+		goneInstanceIDs = goneInstanceIDs[:max(changeBudget, 0)] // the rest are deleted in later cycles
 	}
 	changes := make([]controllers.Change, 0, len(goneInstanceIDs))
 	for _, instanceID := range goneInstanceIDs {

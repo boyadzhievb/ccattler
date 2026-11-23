@@ -27,7 +27,7 @@ Agent.Run
 ```
 executeReconciliationCycle
 ├── findInstancesPlacedOnThisNode
-│   ├── store.Scan(placement/node/{nodeID}/)
+│   ├── store.Scan(placement/node/{nodeID}/)       [each key's revision → placedInstanceInfo.placementRevision, M267 R2-1]
 │   ├── isInstanceMarkedForSkip
 │   │   ├── store.Get(derived/instance/{id}/node_failure)
 │   │   └── isControllerStopped → store.Get(derived/instance/{id}/controller_stopped) == "true"
@@ -276,7 +276,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `buildRuntimeSpecForInstance` | `reconcileDesiredInstance` |
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
-| `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4) |
+| `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state and on the scanned `placement/node/{self}/{id}` revision, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4, R2-1) |
 | `deleteExitReason` | `executeReconciliationCycle` (if running) |
 | `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |

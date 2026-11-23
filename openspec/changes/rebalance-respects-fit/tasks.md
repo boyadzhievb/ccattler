@@ -173,17 +173,35 @@ Round-1 findings B1–B3, D1, S1–S3 confirmed fixed; new tests verified red on
 | R2-3 | `markMovedInstancePending` (and `publishInstanceStateUnlessStopped`) log a store error as "changed meanwhile" | **fix** 3c.3 |
 | R2-4 | A move time in the future (clock skew between HA leaders) extends the cooldown by the skew | **fix** 3c.3 (one line in D4; bounded by skew, no code) |
 
-- [ ] 3c.1 R2-1: `findInstancesPlacedOnThisNode` keeps the revision of `placement/node/{self}/{id}` in `placedInstanceInfo`;
+- [x] 3c.1 R2-1: `findInstancesPlacedOnThisNode` keeps the revision of `placement/node/{self}/{id}` in `placedInstanceInfo`;
   the publish transaction compares it (a move deletes the key, so a behind source's publish fails). Red first: a test
   of exactly the reviewer's order (source scans → move → target publishes running → source publishes → source
   cleanup) ending with the instance running on the target with its endpoint. Update D4, Flow 35.
-- [ ] 3c.2 R2-2: size cooldown deletes from the remaining budget (as the unplaced cleanup does) so the scheduler's
+  Result: `placedInstanceInfo.placementRevision`; `publishInstanceStateToStore`/`publishInstanceStateUnlessStopped`
+  take the `placedInstanceInfo`, so every production publish (8 call sites, all from the cycle's scan) carries it; 0 =
+  no guard, only for infos tests build by hand. Red (sub-case `source behind` of
+  `TestSourceAgentMarksMovedInstancePending`): `after the behind source's publish: web-1 state="running"
+  node="node-1"`, `after the source cleanup: web-1 state="pending" node="node-1" readiness=""`, `endpoints for [],
+  want [web-1]`; passes after. The test helpers now move as the scheduler does (delete `placement/node/node-1/…`).
+  D4, Flow 35, spec scenario, INSTANCE_LIFECYCLE_GRAPH, CALL_GRAPH updated.
+- [x] 3c.2 R2-2: size cooldown deletes from the remaining budget (as the unplaced cleanup does) so the scheduler's
   worst case without placements stays ≤ 60 with room for placements; fix the M262 "20 stay for placements" comment;
   a test asserting the worst-case output of one cycle stays within the runner's cap.
-- [ ] 3c.3 R2-3/R2-4: store errors logged as errors (with the error) in both functions; D4 notes clock skew.
-- [ ] 3c.4 Shorten the long requirement "A moved instance keeps running under its ID" (move detail into scenarios)
+  Result: cooldown deletes share `maxUnplacedFactChangesPerCycle` (40) with the unplaced puts and deletes
+  (`maxRebalanceCooldownDeletesPerCycle` removed); worst case without placements 40 + 3 + 8 = 51, comment says 9
+  stay for placements. Red: `TestSchedulerWorstCaseOutputStaysWithinRunnerCap` `worst-case cycle has 61 changes,
+  runner cap 60: room for placements -1`; passes after (3 preemptions and 2 moves asserted present).
+  SCHEDULING_GRAPH line numbers remapped from the committed version and re-checked by script (0 mismatches).
+- [x] 3c.3 R2-3/R2-4: store errors logged as errors (with the error) in both functions; D4 notes clock skew.
+  Result: transaction errors and read errors log ERROR with the error; a lost compare stays INFO. D4 has the
+  clock-skew line.
+- [x] 3c.4 Shorten the long requirement "A moved instance keeps running under its ID" (move detail into scenarios)
   so `openspec validate` has no warning.
-- [ ] 3c.5 Checks as in 3.1.
+  Result: requirement text cut to four sentences; "removal is never evidence" moved into the gap scenario; new
+  scenario "A source that is behind never overwrites the target". `openspec validate`: valid, no warning.
+- [x] 3c.5 Checks as in 3.1.
+  Result: `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
+  `-race` on scheduler, agent, controllers ok (1.4 s, 29.8 s, 6.8 s).
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
