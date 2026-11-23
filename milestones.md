@@ -572,7 +572,9 @@ Wanted: an omitted `instances` means 1 (an explicit `instances 0` stays 0), stat
 
 Found in the M243 review of 4d42565 (2026-11-23), verified in the code and on the deploy cluster. `cleanupStaleUnplacedFacts` (`scheduler/scheduler.go`) deletes `derived/scheduler/unplaced/{id}/*` only when the instance gets a placement; nothing else deletes them (instance GC included). An unplaced instance that is stopped, scaled away or removed leaves its reason and requirements behind for good. Seen: `cca scale m243big 0` stopped both unplaced instances, and no delete followed. The cluster-scale controller (`controllers/clusterscale.go`) counts these facts as demand without checking that the instance still exists, so once M260 runs it on `cca server`, they become phantom capacity requests.
 
-Wanted: the scheduler deletes the unplaced facts of every instance that is not in this cycle's unplaced set (placed, stopped, removed), and the cluster-scale controller ignores facts for instances that no longer exist. Tests: a stopped and a removed unplaced instance each lose their facts in one cycle. Must land before or with M260. To be proposed as an OpenSpec change.
+Wanted: the scheduler deletes the unplaced facts of every instance that is not in this cycle's unplaced set (placed, stopped, removed), and the cluster-scale controller ignores facts for instances that no longer exist. Tests: a stopped and a removed unplaced instance each lose their facts in one cycle. Must land before or with M260.
+
+OpenSpec change: [`unplaced-facts-cleanup`](openspec/changes/unplaced-facts-cleanup/) (checklist in its `tasks.md`). Proposed 2026-11-23: the scheduler deletes the facts of every instance outside its waiting set (D1), cluster scaling checks the instance still waits (D2), no migration (D3).
 
 ### Phase 261 — Error Status and Unplaced Reason Shown Wrongly (M261, bug)
 
