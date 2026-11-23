@@ -586,7 +586,11 @@ Found testing v1.95.0-beta on 192.168.100.99 (2026-11-23).
 - **Fresh-host run on 192.168.100.103 (Debian 13, v1.95.0-beta, 2026-11-23), single host (control plane and agent),
   page followed literally.** Worked: install.sh, `cca init` → `setup.sh` → server and agent, node alive, secret
   delivery on (M248), CLI without sudo, Getting Started (3 × nginx `cpu 100m`/`memory 64Mi` running, VIP HTTP 200).
-  Gaps found:
+  Gaps found. **Text fixes already done (2026-11-23, user approved):** `su - -c`, the `nft` check, the etcd-without-TLS
+  note, "a single-host cluster is just step 1", the `CCA_TOKEN`-per-shell note, an "Upgrade" section (restart the
+  services), the version-pin example, "four ways to run workloads", and Getting Started's cluster step naming
+  `CCA_TOKEN`. **Still open for M264:** the CLI's credentials message, `setup.sh`'s last line, the simulate output,
+  the page order, `install.sh` saying to restart running services, and a worker test on a second fresh VM.
   - The passwordless-sudo command uses `su -c "…visudo…"`: without `su -`, root's PATH lacks `/usr/sbin`, so it ends
     with `visudo: command not found` (the file is already written). Use `su - -c` or `/usr/sbin/visudo`.
   - "Verify" says `command -v nft  # /usr/sbin/nft`; for a normal user on Debian it prints nothing (`/usr/sbin` is

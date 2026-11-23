@@ -48,10 +48,10 @@ Log out and back in (group membership is read at login), then run `sudo -v` agai
 **Passwordless sudo (only for automation).** Ansible and other non-interactive tools that connect over SSH cannot
 answer a password prompt. On those hosts, allow `USERNAME` to use sudo without a password instead. The drop-in file
 works the same on every distribution; replace `apt install -y sudo` with your distribution's command from the table
-above (`su` asks for the root password):
+above (`su` asks for the root password; `su -` with the dash gives root's PATH, which has `visudo`):
 
 ```bash
-su -c "apt install -y sudo \
+su - -c "apt install -y sudo \
   && echo 'USERNAME ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/USERNAME-nopasswd \
   && chmod 0440 /etc/sudoers.d/USERNAME-nopasswd \
   && visudo -cf /etc/sudoers.d/USERNAME-nopasswd"
@@ -89,10 +89,13 @@ Verify:
 
 ```bash
 systemctl is-active containerd     # active
-command -v nft                     # /usr/sbin/nft
+ls /usr/sbin/nft                   # /usr/sbin/nft (not on a normal user's PATH on Debian)
 ls /opt/cni/bin/bridge             # /opt/cni/bin/bridge
 command -v etcd                    # control plane only
 ```
+
+On Debian and Ubuntu, `etcd-server` starts etcd right away without TLS, listening only on `127.0.0.1`. That is
+expected: `setup.sh` (below) reconfigures it with TLS.
 
 ## Quick install
 
@@ -108,7 +111,7 @@ Pin a specific version (the variable must be set for `bash`, which runs the scri
 
 ```bash
 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh \
-    | CCATTLER_VERSION=v1.92.0-beta bash
+    | CCATTLER_VERSION=v1.95.0-beta bash      # any tag from GitHub Releases
 ```
 
 Release tags are listed on [GitHub Releases](https://github.com/boyadzhievb/ccattler/releases).
@@ -214,6 +217,8 @@ control-plane host's address, `WORKER_IP` with the worker's address, and `worker
 
 ### 1. Control-plane host
 
+This host also runs an agent, so it runs containers too: **a single-host cluster is just this step** (then step 3).
+
 Install the prerequisites, including etcd ([Prepare a fresh Debian or Ubuntu host](#prepare-a-fresh-debian-or-ubuntu-host)),
 then the `cca` binary ([Quick install](#quick-install)). Then:
 
@@ -307,8 +312,23 @@ export CCA_TOKEN=$(sudo cca user token USERNAME --ttl 24h)
 cca status
 ```
 
-The token is valid for the `--ttl` you chose. Create a new one when it expires. To keep it across logins, put the
-`export` line in `~/.bashrc`.
+The token is valid for the `--ttl` you chose. Create a new one when it expires. `export` sets it only for the
+current shell: in a new terminal or after logging in again, `cca status` fails with `client certificate required`
+until you run the `export` line again. To keep it across logins, put the `export` line in `~/.bashrc`.
+
+### 4. Upgrade
+
+Install the new binary on every host, then restart the services, the control plane first:
+
+```bash
+curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+sudo systemctl restart cca-server cca-agent   # control-plane host
+sudo systemctl restart cca-agent              # each worker, one at a time
+sudo cca status                               # every node alive again
+```
+
+The running services keep the old binary until they restart. Read the [changelog](/changelog) for **BREAKING**
+entries before upgrading.
 
 ### Using external certificates
 

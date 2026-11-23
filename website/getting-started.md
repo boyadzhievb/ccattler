@@ -2,9 +2,9 @@
 
 This guide takes you from zero to a running deployment in under five minutes.
 
-## Three runtime modes
+## Four ways to run workloads
 
-CCattler has three ways to run workloads — understanding this upfront avoids confusion:
+CCattler has four ways to run workloads — understanding this upfront avoids confusion:
 
 | Command | Runtime | What happens | Platform |
 |---|---|---|---|
@@ -13,7 +13,7 @@ CCattler has three ways to run workloads — understanding this upfront avoids c
 | `cca run` | **Process** | Starts real OS processes on your machine, managed by the reconciler. The `image` field is used as the command to execute. | Linux, macOS |
 | `cca run-container` | **Container** | Pulls images and starts real OCI containers via docker, nerdctl, or lima. This is what you use in production. | Linux, macOS |
 
-**On macOS:** All three modes work. Container mode requires Docker Desktop or Lima (`brew install lima`).
+**On macOS:** simulation, process and container modes work (a cluster needs Linux). Container mode requires Docker Desktop or Lima (`brew install lima`).
 
 ## Prerequisites
 
@@ -90,7 +90,7 @@ platform and is the quickest way to verify your config.
 
 ### Deploy it to your cluster
 
-On a cluster set up as in [Installation](/installation#set-up-a-cluster-by-hand):
+On a cluster set up as in [Installation](/installation#set-up-a-cluster-by-hand), as the user from its step 3 (with `CCA_TOKEN` exported in this shell):
 
 ```bash
 cca apply web.cca
