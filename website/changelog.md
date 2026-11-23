@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.94.0-beta <Badge type="tip" text="latest" /> {#v1-94-0-beta}
+## v1.95.0-beta <Badge type="tip" text="latest" /> {#v1-95-0-beta}
+
+**2026-11-23** — A Host Set Up With `cca init` Never Delivers Secrets.
+
+- **A Host Set Up With `cca init` Never Delivers Secrets** (M248) — Bug fix (found testing the install docs on a fresh Debian 13 host, 2026-11-19): the agent unit that `cca init`'s `setup.sh` writes had no `--api-server`, so secret delivery stayed off and instances that need a secret waited forever on a single-host or first control-plane node. The generated unit now points the agent at the local server. Upgrade: on a host set up with `cca init` before M248, add `--api-server <advertise-address>:9770` to `/etc/systemd/system/cca-agent.service` (then `systemctl daemon-reload` and restart `cca-agent`), or re-run the new `cca init` and `setup.sh`.
+
+---
+
+## v1.94.0-beta {#v1-94-0-beta}
 
 **2026-11-23** — Scheduler Ignores Resource Requests.
 
