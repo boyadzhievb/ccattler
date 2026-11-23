@@ -322,6 +322,41 @@ the guarded helper, and a test enforces it.**
   was 114 lines before this group (over 80, pre-existing) and is 111 now (`publishRunningInstance` extracted).
 - Run 45254885232 (first closing full run, dispatched on 1a7869d before this round) tests code that 3e changes: it
   can't count towards the two closing runs.
+
+## 3f. Review round 5 (2026-11-23, on 44b6998..b430f2a; code-reviewer Opus high: request changes, minor)
+
+The guarded writer is correct and every current per-instance write goes through it or a listed exception; new tests
+red on 44b6998. Verified by the main session:
+
+| # | Finding | Resolution |
+|---|---|---|
+| B1 | Host ports inside the start/running publish transaction: N+11 ops + 2 compares; ≥ ~116 ports exceed the limit (reproduced: 121 fail), so the instance is never published running | **fix** 3f.1 |
+| B2 | One-time start facts (started_at, readiness reset, image, config-hash) are written only if the start publish commits; a store error loses them for good (a missing config-hash hides config changes for the container's life) | **fix** 3f.2 |
+| B3 | `network/allocation/{id}` orphaned after a controller stop on a moved instance (GC does not delete it); simulator only, no reader | **fix** 3f.3 (GC deletes it with the instance tree) |
+| T1 | Enforcement test bypassable (op builders in a Transaction, `op.Key` Puts, `var` keys, helpers, wrappers, concatenation, function values) — 8 patterns reported 0 violations | **fix** 3f.4 (closed-world scan) |
+| T2 | `TestSourceWritesNothingAfterMove` checks only some keys; no subcases for restarts, init, telemetry, running path | **fix** 3f.5 |
+| S1 | Init-step state op built inline 4 times (agent/init.go) | **fix** 3f.6 |
+| P1 | `writeInstanceFacts` only forwards and its bool is unused; two forwarding levels for probes | **fix** 3f.6 (fold or use the result) |
+| P2 | `publishRemovedInstanceState` (`stopped`) has no compare; several seconds between the move check and the write (pre_stop + grace) | **fix** 3f.6 (compare the `placement/instance/{id}` revision the move check read) |
+| P3 | `dropNoOpChanges` does one Get per op; telemetry reads more | **rejected for now**: fewer writes than before; optimize only with a benchmark (CLAUDE.md), noted for M272 |
+| D1 | INSTANCE_LIFECYCLE_GRAPH:835 callers list stale; flows overclaim the enforcement test | **fix** 3f.7 |
+| Codex | "Guard failure after IP allocation leaks network allocation" | **rejected**: not new (allocation already preceded the transaction), simulator-only provider keyed by instance ID, released by teardown, no reader |
+
+- [ ] 3f.1 B1: host ports written by their own guarded call(s), chunked under the transaction limit, not inside the
+  state transaction; red test with 130 exposed ports → instance published running with all ports stored.
+- [ ] 3f.2 B2: start facts that did not commit are kept in memory per instance and carried in the next
+  `publishRunningInstance` until they commit (dropped when the instance leaves this node); red test with a store error
+  on the start publish → next cycle stores config-hash, image, started_at and clears readiness.
+- [ ] 3f.3 B3: instance GC (and `api/handler_gc.go`) delete `network/allocation/{id}` with the instance tree; test.
+- [ ] 3f.4 T1: closed-world scan: every `Transaction` call in agent production code is on an allow-list (instance
+  writers + the listed non-instance transactions, each with a reason), and every Put/Delete/PutWithLease key is a
+  direct `types.Key*` call that is not `KeyObservedInstance*`; anything else fails. Control test feeds the 8 bypass
+  patterns from the review and expects each to fail. Fix the flows wording.
+- [ ] 3f.5 T2: compare `Scan("observed/instance/web-1/")` plus `network/allocation/web-1` before/after each path;
+  add subcases for restart count, init step and progress, telemetry, running path.
+- [ ] 3f.6 S1 init-step op helper; P1 fold the forwarding layer or make its result used; P2 guard on the
+  `placement/instance/{id}` revision.
+- [ ] 3f.7 D1 docs; checks as in 3.1.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
