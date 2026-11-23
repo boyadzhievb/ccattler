@@ -362,6 +362,6 @@ t=32s  Scheduler → places postgres-1 on healthy node
 | `controllers/stateful_dns.go:49` | `StatefulDNSController.Reconcile` | DNS entry lifecycle |
 | `controllers/stateful_dns.go:75` | `buildDesiredStatefulDNSEntries` | DNS name construction |
 | `controllers/stateful_dns.go:117` | `computeStatefulDNSDiffChanges` | DNS diff engine |
-| `scheduler/scheduler.go:342` | `extractStatefulServices` | Scheduler reads stateful flag |
-| `scheduler/scheduler.go:~280–335` | `findPreemptionVictim` | Preemption immunity check |
-| `scheduler/scheduler.go:520` | `findMovableInstances` | Rebalancing (no explicit skip) |
+| `scheduler/scheduler.go:434` | `extractStatefulServices` | Scheduler reads stateful flag |
+| `scheduler/scheduler.go:337–379` | `findPreemptionVictim` | Preemption immunity check |
+| `scheduler/scheduler.go:698` | `findMovableInstances` | Rebalancing (no explicit skip) |

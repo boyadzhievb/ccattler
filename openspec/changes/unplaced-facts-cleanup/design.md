@@ -79,9 +79,20 @@ D2 ignores it meanwhile. A separate migration would duplicate D1.
 Without a cap, cleanup proposes 2 deletes for every instance that stopped waiting. Above about 30 instances (a large
 `cca scale … 0`, or the first cycle after an upgrade), the ungrouped deletes fill the runner's 60-change budget and
 every placement of that cycle is deferred, cycle after cycle, with a "deferred atomic change groups" warning each
-time. Following the runner's contract, cleanup takes at most `maxUnplacedCleanupsPerCycle = 20` instances (40
-deletes) per cycle, in sorted ID order, leaving at least 20 changes for placements. Kubernetes controllers bound
-their work per sync the same way (for example the ReplicaSet controller's `burstReplicas`).
+time. The writes for newly unplaced instances have the same shape (2 ungrouped puts each, uncapped before this
+change), so capping only the deletes would not keep room either: a burst of new pending instances plus the deletes
+can still fill the budget. Following the runner's contract, all unplaced-fact changes of a cycle (puts and deletes)
+share one budget, `maxUnplacedFactChangesPerCycle = 40`, so they never take more than 40 of the runner's 60 and the
+other 20 stay for placements, preemption and rebalance. Puts go first, in sorted instance-ID order (current demand
+matters more than stale facts, which cluster scaling already ignores, D2); deletes take what is left, also in sorted
+order. Both sides are counted per instance (2 changes), so an instance's reason and requirements are never split
+across cycles. Whatever is left over is written or deleted in the following cycles: each committed change wakes the
+scheduler through its watch on the prefix. Kubernetes controllers bound their work per sync the same way (for
+example the ReplicaSet controller's `burstReplicas`).
+
+This is not a hard guarantee for the whole cycle: other scheduler output (placements, preemption, the
+`invalid_resource_request` facts) is not budgeted here, as before. It removes the unplaced bookkeeping as a cause of
+deferred placements.
 
 Naming (review suggestions taken): `extractUnplacedDemand` becomes `extractWaitingUnplacedDemand`, since it now
 filters and the rollout controller calls it too; `endpointEligibleState` becomes a neutral
@@ -95,7 +106,8 @@ change does not silently change cluster-scaling demand.
 | Scheduler not running (no leader, restart) | Leftovers stay; cluster scaling ignores them (D2); the next leader's first cycle deletes them (D1). |
 | Delete transaction fails (CAS conflict, etcd unavailable) | The runner retries with back-off; the next cycle recomputes the same deletes (idempotent). |
 | Instance goes pending → stopped → pending (in-place restart keeps the ID) | Facts deleted, then written again on the cycle that sees it pending and unplaced; two writes, no loop. |
-| Many instances stop waiting at once, or thousands of leftovers after an upgrade | Cleanup deletes at most `maxUnplacedCleanupsPerCycle` (20) instances' facts per cycle (40 changes), lowest IDs first, so placements keep room in the runner's 60-change budget (D4). Each delete wakes the scheduler, so the rest go over ceil(N/20) cycles; cluster scaling ignores them meanwhile (D2). |
+| Many instances stop waiting at once, or thousands of leftovers after an upgrade | Unplaced-fact puts and deletes together take at most `maxUnplacedFactChangesPerCycle` (40) changes per cycle, puts first, lowest IDs first, so they never fill the runner's 60-change budget (D4). Each commit wakes the scheduler, so the rest go over the following cycles; cluster scaling ignores leftovers meanwhile (D2). |
+| Many new instances become unplaced at once (scale up with no capacity) | Their facts are written 20 instances per cycle (D4); the instances still waiting for theirs are not yet visible to cluster scaling or rollout reasons for those few cycles. |
 | Instance stops after cluster scaling read it as pending in the same snapshot | One capacity request may still be written (pre-existing race); the next cycle ignores the instance. Cancelling such requests is the M260 follow-up. |
 | Fact with an unknown suffix under the prefix | `extractExistingUnplacedInstanceIDs` still yields its ID; D1 deletes only `reason` and `requirements`, as today. Unchanged behaviour. |
 

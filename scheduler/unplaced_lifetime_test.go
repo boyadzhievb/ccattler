@@ -5,6 +5,8 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/controllers"
@@ -148,6 +150,178 @@ func TestSchedulerDeletesUnplacedFactsOfPlacedInstance(t *testing.T) {
 				t.Fatalf("placement of web-1 in this cycle = %v, want %v", placed, testCase.wantPlacement)
 			}
 			assertUnplacedFactsDeleted(t, changes, "web-1")
+		})
+	}
+}
+
+// unplacedIDRange is a half-open range [first, end) of zero-padded instance
+// indexes with a name prefix, e.g. {"stopped", 0, 20} is stopped-00..stopped-19.
+type unplacedIDRange struct {
+	prefix string // prefix is the instance name before the index.
+	first  int    // first is the lowest index in the range.
+	end    int    // end is one past the highest index.
+}
+
+// unplacedKeysOf returns the reason and requirements keys of every instance in
+// the range, as a set.
+func unplacedKeysOf(idRange unplacedIDRange) map[string]bool {
+	keys := make(map[string]bool)
+	for index := idRange.first; index < idRange.end; index++ {
+		instanceID := fmt.Sprintf("%s-%02d", idRange.prefix, index)
+		keys[types.KeyDerivedSchedulerUnplacedReason(instanceID)] = true
+		keys[types.KeyDerivedSchedulerUnplacedRequirements(instanceID)] = true
+	}
+	return keys
+}
+
+// unplacedBudgetFacts returns web (cpu 2000m) and one alive node, stoppedCount
+// stopped instances with stored unplaced facts, newCount pending instances
+// with none, and, when placeable, a node large enough for one pending web-1.
+func unplacedBudgetFacts(stoppedCount int, newCount int, placeable bool) []store.Fact {
+	nodeAvailableCPU := "1000"
+	if placeable {
+		nodeAvailableCPU = "4000"
+	}
+	facts := buildFacts(
+		kv(types.KeyDesiredService("web"), ""),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "2000m"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), nodeAvailableCPU),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "4096"),
+	)
+	appendInstance := func(instanceID string, state types.InstanceState) {
+		facts = append(facts,
+			factOf(types.KeyObservedInstanceService(instanceID), "web"),
+			factOf(types.KeyObservedInstanceState(instanceID), string(state)))
+	}
+	if placeable {
+		appendInstance("web-1", types.InstancePending)
+	}
+	for index := 0; index < stoppedCount; index++ {
+		instanceID := fmt.Sprintf("stopped-%02d", index)
+		appendInstance(instanceID, types.InstanceStopped)
+		facts = append(facts,
+			factOf(types.KeyDerivedSchedulerUnplacedReason(instanceID), string(types.UnplacedInsufficientCapacity)),
+			factOf(types.KeyDerivedSchedulerUnplacedRequirements(instanceID), storedUnplacedRequirementsJSON))
+	}
+	for index := 0; index < newCount; index++ {
+		appendInstance(fmt.Sprintf("new-%02d", index), types.InstancePending)
+	}
+	store.SortFacts(facts)
+	return facts
+}
+
+// unplacedKeysChanged returns the keys under the unplaced prefix that the
+// changes put, and those they delete, as two sets.
+func unplacedKeysChanged(changes []controllers.Change) (map[string]bool, map[string]bool) {
+	putKeys, deleteKeys := make(map[string]bool), make(map[string]bool)
+	for _, change := range changes {
+		if !strings.HasPrefix(change.Key, types.ScanDerivedSchedulerUnplaced) {
+			continue
+		}
+		if change.Type == store.OpDelete {
+			deleteKeys[change.Key] = true
+		} else {
+			putKeys[change.Key] = true
+		}
+	}
+	return putKeys, deleteKeys
+}
+
+// applyChangesToFacts returns the facts with the changes' puts and deletes
+// applied, sorted: the store a following cycle reads.
+func applyChangesToFacts(facts []store.Fact, changes []controllers.Change) []store.Fact {
+	valueByKey := make(map[string][]byte, len(facts))
+	for _, fact := range facts {
+		valueByKey[fact.Key] = fact.Value
+	}
+	for _, change := range changes {
+		if change.Type == store.OpDelete {
+			delete(valueByKey, change.Key)
+		} else {
+			valueByKey[change.Key] = change.Value
+		}
+	}
+	appliedFacts := make([]store.Fact, 0, len(valueByKey))
+	for key, value := range valueByKey {
+		appliedFacts = append(appliedFacts, store.Fact{Key: key, Value: value})
+	}
+	store.SortFacts(appliedFacts)
+	return appliedFacts
+}
+
+// assertUnplacedKeySet fails the test unless got and want hold the same keys.
+func assertUnplacedKeySet(t *testing.T, label string, got map[string]bool, want map[string]bool) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: %d unplaced keys, want %d", label, len(got), len(want))
+	}
+	for key := range want {
+		if !got[key] {
+			t.Errorf("%s: missing %s", label, key)
+		}
+	}
+	for key := range got {
+		if !want[key] {
+			t.Errorf("%s: unexpected %s", label, key)
+		}
+	}
+}
+
+// TestSchedulerBudgetsUnplacedFactChanges: M262 3a.1 (D4), spec requirement
+// "Unplaced-fact changes are budgeted per scheduler cycle". Puts and deletes
+// share maxUnplacedFactChangesPerCycle, puts first, whole instances in ID
+// order; a following cycle (first cycle's changes applied) does the next part.
+func TestSchedulerBudgetsUnplacedFactChanges(t *testing.T) {
+	testCases := []struct {
+		name              string          // name is the spec scenario's sub-case.
+		stoppedCount      int             // stoppedCount is how many stopped instances keep stored facts.
+		newCount          int             // newCount is how many new pending instances fit no node.
+		placeable         bool            // placeable adds a pending web-1 that fits node-1.
+		wantPuts          unplacedIDRange // wantPuts are the instances the first cycle writes.
+		wantDeletes       unplacedIDRange // wantDeletes are the instances the first cycle cleans.
+		wantSecondPuts    unplacedIDRange // wantSecondPuts are written by the second cycle.
+		wantSecondDeletes unplacedIDRange // wantSecondDeletes are cleaned by the second cycle.
+	}{
+		{
+			name: "deletes only", stoppedCount: 50, placeable: true,
+			wantDeletes:       unplacedIDRange{"stopped", 0, 20},
+			wantSecondDeletes: unplacedIDRange{"stopped", 20, 40},
+		},
+		{
+			name: "puts first", stoppedCount: 30, newCount: 15,
+			wantPuts:          unplacedIDRange{"new", 0, 15},
+			wantDeletes:       unplacedIDRange{"stopped", 0, 5},
+			wantSecondDeletes: unplacedIDRange{"stopped", 5, 25},
+		},
+		{
+			name: "puts over budget", newCount: 30,
+			wantPuts:       unplacedIDRange{"new", 0, 20},
+			wantSecondPuts: unplacedIDRange{"new", 20, 30},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			facts := unplacedBudgetFacts(testCase.stoppedCount, testCase.newCount, testCase.placeable)
+			firstChanges, reconcileError := newTestScheduler().Reconcile(context.Background(), facts)
+			if reconcileError != nil {
+				t.Fatal(reconcileError)
+			}
+			if _, placed := putValueOf(firstChanges, types.KeyPlacementInstance("web-1")); placed != testCase.placeable {
+				t.Errorf("placement of web-1 proposed = %v, want %v", placed, testCase.placeable)
+			}
+			putKeys, deleteKeys := unplacedKeysChanged(firstChanges)
+			assertUnplacedKeySet(t, "first cycle puts", putKeys, unplacedKeysOf(testCase.wantPuts))
+			assertUnplacedKeySet(t, "first cycle deletes", deleteKeys, unplacedKeysOf(testCase.wantDeletes))
+
+			secondChanges, reconcileError := newTestScheduler().Reconcile(context.Background(),
+				applyChangesToFacts(facts, firstChanges))
+			if reconcileError != nil {
+				t.Fatal(reconcileError)
+			}
+			putKeys, deleteKeys = unplacedKeysChanged(secondChanges)
+			assertUnplacedKeySet(t, "second cycle puts", putKeys, unplacedKeysOf(testCase.wantSecondPuts))
+			assertUnplacedKeySet(t, "second cycle deletes", deleteKeys, unplacedKeysOf(testCase.wantSecondDeletes))
 		})
 	}
 }

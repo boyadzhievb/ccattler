@@ -198,7 +198,7 @@ func emitScaleUpRequests(
 	currentAliveCount int,
 	inFlightCount int,
 ) []Change {
-	unplacedDemand := extractUnplacedDemand(facts)
+	unplacedDemand := extractWaitingUnplacedDemand(facts)
 	insufficientCapacityDemand := filterInsufficientCapacityDemand(unplacedDemand)
 	if len(insufficientCapacityDemand) == 0 {
 		return nil
@@ -220,10 +220,10 @@ type unplacedDemandEntry struct {
 	requirements infra.CapacityRequestRequirements
 }
 
-// extractUnplacedDemand parses scheduler unplaced-demand facts, keeping only
-// instances that still wait for a placement: a fact the scheduler has not yet
-// deleted, or one an older version left, is not demand (M262 D2).
-func extractUnplacedDemand(facts []store.Fact) map[string]*unplacedDemandEntry {
+// extractWaitingUnplacedDemand parses scheduler unplaced-demand facts, keeping
+// only instances that still wait for a placement: a fact the scheduler has not
+// yet deleted, or one an older version left, is not demand (M262 D2).
+func extractWaitingUnplacedDemand(facts []store.Fact) map[string]*unplacedDemandEntry {
 	demand := parseUnplacedDemandFacts(facts)
 	if len(demand) == 0 {
 		return demand // the common case: no instance index to build
@@ -241,9 +241,9 @@ func extractUnplacedDemand(facts []store.Fact) map[string]*unplacedDemandEntry {
 // isInstanceWaitingForPlacement reports whether an instance, given its
 // observed and derived fields (nil when gone from the store) and its placement
 // node, is pending, not stopped by a controller and not yet placed. The state
-// is endpointEligibleState's: observed state, stopped under controller_stopped.
+// is stateWithControllerStop's: observed state, stopped under controller_stopped.
 func isInstanceWaitingForPlacement(instanceFields map[string]string, placementNodeID string) bool {
-	return endpointEligibleState(instanceFields) == types.InstancePending && placementNodeID == ""
+	return stateWithControllerStop(instanceFields) == types.InstancePending && placementNodeID == ""
 }
 
 // parseUnplacedDemandFacts parses every derived/scheduler/unplaced/{id}/

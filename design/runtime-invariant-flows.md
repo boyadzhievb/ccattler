@@ -185,7 +185,7 @@ A single IP (`--advertise-address`) propagates to:
 
 - **One parser** (M243): every reader uses `types.ParseCPUMillicores` (millicores; bare = cores) and `types.ParseMemoryBytes` (bytes; bare = bytes). Behaviour: `openspec/specs/resource-requests`.
 - **Effective first, then desired**: the agent, the scheduler (`extractServiceResourcesFromFacts`, which watches `effective/service/`), eviction and the vertical autoscaler's current value, through one rule: `types.CollectEffectiveFirstResourceValues` (the agent applies it per key). Per-kind behaviour comes from one table keyed by `types.ResourceKind` (`types.ResourceKindSpecs`). An unreadable effective value does not fall back to desired.
-- **Scheduler**: requests in millicores and MiB rounded up against the node's remaining capacity; no fit → unplaced `insufficient_capacity` (cluster scaling, rollout reason, deadline rollback). The unplaced reason and requirements live only while the instance waits (pending, not controller-stopped, no placement): each cycle the scheduler deletes them for every other stored ID (placed, stopped, any other state, removed), and cluster scaling counts only instances that still wait (M262). An unreadable stored value → `invalid_resource_request`, no placement, preemption or rebalance, running instances count 0, `derived/scheduler/invalid_resource_request/{svc}` shown by `cca status`.
+- **Scheduler**: requests in millicores and MiB rounded up against the node's remaining capacity; no fit → unplaced `insufficient_capacity` (cluster scaling, rollout reason, deadline rollback). The unplaced reason and requirements live only while the instance waits (pending, not controller-stopped, no placement): the scheduler deletes them for every other stored ID (placed, stopped, any other state, removed); its unplaced puts and deletes together are capped at 40 changes per cycle (puts first, lowest IDs first, the rest in later cycles) so placements keep room in the runner's 60-change budget, and cluster scaling counts only instances that still wait (M262). An unreadable stored value → `invalid_resource_request`, no placement, preemption or rebalance, running instances count 0, `derived/scheduler/invalid_resource_request/{svc}` shown by `cca status`.
 - **Preemption** (D12): one lower-priority victim per requester, and only one whose stop makes room: its node's remaining CPU and memory plus its requests cover the requester's, on a node the requester's constraints allow. No such victim → nothing is stopped and the requester stays `insufficient_capacity`.
 - **Other readers on a parse error** (logged once): agent → no limit for that resource; eviction → the instance stays a candidate in normal order, credited 0 MiB freed (never immune); autoscaler → no recommendation (logged only for a service with a vertical policy for that resource); tenant usage → left out.
 - **Units written**: the autoscaler writes `750m` / `768Mi`, and deletes a resource's recommendation when the service has no `scale/vertical/{cpu|memory}/` fact (per resource). Memory is computed in whole MiB (min bound rounded up, max rounded down, current value rounded up), so an unchanged recommendation is not written again and a max that is not whole MiB is never exceeded (D7). The intent resolver deletes `effective/service/{name}/resources/{cpu|memory}` when that resource has no recommendation, so the desired request applies again. An unreadable vertical bound means no recommendation for that resource.
@@ -263,7 +263,7 @@ Each agent reads heartbeat lease timestamps for all nodes (`lease/node/{id}`). I
 
 The endpoint controller must NOT treat `node_failure=true` as "instance stopped". The instance may still be physically running (node is unreachable, not necessarily crashed). Endpoint facts must persist as long as the observed runtime state is `running`.
 
-- Endpoint eligibility: use `endpointEligibleState()` — ignores `node_failure`, only checks observed `state` and `controller_stopped`
+- Endpoint eligibility: use `stateWithControllerStop()` — ignores `node_failure`, only checks observed `state` and `controller_stopped`
 - Scheduling decisions: use `effectiveInstanceState()` — includes `node_failure` for rescheduling logic
 
 If the endpoint controller deletes endpoints based on `node_failure`, the following cascade occurs:
@@ -278,7 +278,8 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 
 | Controller | Function | Why |
 |---|---|---|
-| Endpoint | `endpointEligibleState` | Endpoints reflect runtime state, not scheduling intent |
+| Endpoint | `stateWithControllerStop` | Endpoints reflect runtime state, not scheduling intent |
+| Cluster autoscale | `stateWithControllerStop` | Demand counts only instances still pending, not stopped by a controller (M262) |
 | Stateful DNS | `effectiveInstanceState` | Per-instance DNS should update when rescheduled |
 | Instance | `effectiveInstanceState` | Needs `node_failure` to trigger replacement |
 | Failure | `effectiveInstanceState` | Needs `node_failure` for failure detection |
@@ -288,7 +289,7 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 
 ### Past bugs
 
-- **VIP deletion cascade (2026-10-21):** Endpoint controller used `effectiveInstanceState` which treated `node_failure` as `InstanceFailed`, deleting endpoints for instances on failed nodes. Network controller then deleted VIP facts. Fixed by introducing `endpointEligibleState`.
+- **VIP deletion cascade (2026-10-21):** Endpoint controller used `effectiveInstanceState` which treated `node_failure` as `InstanceFailed`, deleting endpoints for instances on failed nodes. Network controller then deleted VIP facts. Fixed by introducing `endpointEligibleState` (renamed `stateWithControllerStop` in M262).
 - **Slow VIP recovery (2026-10-21):** Before fast-path eviction, traffic waited for the full controller pipeline (60–90s). Fixed by adding heartbeat-based stale-node detection in the data plane.
 - **Leader election fragility (2026-10-21):** Single etcd timeout during reconciliation storm caused self-inflicted leadership loss, stalling the entire control plane. Fixed by tolerating transient renewal failures within the lease window.
 - **Data plane stall via main loop coupling (2026-10-21):** Data plane reconciler ran inside the main agent select loop alongside reconcile, telemetry, and VXLAN. A slow/hung etcd call in any of those steps froze the data plane — nftables rules went stale for minutes. Ctrl node lost fast-path eviction because the main loop blocked on etcd. Fixed by extracting data plane + VXLAN into an independent `dataPlaneLoop` goroutine.
@@ -1674,7 +1675,7 @@ When adding a new feature that touches the runtime:
 4. **Does it use advertise address?** If yes, ensure it's propagated consistently (Flow 6).
 5. **Does it need cross-host networking?** If yes, verify all three endpoint facts exist (Flow 7).
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
-7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
+7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `stateWithControllerStop`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
 8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 14) — secrets delivered first when needed (Flow 27), then pull, start with `--pull=never`. Never assume the image is cached.
 9. **Does it expose external HTTPS?** If yes, verify certificates flow as facts and private keys only through sealed storage and gate-key delivery (Flows 13, 28). The agent never issues certs.
 10. **Does it mount volumes from several instances?** If yes, check whether the provider supports shared attach (Flow 14); exclusive volumes need all instances on one node.

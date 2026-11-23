@@ -765,7 +765,7 @@ Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStal
 | `parseInstanceFieldsFromFacts` | InstanceController.Reconcile, FailureController.Reconcile, EndpointController.Reconcile, InstanceGCController.Reconcile, EvictionController.Reconcile, NodeFailureController (via markInstances) |
 | `buildInstanceMapsFromFields` | InstanceController.Reconcile, InstanceGCController.Reconcile |
 | `effectiveInstanceState` | buildInstanceMapsFromFields, processInstanceForRecovery, markInstancesOnUnreachableNodesAsFailed |
-| `endpointEligibleState` | buildDesiredEndpoints |
+| `stateWithControllerStop` | buildDesiredEndpoints, isInstanceWaitingForPlacement (M262) |
 | `stopAndReplace` | processInstanceForRecovery (failed, startup-probe-failed, drain-elapsed) |
 | `calculateCrashLoopBackoff` | processInstanceForRecovery |
 | `buildInstanceDeletionChanges` | InstanceGCController.Reconcile |

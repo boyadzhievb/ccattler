@@ -171,7 +171,7 @@ func extractRolloutClusterFacts(facts []store.Fact) rolloutClusterFacts {
 		pausedServices:     extractRolloutPausedServices(facts),
 		readinessProbed:    extractReadinessProbedServices(facts),
 		workloadKinds:      extractWorkloadKinds(facts),
-		unplacedInstances:  extractUnplacedDemand(facts),
+		unplacedInstances:  extractWaitingUnplacedDemand(facts),
 	}
 }
 

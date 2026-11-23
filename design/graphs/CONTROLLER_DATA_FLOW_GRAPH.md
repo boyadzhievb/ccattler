@@ -173,7 +173,7 @@ EndpointController.Reconcile(ctx, facts)                     :54
 │
 ├── buildDesiredEndpoints(fields, ports, probes, addrs)      :108
 │   └── FOR EACH running instance with exposed port:
-│       ├── endpointEligibleState(fields)                    [helpers.go:188]
+│       ├── stateWithControllerStop(fields)                  [helpers.go:173]
 │       │   └── ignores node_failure (data plane handles it)
 │       ├── skip if drain_readiness == "not-ready"
 │       ├── skip if readiness probe configured AND not "ready"
@@ -241,7 +241,7 @@ RolloutController.Reconcile(ctx, facts)                      :82
 │   ├── extractReadinessProbedServices                       :335  desired/service/{svc}/probe/readiness/*
 │   ├── extractWorkloadKinds                                 :418  effective/service/{svc}/{stateful,placement_mode}
 │   │   └── types.WorkloadKindOf                             [types/rollout_pacing.go]  stateful > per-node > stateless
-│   └── extractUnplacedDemand                                [clusterscale.go:226]  derived/scheduler/unplaced/{id}/{reason,requirements}
+│   └── extractWaitingUnplacedDemand                         [clusterscale.go:226]  derived/scheduler/unplaced/{id}/{reason,requirements}
 │                                                            (only instances still waiting for a placement, M262 D2)
 │
 └── FOR EACH service (sorted) with instances:
@@ -431,13 +431,13 @@ Not run by `cca server` yet (M260); covered by unit tests.
 ClusterAutoscaleController.Reconcile(ctx, facts)             :64
 ├── extractClusterAutoscaleConfig / extractCapacityRequests / extractClusterNodeStates
 ├── emitScaleUpRequests(facts, requests, config, alive, inFlight) :194
-│   ├── extractUnplacedDemand(facts)                         :226  (also read by rollout, waiting reason)
+│   ├── extractWaitingUnplacedDemand(facts)                  :226  (also read by rollout, waiting reason)
 │   │   ├── parseUnplacedDemandFacts(facts)                  :251  derived/scheduler/unplaced/{id}/{reason,requirements}
 │   │   ├── none → return (no instance index built)
 │   │   ├── parseInstanceFieldsFromFacts(facts)              [helpers.go:146]  observed/ + derived/instance/{id}/*
 │   │   ├── parsePlacementsByNode(facts)                     [drain.go:175]  placement/instance/{id}
 │   │   └── drop the entry unless isInstanceWaitingForPlacement :245 (map lookups, O(1) per entry)
-│   │       = endpointEligibleState [helpers.go:174] == pending (observed state, stopped under
+│   │       = stateWithControllerStop [helpers.go:173] == pending (observed state, stopped under
 │   │         controller_stopped) ∧ no placement: a leftover of a stopped, controller-stopped, placed or
 │   │         removed instance is never demand, even before the scheduler deletes it (M262 D2)
 │   ├── filterInsufficientCapacityDemand                     :279  insufficient_capacity | no_nodes
@@ -784,11 +784,11 @@ The node agent is NOT a controller — it runs its own loop (1s ticker + watch e
 
 | Function | Called By |
 |---|---|
-| `parseInstanceFieldsFromFacts` | InstanceController, FailureController, EndpointController, InstanceGCController, EvictionController, NodeFailureController, extractUnplacedDemand (M262) |
+| `parseInstanceFieldsFromFacts` | InstanceController, FailureController, EndpointController, InstanceGCController, EvictionController, NodeFailureController, extractWaitingUnplacedDemand (M262) |
 | `effectiveInstanceState` | buildInstanceMapsFromFields, processInstanceForRecovery, markInstancesOnUnreachableNodesAsFailed |
-| `endpointEligibleState` | buildDesiredEndpoints, isInstanceWaitingForPlacement (M262) |
-| `parsePlacementsByNode` | DrainController, extractUnplacedDemand (M262) |
-| `extractUnplacedDemand` | emitScaleUpRequests (cluster-autoscale), extractRolloutClusterFacts (rollout) |
+| `stateWithControllerStop` | buildDesiredEndpoints, isInstanceWaitingForPlacement (M262) |
+| `parsePlacementsByNode` | DrainController, extractWaitingUnplacedDemand (M262) |
+| `extractWaitingUnplacedDemand` | emitScaleUpRequests (cluster-autoscale), extractRolloutClusterFacts (rollout) |
 | `splitFactKeyIntoEntityAndSuffix` | collectStringValuesBySuffix, collectIntValuesBySuffix |
 | `types.SplitServiceResourceKey` | planLayerRewrites, collectRecommendedResources, collectServiceResourceValues, types.CollectEffectiveFirstResourceValues |
 | `types.CollectEffectiveFirstResourceValues` | collectResourceQuantities (controllers), extractServiceResourcesFromFacts (scheduler); the agent follows the same rule per key |

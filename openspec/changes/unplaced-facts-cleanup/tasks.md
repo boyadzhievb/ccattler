@@ -58,7 +58,7 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 
     | # | Finding | Resolution |
     |---|---|---|
-    | 1 | Uncapped cleanup: >~30 IDs fill the runner's 60-change budget (runner.go:44-55, ungrouped deletes sort first), deferring placements for several cycles; design said the runner splits (wrong) | **fix** 3a.1 (D4, cap 20 per cycle) + design/spec corrected |
+    | 1 | Uncapped cleanup: >~30 IDs fill the runner's 60-change budget (runner.go:44-55, ungrouped deletes sort first), deferring placements for several cycles; design said the runner splits (wrong) | **fix** 3a.1 (D4, one 40-change budget for unplaced puts and deletes, puts first) + design/spec corrected |
     | 2 | ~58 SCHEDULING_GRAPH line numbers shifted by this commit; STATEFUL_SERVICES_GRAPH.md:367 `scheduler.go:520` | **fix** 3a.3 |
     | 3 | `endpointEligibleState` name/doc speak of endpoints, now also decides cluster-scaling demand | **fix** 3a.2 (rename `stateWithControllerStop`, doc names both callers) |
     | 4 | `extractUnplacedDemand` now filters; name hides it at both call sites | **fix** 3a.2 (`extractWaitingUnplacedDemand`) |
@@ -67,16 +67,28 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 
 ## 3a. Rework from review round 1
 
-- [ ] 3a.1 D4: named constant `maxUnplacedCleanupsPerCycle = 20`; `cleanupStaleUnplacedFacts` deletes the facts of at
-  most that many non-waiting instance IDs per cycle, in sorted order. Red first: `TestSchedulerCapsUnplacedCleanupPerCycle`
-  (spec scenario "Many instances stop waiting at once": 50 stopped IDs + one placeable pending instance → 40 deletes
-  for the 20 lowest IDs, the placement is proposed; a second cycle with those deleted removes the next 20).
-- [ ] 3a.2 Renames: `endpointEligibleState` → `stateWithControllerStop` (doc names endpoints and cluster scaling as
+- [x] 3a.1 D4 (revised after the stop-time Codex check: capping only the deletes leaves the uncapped puts able to fill
+  the budget): named constant `maxUnplacedFactChangesPerCycle = 40` shared by the unplaced puts
+  (`emitUnplacedDemandFacts`) and deletes (`cleanupStaleUnplacedFacts`); puts first, then deletes, each in sorted
+  instance-ID order, whole instances only (2 changes each; an unchanged put that is skipped costs nothing). Red first:
+  `TestSchedulerBudgetsUnplacedFactChanges` with the three spec sub-cases (`deletes only`, `puts first`,
+  `puts over budget`), including that the placement of a fitting pending instance is still proposed.
+  Red (pre-3a code + constant only): `deletes only` 100 deletes / want 40, `puts first` 60 deletes / want 10,
+  `puts over budget` 60 puts / want 40 (second cycles 0 / want 40, 40, 20). Green: budget passed from `Reconcile`
+  (`emitUnplacedDemandFacts` puts, then `cleanupStaleUnplacedFacts` gets the rest); `unplacedFactsPerInstance = 2`.
+- [x] 3a.2 Renames: `endpointEligibleState` → `stateWithControllerStop` (doc names endpoints and cluster scaling as
   callers); `extractUnplacedDemand` → `extractWaitingUnplacedDemand` (clusterscale.go, rollout_facts.go).
-- [ ] 3a.3 Graphs: regenerate every `scheduler/scheduler.go` line number in SCHEDULING_GRAPH.md (index and §1/§5/§6
+  Done in code (no test referenced them) and in runtime-invariant-flows.md (Flow 8 table gains a cluster-autoscale row)
+  and INSTANCE_LIFECYCLE_GRAPH reverse index.
+- [x] 3a.3 Graphs: regenerate every `scheduler/scheduler.go` line number in SCHEDULING_GRAPH.md (index and §1/§5/§6
   trees) and STATEFUL_SERVICES_GRAPH.md:367, plus CONTROLLER_DATA_FLOW_GRAPH entries for the renames; check each
   against `grep -n`.
-- [ ] 3a.4 Checks as in 3.1, plus `go test -count=10 -run 'Unplaced' ./scheduler/`.
+  All ~245 scheduler.go numbers regenerated (pairs `:call/:def`, in-body lines, tables, index, constants; most
+  predated M262); a script matched 218 to their named function, the other 27 (loops, PUT lines) checked by eye;
+  §6 trees, constants and Writes/Deletes rows describe the D4 budget. STATEFUL 365-367, DATA_FLOW helpers.go:173.
+- [x] 3a.4 Checks as in 3.1, plus `go test -count=10 -run 'Unplaced' ./scheduler/`.
+  `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` exit 0 (20 ok, 0 FAIL); `-race`
+  scheduler and controllers ok; `-count=10 -run Unplaced ./scheduler/` ok.
 - [ ] 3.4 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 - [ ] 3.5 Update the milestones.md M262 row to the final scope, link this change from Phase 262, archive (syncing
   `resource-requests`), release with `scripts/release.sh`.

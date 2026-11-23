@@ -36,6 +36,16 @@ const (
 
 	// nodeAllocationPressurePercent triggers a warning when allocation exceeds this ratio.
 	nodeAllocationPressurePercent = 80
+
+	// maxUnplacedFactChangesPerCycle caps the unplaced-demand puts and deletes
+	// of one cycle together (whole instances, 2 changes each). The runner
+	// commits at most 60 changes per cycle, so 20 stay for placements; the
+	// rest are written or deleted in later cycles (M262 D4).
+	maxUnplacedFactChangesPerCycle = 40
+
+	// unplacedFactsPerInstance is the reason and requirements fact of one
+	// unplaced instance: the cost of deleting its facts.
+	unplacedFactsPerInstance = 2
 )
 
 // Scheduler is the placement controller that assigns pending instances to
@@ -134,10 +144,11 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	unplacedChanges := emitUnplacedDemandFacts(
 		waitingInstanceIDs, nodes, instances,
 		serviceResources, placementConstraints, invalidResourceRequests,
-		extractStoredUnplacedValues(facts),
+		extractStoredUnplacedValues(facts), maxUnplacedFactChangesPerCycle,
 	)
 	changes = append(changes, unplacedChanges...)
-	changes = append(changes, cleanupStaleUnplacedFacts(facts, waitingInstanceIDs)...)
+	changes = append(changes, cleanupStaleUnplacedFacts(
+		facts, waitingInstanceIDs, maxUnplacedFactChangesPerCycle-len(unplacedChanges))...)
 
 	rebalanceChanges := rebalancePlacedInstances(
 		nodes, instances, placements, serviceResources,
@@ -882,18 +893,24 @@ func emitUnplacedDemandFacts(
 	placementConstraints map[string]*servicePlacementConstraint,
 	invalidResourceRequests map[string]string,
 	storedUnplacedValues map[string]string,
+	changeBudget int,
 ) []controllers.Change {
 	aliveCount := countAliveNodes(nodes)
 	var changes []controllers.Change
 	for _, instanceID := range waitingInstanceIDs {
 		instanceInfo := instances[instanceID]
 		reason := classifyUnplacedReason(instanceInfo, aliveCount, nodes, placementConstraints, invalidResourceRequests)
+		var instanceChanges []controllers.Change
 		for _, change := range buildUnplacedFactChanges(instanceID, instanceInfo, reason, serviceResources, placementConstraints) {
 			if storedValue, stored := storedUnplacedValues[change.Key]; stored && storedValue == string(change.Value) {
 				continue // unchanged: compare before update, as Kubernetes controllers do
 			}
-			changes = append(changes, change)
+			instanceChanges = append(instanceChanges, change)
 		}
+		if len(changes)+len(instanceChanges) > changeBudget {
+			break // whole instances only; the rest are written in later cycles (D4)
+		}
+		changes = append(changes, instanceChanges...)
 	}
 	return changes
 }
@@ -1049,26 +1066,27 @@ func buildUnplacedRequirements(
 	return requirements
 }
 
-// cleanupStaleUnplacedFacts deletes the unplaced-demand facts of every stored
-// instance ID outside this cycle's waiting set: placed, stopped (controller
-// stop included), in any other state, or gone from the store (M262 D1). The
-// sets are complementary, so it never deletes a key this cycle writes.
-func cleanupStaleUnplacedFacts(facts []store.Fact, waitingInstanceIDs []string) []controllers.Change {
+// cleanupStaleUnplacedFacts deletes the unplaced-demand facts of stored
+// instance IDs outside this cycle's waiting set (placed, stopped, any other
+// state, or gone; M262 D1), whole instances in sorted order within changeBudget
+// (D4). The sets are complementary, so no key this cycle writes is deleted.
+func cleanupStaleUnplacedFacts(facts []store.Fact, waitingInstanceIDs []string, changeBudget int) []controllers.Change {
 	waitingForPlacement := make(map[string]bool, len(waitingInstanceIDs))
 	for _, instanceID := range waitingInstanceIDs {
 		waitingForPlacement[instanceID] = true
 	}
 	var changes []controllers.Change
-	existingUnplaced := extractExistingUnplacedInstanceIDs(facts)
-	for _, instanceID := range existingUnplaced {
-		if !waitingForPlacement[instanceID] {
-			changes = append(changes, controllers.Change{
-				Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedReason(instanceID),
-			})
-			changes = append(changes, controllers.Change{
-				Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedRequirements(instanceID),
-			})
+	for _, instanceID := range extractExistingUnplacedInstanceIDs(facts) {
+		if waitingForPlacement[instanceID] {
+			continue
 		}
+		if len(changes)+unplacedFactsPerInstance > changeBudget {
+			break // the rest are deleted in later cycles (D4)
+		}
+		changes = append(changes,
+			controllers.Change{Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedReason(instanceID)},
+			controllers.Change{Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedRequirements(instanceID)},
+		)
 	}
 	return changes
 }
