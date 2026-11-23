@@ -579,6 +579,23 @@ Found testing v1.95.0-beta on 192.168.100.99 (2026-11-23).
 - **Order:** a new user reads prepare host → quick install → build → Vagrant → Lima → Ansible → set up by hand, so the path most users need comes after three alternatives.
 - **Stale example:** the version pin example still names `v1.92.0-beta`.
 - **Untested:** the worker steps of "Set up a cluster by hand" were never run by hand (needs a second fresh VM).
+- **Fresh-host run on 192.168.100.103 (Debian 13, v1.95.0-beta, 2026-11-23), single host (control plane and agent),
+  page followed literally.** Worked: install.sh, `cca init` → `setup.sh` → server and agent, node alive, secret
+  delivery on (M248), CLI without sudo, Getting Started (3 × nginx `cpu 100m`/`memory 64Mi` running, VIP HTTP 200).
+  Gaps found:
+  - The passwordless-sudo command uses `su -c "…visudo…"`: without `su -`, root's PATH lacks `/usr/sbin`, so it ends
+    with `visudo: command not found` (the file is already written). Use `su - -c` or `/usr/sbin/visudo`.
+  - "Verify" says `command -v nft  # /usr/sbin/nft`; for a normal user on Debian it prints nothing (`/usr/sbin` is
+    not on the PATH). Use `ls /usr/sbin/nft` or `sudo nft --version`.
+  - Debian's `etcd-server` starts etcd at once without TLS until `setup.sh` reconfigures it; say so.
+  - `setup.sh`'s last line says `cca status` without sudo, which fails before step 3; the page says `sudo cca status`.
+  - A single-host cluster is just step 1 (the agent runs there too); the page never says so.
+  - `cca status` in a new shell without `CCA_TOKEN` fails with `error: client certificate required`; the CLI should
+    say it has no credentials and point to `CCA_TOKEN` / the "Use the CLI without sudo" section.
+  - Getting Started: "Three runtime modes" lists four.
+  - `cca apply --simulate web.cca` ends with `WARN watch channel closed …` lines and shows 3 instances `pending` on 5
+    simulated nodes (two `auto-node-*` added by cluster scaling): the simulation stops before placement converges, or
+    places nothing. To check; if it is a bug, its own milestone.
 
 Wanted: one path in order (prepare → install → control plane → workers → CLI without sudo → upgrade), with Vagrant, Lima, Ansible and build from source after it; an "Upgrade" section (binary, then restart server before agents, check `cca status`; mention the BREAKING notes in the changelog); `install.sh` says to restart the services when it finds them running; the example version kept current (or written as a placeholder). Tested on a fresh control-plane VM plus a fresh worker VM, following the page literally.
 
