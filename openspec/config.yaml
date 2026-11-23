@@ -14,14 +14,21 @@ rules:
   proposal:
     - Name the milestone from milestones.md and state what is out of scope
     - Compare with how Kubernetes, Vault, Consul or AWS solve the same problem when the change is architectural
+    - State how the change is proven done (the tests, the deploy-cluster check and the closing run or runs it needs)
   specs:
     - Every requirement has at least one scenario, and every scenario names the test that proves it (Go test function or e2e check ID)
     - Scenarios describe facts in the store and observable behaviour, never internal function calls
+    - Include boundary and failure scenarios where they apply (limits, invalid input, store errors, concurrent writers, restart)
+    - A review never proves a requirement; only an executed test or deploy check does
   design:
     - Link the flow in design/runtime-invariant-flows.md that the change adds or alters
     - List the failure cases and what the system does in each
+    - For every store key the change reads or writes, name its other writers and how concurrent writes are fenced (revision compare, write domain, single writer)
+    - When a controller or agent writes several facts, state its worst-case output per cycle against the runner's change budget and the etcd transaction limit
   tasks:
     - The first tasks write the tests named in the spec scenarios and record them failing, before any implementation task
+    - A test recorded failing is not weakened or deleted to make it pass; any later change to it is recorded with its reason
+    - Each ticked task records its evidence (command and result, commit, or run ID), never only "done"
     - The last tasks are lint, unit tests, a deploy-cluster or e2e run, and the independent review from CLAUDE.md
     - The independent review includes a patterns review of the diff against design/Anti-pattern.md and its references, with each finding recorded as fixed or rejected
 
@@ -30,3 +37,10 @@ operations:
     guidance:
       - Inspect the implementation and the call graphs before changing code
       - Report real test results with their output; never mark a task done on an unexecuted test
+      - Proposal, specs and design are frozen during apply; a change to them is a decision recorded in design.md with its date and who made it, and a requirement is never weakened to pass a check
+      - After three review rounds that find the same class of defect, stop fixing call sites one by one; propose a structural fix with a test that enforces it, and tell the user
+      - A check that fails and passes without a code change is a bug to record as a milestone item; never rerun until green to close a milestone
+      - When a closing run fails, diagnose it; never skip a check group or narrow the run to make it pass
+  archive:
+    guidance:
+      - Archive only when every task is ticked with its evidence and the closing run(s) passed; sync the specs and validate them before the release
