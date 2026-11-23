@@ -54,6 +54,29 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 - [ ] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
   and the spec, including the patterns review against `design/Anti-pattern.md`. Record each finding as fixed or
   rejected, with one line of reasoning.
+  - Round 1 (2026-11-23, on 3048f72; Codex: approve, no findings). Verified by the main session:
+
+    | # | Finding | Resolution |
+    |---|---|---|
+    | 1 | Uncapped cleanup: >~30 IDs fill the runner's 60-change budget (runner.go:44-55, ungrouped deletes sort first), deferring placements for several cycles; design said the runner splits (wrong) | **fix** 3a.1 (D4, cap 20 per cycle) + design/spec corrected |
+    | 2 | ~58 SCHEDULING_GRAPH line numbers shifted by this commit; STATEFUL_SERVICES_GRAPH.md:367 `scheduler.go:520` | **fix** 3a.3 |
+    | 3 | `endpointEligibleState` name/doc speak of endpoints, now also decides cluster-scaling demand | **fix** 3a.2 (rename `stateWithControllerStop`, doc names both callers) |
+    | 4 | `extractUnplacedDemand` now filters; name hides it at both call sites | **fix** 3a.2 (`extractWaitingUnplacedDemand`) |
+    | 5 | Test helper `factOf` duplicates `buildFacts(kv(...))` | **rejected**: 2 places, below the 3+ threshold |
+    | 6 | Rollout builds a second instance-field index when demand exists | **rejected**: O(n), no benchmark showing cost (CLAUDE.md optimization principle) |
+
+## 3a. Rework from review round 1
+
+- [ ] 3a.1 D4: named constant `maxUnplacedCleanupsPerCycle = 20`; `cleanupStaleUnplacedFacts` deletes the facts of at
+  most that many non-waiting instance IDs per cycle, in sorted order. Red first: `TestSchedulerCapsUnplacedCleanupPerCycle`
+  (spec scenario "Many instances stop waiting at once": 50 stopped IDs + one placeable pending instance → 40 deletes
+  for the 20 lowest IDs, the placement is proposed; a second cycle with those deleted removes the next 20).
+- [ ] 3a.2 Renames: `endpointEligibleState` → `stateWithControllerStop` (doc names endpoints and cluster scaling as
+  callers); `extractUnplacedDemand` → `extractWaitingUnplacedDemand` (clusterscale.go, rollout_facts.go).
+- [ ] 3a.3 Graphs: regenerate every `scheduler/scheduler.go` line number in SCHEDULING_GRAPH.md (index and §1/§5/§6
+  trees) and STATEFUL_SERVICES_GRAPH.md:367, plus CONTROLLER_DATA_FLOW_GRAPH entries for the renames; check each
+  against `grep -n`.
+- [ ] 3a.4 Checks as in 3.1, plus `go test -count=10 -run 'Unplaced' ./scheduler/`.
 - [ ] 3.4 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 - [ ] 3.5 Update the milestones.md M262 row to the final scope, link this change from Phase 262, archive (syncing
   `resource-requests`), release with `scripts/release.sh`.

@@ -4,9 +4,10 @@
 
 ### Requirement: Unplaced-demand facts exist only while their instance waits
 `derived/scheduler/unplaced/{id}/reason` and `/requirements` SHALL exist only while instance `{id}` exists, is
-`pending`, is not controller-stopped and has no placement. Within one scheduler cycle after any of these stops being
-true (placed, stopped, any other state, or removed from the store), the scheduler SHALL delete both facts. Facts left
-by an earlier version SHALL be deleted the same way, with no migration step.
+`pending`, is not controller-stopped and has no placement. Once any of these stops being true (placed, stopped, any
+other state, or removed from the store), the scheduler SHALL delete both facts, for at most 20 instances per cycle
+in instance-ID order so placements are not delayed, and the rest in the following cycles. Facts left by an earlier
+version SHALL be deleted the same way, with no migration step.
 
 #### Scenario: Unplaced instance scaled away
 - **GIVEN** `web-1` is `pending` with no placement, and its unplaced reason `insufficient_capacity` and requirements
@@ -15,6 +16,13 @@ by an earlier version SHALL be deleted the same way, with no migration step.
   scheduler reconciles
 - **THEN** the scheduler deletes `derived/scheduler/unplaced/web-1/reason` and `/requirements`
 - Test: `TestSchedulerDeletesUnplacedFactsOfStoppedInstance`
+
+#### Scenario: Many instances stop waiting at once
+- **GIVEN** stored unplaced facts for 50 instances that are all `stopped`, and one pending instance that fits a node
+- **WHEN** the scheduler reconciles
+- **THEN** it proposes deletes for the 20 lowest instance IDs only (40 changes) and also places the pending
+  instance; reconciling again with those deleted removes the next 20
+- Test: `TestSchedulerCapsUnplacedCleanupPerCycle`
 
 #### Scenario: Unplaced instance removed from the store
 - **GIVEN** unplaced reason and requirements are stored for `web-1`, and no `observed/instance/web-1/*` fact exists

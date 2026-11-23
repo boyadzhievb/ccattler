@@ -19,8 +19,11 @@ Current state, verified in the code:
 - `ClusterAutoscaleController.Reconcile` → `emitScaleUpRequests` → `extractUnplacedDemand(facts)` reads every fact
   under the prefix; `filterInsufficientCapacityDemand` keeps `insufficient_capacity` and `no_nodes`. It already
   watches `observed/instance/`, `derived/instance/` and `placement/`, so it has the facts for an instance check.
-- The runner splits change sets above etcd's 128-operation limit (`controllers/runner.go:42`), so deleting many
-  leftovers in one cycle is safe.
+- The runner does not split change sets: it commits at most `maxTransactionChanges = 60` per cycle (under etcd's
+  128-operation limit), sorted by (Group, Key), and defers the rest; ungrouped changes such as these deletes sort
+  ahead of the grouped `placement/instance/` puts. Its contract (`controllers/runner.go:44-55`) is that each
+  controller caps its own output. (Corrected after review 3.3; the first version of this design said the runner
+  splits.)
 
 ## Goals / Non-Goals
 
@@ -71,6 +74,20 @@ would still see the fact.
 A leftover has no instance or a non-pending one, so D1 deletes it on the first scheduler cycle after the upgrade and
 D2 ignores it meanwhile. A separate migration would duplicate D1.
 
+### D4. Cleanup is capped per cycle (added after review 3.3)
+
+Without a cap, cleanup proposes 2 deletes for every instance that stopped waiting. Above about 30 instances (a large
+`cca scale … 0`, or the first cycle after an upgrade), the ungrouped deletes fill the runner's 60-change budget and
+every placement of that cycle is deferred, cycle after cycle, with a "deferred atomic change groups" warning each
+time. Following the runner's contract, cleanup takes at most `maxUnplacedCleanupsPerCycle = 20` instances (40
+deletes) per cycle, in sorted ID order, leaving at least 20 changes for placements. Kubernetes controllers bound
+their work per sync the same way (for example the ReplicaSet controller's `burstReplicas`).
+
+Naming (review suggestions taken): `extractUnplacedDemand` becomes `extractWaitingUnplacedDemand`, since it now
+filters and the rollout controller calls it too; `endpointEligibleState` becomes a neutral
+`stateWithControllerStop`, documented for both callers (endpoints and cluster scaling), so a later endpoint-only
+change does not silently change cluster-scaling demand.
+
 ## Failure cases
 
 | Case | What happens |
@@ -78,7 +95,7 @@ D2 ignores it meanwhile. A separate migration would duplicate D1.
 | Scheduler not running (no leader, restart) | Leftovers stay; cluster scaling ignores them (D2); the next leader's first cycle deletes them (D1). |
 | Delete transaction fails (CAS conflict, etcd unavailable) | The runner retries with back-off; the next cycle recomputes the same deletes (idempotent). |
 | Instance goes pending → stopped → pending (in-place restart keeps the ID) | Facts deleted, then written again on the cycle that sees it pending and unplaced; two writes, no loop. |
-| Thousands of leftovers after an upgrade | Deleted in one cycle, split by the runner under the 128-operation limit. |
+| Many instances stop waiting at once, or thousands of leftovers after an upgrade | Cleanup deletes at most `maxUnplacedCleanupsPerCycle` (20) instances' facts per cycle (40 changes), lowest IDs first, so placements keep room in the runner's 60-change budget (D4). Each delete wakes the scheduler, so the rest go over ceil(N/20) cycles; cluster scaling ignores them meanwhile (D2). |
 | Instance stops after cluster scaling read it as pending in the same snapshot | One capacity request may still be written (pre-existing race); the next cycle ignores the instance. Cancelling such requests is the M260 follow-up. |
 | Fact with an unknown suffix under the prefix | `extractExistingUnplacedInstanceIDs` still yields its ID; D1 deletes only `reason` and `requirements`, as today. Unchanged behaviour. |
 
