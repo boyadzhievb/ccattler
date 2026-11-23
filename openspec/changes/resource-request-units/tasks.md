@@ -962,7 +962,7 @@ agent/telemetry.go:207). Behaviour must not change: every existing test stays gr
 
 ## 4. Testbed, review, release (main session)
 
-- [ ] 4.1 Testbed by hand (`deploy-run:resource-capacity`, on the cluster a push run leaves). Record commands and
+- [x] 4.1 Testbed by hand (`deploy-run:resource-capacity`, on the cluster a push run leaves). Record commands and
   output here:
   - Run 2026-11-23 on the cluster push run 45179887458 (89362c3, partial, success) left; configs in
     `/tmp/{bad,big,roll1,roll2,fill}.cca` on cca-deploy-ctrl; free CPU before: ctrl 1150m, worker-1 1400m,
@@ -1013,7 +1013,7 @@ agent/telemetry.go:207). Behaviour must not change: every existing test stays gr
     `insufficient_capacity`, and no worker hosts more requests than its capacity (`cca get instances`, per-node count ×
     request). `cca describe node` still shows detected capacity, the stated non-goal.
   - **No vertical scaling:** confirm no deploy workload declares `scale vertical` (D8).
-- [ ] 4.2 Independent review: `code-reviewer` (Opus, effort high) reviews the milestone diff against this design and
+- [x] 4.2 Independent review: `code-reviewer` (Opus, effort high) reviews the milestone diff against this design and
   the spec. Record each finding as fixed or rejected, with one line of reasoning.
   - Round 1 (2026-11-23, on 329e0fa): REQUEST CHANGES. Each finding verified in the code by the main session:
 
@@ -1053,9 +1053,12 @@ agent/telemetry.go:207). Behaviour must not change: every existing test stays gr
     | # | Finding | Resolution |
     |---|---|---|
     | R3-N1 | With a declared `max 0` (CPU) or a max under 1 MiB, the migration writes `0m` / `0Mi`; both runtimes apply no limit for 0 (`runtime/container.go:287,290`, `runtime/containerd.go:564,568`), so the cap becomes unlimited | **fix** 3e.6 |
-- [ ] 4.3 Closing full Deploy Testbed run (job summary says `full run`); every default workload still places. Record
+  - 3g review (4d42565): see 3g.4.
+- [x] 4.3 Closing full Deploy Testbed run (job summary says `full run`); every default workload still places. Record
   the run ID.
-- [ ] 4.4 Update the milestones.md M243 row's changelog text to the final scope, with the BREAKING items (bare
+  - Run 45193641378 (workflow_dispatch, 53d7e47): `RUN_KIND: full`, workloads airflow, whoami, whoami-multiport,
+    gate-tls, no skipped checks, adversarial replay with every case; deploy and replay `success`.
+- [x] 4.4 Update the milestones.md M243 row's changelog text to the final scope, with the BREAKING items (bare
   numbers, apply refusals, vertical scaling active), then run `scripts/release.sh M243 <version>`.
 
 ## Workflow follow-up
