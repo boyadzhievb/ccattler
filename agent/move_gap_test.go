@@ -47,7 +47,7 @@ func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store
 	cluster.sourceAgent = New("node-1", agentStore, cluster.sourceRuntime)
 	cluster.sourceAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
 	cluster.targetAgent = New("node-2", agentStore, runtime.NewSimulatorRuntime())
-	cluster.targetAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
+	cluster.targetAgent.SetNetworkProvider(network.NewSimulatorNetworkProviderWithCIDR(10, 101)) // another range: the agents' IPs differ
 
 	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
 	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceExpose("web", moveGapTestPort), []byte(""))
@@ -222,7 +222,7 @@ func TestSourceAgentMarksMovedInstancePending(t *testing.T) {
 		}, "web-1")
 		// Only the state transaction: the target is between its state write and the rest of its publish.
 		racingStore.publishOnTarget = func(ctx context.Context) {
-			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, placedInstanceInfo{id: "web-1", service: "web"}, types.InstanceRunning)
+			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, placedInstanceInfo{id: "web-1", service: "web"}, types.InstanceRunning, nil)
 		}
 		cluster.moveAndRemoveOnSource(ctx, "web-1")
 		if !racingStore.targetHasPublished.Load() {
@@ -304,5 +304,64 @@ func TestTargetStartupFailureAfterMoveIsNotRunning(t *testing.T) {
 					readFactValue(ctx, memoryStore, types.KeyObservedInstanceNode("web-1")) == "node-2"
 			})
 		})
+	}
+}
+
+// moveAfterSourceStateStore runs a hook once, right after node-1's state
+// transaction committed (the transaction that writes observed node = node-1):
+// a move lands between the source's state write and the rest of its publish.
+type moveAfterSourceStateStore struct {
+	store.StateStore                           // StateStore serves every call.
+	instanceID       string                    // instanceID is the instance being published.
+	afterSourceState func(ctx context.Context) // afterSourceState moves the instance and publishes it on node-2.
+	hookHasRun       atomic.Bool               // hookHasRun keeps the hook to one run.
+}
+
+// Transaction commits, then runs the hook once after node-1's state transaction.
+func (racingStore *moveAfterSourceStateStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
+	swapped, transactionError := racingStore.StateStore.Transaction(ctx, compares, onSuccess, onFailure)
+	isSourceStateWrite := slices.ContainsFunc(onSuccess, func(operation store.Op) bool {
+		return operation.Key == types.KeyObservedInstanceNode(racingStore.instanceID) && string(operation.Value) == "node-1"
+	})
+	if swapped && isSourceStateWrite && racingStore.afterSourceState != nil && racingStore.hookHasRun.CompareAndSwap(false, true) {
+		racingStore.afterSourceState(ctx)
+	}
+	return swapped, transactionError
+}
+
+// TestSourcePublishNeverOverwritesTargetIP: review 3c.6. The source's publish
+// commits its state, then the instance moves and node-2 publishes it with its
+// own IP; whatever the source still writes must not replace node-2's IP or
+// network allocation (the VIP would point at the removed source container).
+func TestSourcePublishNeverOverwritesTargetIP(t *testing.T) {
+	ctx := context.Background()
+	var cluster *moveGapCluster
+	var racingStore *moveAfterSourceStateStore
+	cluster = newMoveGapCluster(t, func(memoryStore store.StateStore) store.StateStore {
+		racingStore = &moveAfterSourceStateStore{StateStore: memoryStore, instanceID: "web-1"}
+		return racingStore
+	}, "web-1")
+	sourceScannedInfo := scannedInstanceInfo(t, ctx, cluster.sourceAgent, "web-1")
+	racingStore.afterSourceState = func(ctx context.Context) {
+		cluster.moveToTarget(ctx, "web-1")
+		cluster.publishOnTarget(t, ctx, "web-1")
+	}
+	cluster.sourceAgent.publishInstanceStateToStore(ctx, sourceScannedInfo, types.InstanceStarting, "")
+	if !racingStore.hookHasRun.Load() {
+		t.Fatalf("the move was never injected after the source's state write; the case proves nothing")
+	}
+	targetIP, allocateError := cluster.targetAgent.networkProvider.AllocateIP(ctx, "node-2", "web-1")
+	if allocateError != nil {
+		t.Fatal(allocateError)
+	}
+	for _, instanceKey := range []string{types.KeyObservedInstanceIP("web-1"), types.KeyNetworkAllocation("web-1")} {
+		if gotIP := readFactValue(ctx, cluster.factStore, instanceKey); gotIP != targetIP {
+			t.Errorf("%s = %q after the source's late publish, want node-2's %q", instanceKey, gotIP, targetIP)
+		}
+	}
+	gotState := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceState("web-1"))
+	gotNode := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceNode("web-1"))
+	if gotState != string(types.InstanceRunning) || gotNode != "node-2" {
+		t.Errorf("state=%q node=%q, want node-2's running", gotState, gotNode)
 	}
 }

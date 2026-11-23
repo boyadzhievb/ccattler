@@ -313,16 +313,23 @@ reconcileDesiredInstance(instanceInfo)                        :736
     ├── resetInstanceReadiness(id)                   :1062
     │   └── DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
-    ├── publishInstanceStateToStore(ctx, id, state, ip, node)
-    │   ├── publishInstanceStateUnlessStopped               [M241 2i.1]
+    ├── publishInstanceStateToStore(ctx, instanceInfo, state, runtimeIP)
+    │   ├── resolvePublishedContainerIP: networkProvider.AllocateIP (also → network/allocation)
+    │   │   else a valid runtime IP, else none — resolved BEFORE anything is written (M267 3c.6)
+    │   ├── dropUnchangedPuts(marker, service, ip, allocation): Get each, keep the changed ones
+    │   │   (no more key writes than the former idempotent Puts on etcd, M266)
+    │   ├── publishInstanceStateUnlessStopped(…, those puts)  [M241 2i.1]
     │   │   Get state → stopped (written by another component) → write nothing, return;
     │   │   else TXN compare the state revision read and the revision of
     │   │   placement/node/{self}/{id} from findInstancesPlacedOnThisNode (placementRevision;
     │   │   0 = no guard, only for test-built infos; a move deletes the key, so a source still
     │   │   in the cycle that scanned before the move never publishes, M267 R2-1) → PUT state
-    │   │   = "running"|"starting" and PUT observed/instance/{id}/node = nodeID (one
-    │   │   transaction, M267 D4); lost CAS → next cycle; store error → ERROR, next cycle
-    │   └── PUT observed/instance/{id}/ip       = containerIP
+    │   │   = "running"|"starting", PUT observed/instance/{id}/node = nodeID and the changed
+    │   │   marker/service/ip/network-allocation puts, all in ONE transaction (M267 D4, 3c.6: a
+    │   │   move can never land between state and IP); lost CAS → next cycle; store error →
+    │   │   ERROR, next cycle
+    │   ├── created-at: separate create-only TXN (unchanged)
+    │   └── registerEndpointIdentityIfSupported (after a successful commit)
     ├── publishStatusReason("running")              [running only]
     ├── publishInstanceImage → PUT observed/instance/{id}/image = image
     ├── publishInstanceConfigHash → PUT observed/instance/{id}/config-hash = configHashBeforeBuild
@@ -678,7 +685,7 @@ ELSE                            → observed/instance/{id}/state value
 
 ---
 
-## 12. Image Pull Failure Backoff (agent/agent.go:50-57)
+## 12. Image Pull Failure Backoff (agent/agent.go:51-57)
 
 | Parameter | Value |
 |---|---|
@@ -751,25 +758,25 @@ cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance im
 
 | Location | Trigger | Source |
 |---|---|---|
-| Init failure | Before BAIL | agent.go:730 |
-| Volume attach failure | Before BAIL | agent.go:743 |
+| Init failure | Before BAIL | agent.go:731 |
+| Volume attach failure | Before BAIL | agent.go:744 |
 | Start failure | In handleInstanceStartError (both outcomes) | agent.go |
-| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1109 |
+| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1110 |
 
 Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
 
 ### Agent cleanup of a container that left the node (M267 D2, D4)
 ```
 executeReconciliationCycle: container not in this node's desired set
-├── running → cleanupUndesiredInstance(id)                  agent.go:1295
+├── running → cleanupUndesiredInstance(id)                  agent.go:1296
 │             removeContainer = pre_stop hook + stopInstanceWithGracePeriod
-└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1096
+└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1097
               removeContainer = runtime.Stop (no hook, container already dead)
-    both: teardownStaleInstance(id, removeContainer)        agent.go:1109
+    both: teardownStaleInstance(id, removeContainer)        agent.go:1110
     ├── FIRST, before anything is removed:
-    │   isInstanceMovedToAnotherNode(id)                    agent.go:1216
+    │   isInstanceMovedToAnotherNode(id)                    agent.go:1217
     │   ├── GET placement/instance/{id}: not found → false; error → error; this node → false
-    │   └── isControllerStopped(id)                         agent.go:1237
+    │   └── isControllerStopped(id)                         agent.go:1238
     │       GET derived/instance/{id}/controller_stopped: not found → false; error → error;
     │       value "true" → true (controller stop → not a move); else moved
     ├── read error → RETURN: container, local state and store untouched, WARN "cannot read
@@ -778,8 +785,8 @@ executeReconciliationCycle: container not in this node's desired set
     ├── drop local resource/backoff tracking; not moved → clearPullStatusFromStore
     │   (DELETE observed/instance/{id}/pull-status; kept after a move: keyed by ID only, M267 B2)
     ├── revoke token, detach volumes, removeContainer(), removeInstanceDataIfSupported
-    ├── publishRemovedInstanceState(id, moved)              agent.go:1156
-    │   ├── moved     → markMovedInstancePending(id)        agent.go:1170
+    ├── publishRemovedInstanceState(id, moved)              agent.go:1157
+    │   ├── moved     → markMovedInstancePending(id)        agent.go:1171
     │   │   GET observed/instance/{id}/node: missing or another node → nothing (the target
     │   │     published); GET state: stopped → nothing (final)
     │   │   TXN compare node revision + state revision → PUT state = pending,
@@ -789,7 +796,7 @@ executeReconciliationCycle: container not in this node's desired set
     │   └── not moved → PUT observed/instance/{id}/state = stopped (scale-down, controller
     │                   stop, no placement)
     ├── probe cleanup
-    └── releaseStaleInstanceNetwork(id, moved)              agent.go:1137
+    └── releaseStaleInstanceNetwork(id, moved)              agent.go:1138
         ReleaseIP (node-local); not moved → DeleteNetworkAllocation (network/allocation/{id},
         kept after a move: keyed by ID only, M267 B2)
 ```

@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -2198,10 +2199,10 @@ func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID str
 // publishInstanceStateUnlessStopped writes the instance's observed state by
 // compare-and-swap on the revision read just before, and never over stopped:
 // a stop is final for the agent (findInstancesPlacedOnThisNode skips it), and
-// the instance leaves the desired set next cycle (M241 2i.1). observed node is
-// written in the same transaction (M267 D4), which also compares the scanned
-// placement/node/{self}/{id} revision when known (R2-1). True when written.
-func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState) bool {
+// the instance leaves the desired set next cycle (M241 2i.1). observed node and
+// instanceFacts go in the same transaction (M267 D4, 3c.6), which also compares
+// the scanned placement/node/{self}/{id} revision when known (R2-1).
+func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, instanceFacts []store.Op) bool {
 	instanceID := instanceInfo.id
 	stateKey := types.KeyObservedInstanceState(instanceID)
 	var expectedRevision int64 // 0: the key must not exist yet
@@ -2224,11 +2225,11 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 			Key: types.KeyPlacementNodeInstance(nodeAgent.nodeID, instanceID), Revision: instanceInfo.placementRevision,
 		})
 	}
-	swapped, transactionError := nodeAgent.store.Transaction(ctx, compares,
-		[]store.Op{
-			{Type: store.OpPut, Key: stateKey, Value: []byte(string(state))},
-			{Type: store.OpPut, Key: types.KeyObservedInstanceNode(instanceID), Value: []byte(nodeAgent.nodeID)},
-		}, nil)
+	stateAndNode := []store.Op{
+		{Type: store.OpPut, Key: stateKey, Value: []byte(string(state))},
+		{Type: store.OpPut, Key: types.KeyObservedInstanceNode(instanceID), Value: []byte(nodeAgent.nodeID)},
+	}
+	swapped, transactionError := nodeAgent.store.Transaction(ctx, compares, append(stateAndNode, instanceFacts...), nil)
 	if transactionError != nil {
 		logging.Default().Error("failed to publish instance state, publishing next cycle", "instance", instanceID, "error", transactionError.Error())
 		return false
@@ -2241,21 +2242,25 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 }
 
 // publishInstanceStateToStore writes a complete set of observed-state facts for
-// the given instance: its existence marker, owning service, current state, the
-// node it is running on, and its IP address. When a NetworkProvider is configured,
-// an IP is allocated from the node's subnet. Without a provider, the container's
-// bridge IP from the runtime is published if available. Nothing is written when
-// another component stopped the instance meanwhile (M241 2i.1).
+// the given instance (marker, service, state, node, IP, network allocation) in
+// the one guarded transaction of publishInstanceStateUnlessStopped, so a move
+// can never land between the state and the IP (M267 3c.6). Nothing is written
+// over a stop (M241 2i.1); created-at stays create-only.
 func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string) {
 	instanceID, service := instanceInfo.id, instanceInfo.service
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state) {
+	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceID, runtimeIP)
+	instanceFacts := []store.Op{
+		{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
+		{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(service)},
+	}
+	if publishedContainerIP != "" {
+		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceIP(instanceID), Value: []byte(publishedContainerIP)})
+	}
+	if ipFromNetworkProvider {
+		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyNetworkAllocation(instanceID), Value: []byte(publishedContainerIP)})
+	}
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, nodeAgent.dropUnchangedPuts(ctx, instanceFacts)) {
 		return
-	}
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte("")); putError != nil {
-		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
-	}
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service)); putError != nil {
-		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 	}
 
 	createdAtKey := types.KeyObservedInstanceCreatedAt(instanceID)
@@ -2266,33 +2271,40 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 		nil); txnError != nil {
 		logging.Default().Error("failed to set created_at", "instance", instanceID, "error", txnError.Error())
 	}
+	nodeAgent.registerEndpointIdentityIfSupported(ctx, publishedContainerIP, service)
+}
 
-	publishedContainerIP := ""
+// resolvePublishedContainerIP returns the IP to publish before anything is
+// written: the network provider's allocation for this node (ipFromNetworkProvider,
+// also written as network/allocation/{id}), else a valid runtime IP, else "".
+func (nodeAgent *Agent) resolvePublishedContainerIP(ctx context.Context, instanceID string, runtimeIP string) (containerIP string, ipFromNetworkProvider bool) {
 	if nodeAgent.networkProvider != nil {
 		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
 		if allocateError != nil {
 			logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceID, "error", allocateError.Error())
-		} else {
-			publishedContainerIP = allocatedIP
-			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(allocatedIP)); putError != nil {
-				logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
-			}
-			if _, writeError := types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP); writeError != nil {
-				logging.Default().Error("failed to write network allocation", "instance", instanceID, "error", writeError.Error())
-			}
+			return "", false
 		}
-	} else if runtimeIP != "" {
-		if net.ParseIP(runtimeIP) == nil {
-			logging.Default().Warn("invalid container IP from runtime", "instance", instanceID, "ip", runtimeIP)
-		} else {
-			publishedContainerIP = runtimeIP
-			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(runtimeIP)); putError != nil {
-				logging.Default().Error("failed to publish container IP", "instance", instanceID, "error", putError.Error())
-			}
-		}
+		return allocatedIP, true
 	}
+	if runtimeIP != "" && net.ParseIP(runtimeIP) == nil {
+		logging.Default().Warn("invalid container IP from runtime", "instance", instanceID, "ip", runtimeIP)
+		return "", false
+	}
+	return runtimeIP, false
+}
 
-	nodeAgent.registerEndpointIdentityIfSupported(ctx, publishedContainerIP, service)
+// dropUnchangedPuts returns the puts whose stored value differs (or cannot be
+// read), so moving them into one transaction writes no more keys than the
+// separate idempotent Puts did (etcd transactions write unchanged values, M266).
+func (nodeAgent *Agent) dropUnchangedPuts(ctx context.Context, puts []store.Op) []store.Op {
+	changedPuts := make([]store.Op, 0, len(puts))
+	for _, put := range puts {
+		if storedFact, getError := nodeAgent.store.Get(ctx, put.Key); getError == nil && bytes.Equal(storedFact.Value, put.Value) {
+			continue
+		}
+		changedPuts = append(changedPuts, put)
+	}
+	return changedPuts
 }
 
 // reconcileResourceChanges compares the effective resource allocation for an

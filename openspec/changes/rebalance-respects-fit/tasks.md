@@ -202,7 +202,7 @@ Round-1 findings B1–B3, D1, S1–S3 confirmed fixed; new tests verified red on
 - [x] 3c.5 Checks as in 3.1.
   Result: `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
   `-race` on scheduler, agent, controllers ok (1.4 s, 29.8 s, 6.8 s).
-- [ ] 3c.6 Stop-time Codex check on 0754484, verified by the main session: the placement guard covers only the state
+- [x] 3c.6 Stop-time Codex check on 0754484, verified by the main session: the placement guard covers only the state
   transaction; `publishInstanceStateToStore` then writes the marker, service, `ip` and `network/allocation/{id}`
   with separate Puts (agent.go ~2248–2290), so a move between the transaction and those Puts lets the source
   overwrite the target's IP (the VIP points at the removed container until the target's next publish, ~1 s).
@@ -210,6 +210,15 @@ Round-1 findings B1–B3, D1, S1–S3 confirmed fixed; new tests verified red on
   allocation in the one guarded transaction; `created-at` stays create-only. Red first: a test that moves the
   instance between the source's state write and its IP write (inject via a store wrapper) and expects the target's
   IP to remain. Checks as in 3.1.
+  Result: `resolvePublishedContainerIP` runs before any write; `dropUnchangedPuts` keeps the marker, service, `ip`
+  and allocation puts whose stored value differs (same reads and key writes as the former idempotent Puts on etcd,
+  M266); they join state and node in the guarded transaction (≤ 6 ops + 2 compares); created-at stays create-only;
+  `registerEndpointIdentityIfSupported` runs only after a commit. Red: `TestSourcePublishNeverOverwritesTargetIP`
+  (store wrapper moves the instance and publishes it on node-2 right after the source's state transaction):
+  `observed/instance/web-1/ip = "10.100.1.2" … want node-2's "10.101.1.2"`, same for `network/allocation/web-1`;
+  passes after. Graphs (INSTANCE_LIFECYCLE, CALL, OBSERVABILITY line numbers), Flow 35, D4 updated. Checks:
+  `gofmt -l` empty, golangci-lint 0 issues, `go test ./...` 20 ok / 2 without tests, `-race` scheduler/agent/
+  controllers ok (1.4 s, 29.9 s, 6.7 s), `openspec validate` valid.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing

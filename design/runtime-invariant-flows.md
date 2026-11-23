@@ -1929,7 +1929,10 @@ target agent: starts the instance and publishes state and node in one transactio
   source's transaction fails once the target published); readiness only once its probe passes
 every agent's state publish also compares the revision of placement/node/{self}/{id} it scanned
   at the start of its cycle: the move deletes that key, so a source still in a long cycle (pull,
-  init) that scanned before the move cannot publish running + node = source over the target
+  init) that scanned before the move cannot publish running + node = source over the target;
+  the IP is resolved first and the marker, service, ip and network/allocation/{id} go into that
+  same guarded transaction (only the changed ones), so a move can never land between the
+  state and the IP (3c.6); created-at stays a separate create-only write
   pull failure → image_pull_backoff, start failure → failed (failure controller replaces it),
   target agent dead → stays pending, placement on the dead node → node-failure marks it
 ```

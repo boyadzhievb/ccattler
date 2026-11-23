@@ -241,10 +241,11 @@ executeReconciliationCycle(controller, deltaEvents)
 | Key Pattern | Where Written |
 |---|---|
 | `observed/instance/{id}/state` | publishInstanceStateToStore (by CAS via publishInstanceStateUnlessStopped, M241 2i.1) |
-| `observed/instance/{id}/service` | publishInstanceStateToStore |
-| `observed/instance/{id}/ip` | publishInstanceStateToStore |
+| `observed/instance/{id}/service` | publishInstanceStateToStore (in the guarded state transaction when changed, M267 3c.6) |
+| `observed/instance/{id}/ip` | publishInstanceStateToStore (in the guarded state transaction when changed, M267 3c.6) |
 | `observed/instance/{id}/node` | publishInstanceStateUnlessStopped (same transaction as the state, M267 D4); read by markMovedInstancePending |
 | `observed/instance/{id}/created-at` | publishInstanceStateToStore (write-once) |
+| `network/allocation/{id}` | publishInstanceStateToStore (with a network provider; in the guarded state transaction when changed, M267 3c.6); DELETE by releaseStaleInstanceNetwork (not after a move) |
 | `observed/instance/{id}/image` | publishInstanceImage (startInstanceAndPublishState, handleInstanceStartError) |
 | `observed/instance/{id}/started_at` | publishInstanceStartedAt (startInstanceAndPublishState, every start; read by the rollout controller, M241 D10) |
 | `observed/instance/{id}/probe/readiness` | DELETE by resetInstanceReadiness at every start (M241 B4) and by markMovedInstancePending (M267 D4); PUT by the probe scheduler |
@@ -277,6 +278,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
 | `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state and on the scanned `placement/node/{self}/{id}` revision, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4, R2-1) |
+| `resolvePublishedContainerIP` | `publishInstanceStateToStore` (before any write, M267 3c.6) |
+| `dropUnchangedPuts` | `publishInstanceStateToStore` (M267 3c.6) |
 | `deleteExitReason` | `executeReconciliationCycle` (if running) |
 | `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |
