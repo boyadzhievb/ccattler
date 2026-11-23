@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.95.0-beta <Badge type="tip" text="latest" /> {#v1-95-0-beta}
+## v1.96.0-beta <Badge type="tip" text="latest" /> {#v1-96-0-beta}
+
+**2026-11-23** — Unplaced-Demand Facts Outlive Their Instance.
+
+- **Unplaced-Demand Facts Outlive Their Instance** (M262) — Bug fix (found in the M243 review, 2026-11-23): the scheduler deleted an instance's unplaced reason and requirements only when it was placed, so a stopped or removed unplaced instance left them behind for good, and cluster scaling would have counted them as demand. They are now deleted as soon as the instance is no longer waiting for a placement, cluster scaling counts only instances that still wait, and the scheduler's own bookkeeping writes are capped per cycle so they never crowd out placements. Leftovers from earlier versions are removed on the first cycle after the upgrade.
+
+---
+
+## v1.95.0-beta {#v1-95-0-beta}
 
 **2026-11-23** — A Host Set Up With `cca init` Never Delivers Secrets.
 

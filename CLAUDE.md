@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M248 — A Host Set Up With `cca init` Never Delivers Secrets (v1.95.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M262 — Unplaced-Demand Facts Outlive Their Instance (v1.96.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
