@@ -260,6 +260,40 @@ so the same race class is closed in one place (the stop-time checks keep flaggin
   Result: `gofmt -l` empty; golangci-lint 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests; `-race`
   scheduler/agent/controllers ok (1.5 s, 29.9 s, 6.9 s); `openspec validate` rebalance-respects-fit and
   unplaced-facts-cleanup valid; SCHEDULING_GRAPH checker 0 mismatches.
+
+## 3e. Review round 4 (2026-11-23, on e554525..1a7869d; code-reviewer Opus high + Codex: request changes)
+
+3c.6 and 3d confirmed correct; their tests red on e554525. Remaining findings are all the same class: an agent write
+to `observed/instance/{id}/*` outside the placement guard. Fixing them one by one has taken three rounds, so the fix
+is structural (main session decision): **every agent write or delete under `observed/instance/{id}/` goes through
+the guarded helper, and a test enforces it.**
+
+| # | Finding | Resolution |
+|---|---|---|
+| B1 | Pull-failure path writes `pull-status` and status reason after a lost publish (agent.go ~879-895); never cleared on the target | **fix** 3e.1 |
+| B2 | Start path writes host ports, `started_at`, `image`, `config-hash`, deletes readiness, and `reconcileDesiredInstance` writes "starting"/"waiting for volumes", all unguarded (agent.go ~779-1013): can reset the target's readiness and min_healthy_time and cause one needless config restart | **fix** 3e.1 |
+| B3 | `exit_reason` written before the guarded crash-loop publish (crash_loop_backoff.go ~126/138) | **fix** 3e.1 |
+| B4 | Probe-progress delete unguarded (probes.go ~644) (Codex) | **fix** 3e.1 (guarded delete) |
+| Sg1 | Status reason, `last_exit`, secret-wait written after the commit, not in it (Codex) | **fix** 3e.1 (into the publish's `instanceFacts` where they belong to the same publish) |
+| S1 | `types.WriteNetworkAllocation` has no production caller (dead code) | **fix** 3e.2 |
+| S2 | `design/plans/reconciliation-consistency-contract.md` still names `maxTransactionChanges` | **fix** 3e.2 |
+| Sg2 | Probe-after-move test has no positive control (a current revision still writes ready) | **fix** 3e.2 |
+
+- [ ] 3e.1 One guarded writer for the agent's per-instance facts: `putGuardedInstanceFact` / a new guarded delete
+  (and the publish transaction's `instanceFacts` for facts of the same publish) are the only ways the agent writes
+  or deletes `observed/instance/{id}/*`, except the `stopped` write and cleanup of an instance this node still owns
+  (documented exceptions). Convert every call site found by the reviewer and any others. Red first: a subcase per
+  finding (B1 pull failure, B2 start path readiness/started_at/config-hash, B3 exit reason, B4 progress delete)
+  showing the source writes nothing after a move.
+- [ ] 3e.2 Enforcement test (AST or source scan over `agent/*.go`, not tests): fails on a plain `store.Put`,
+  `store.Delete` or unguarded transaction whose key comes from `types.KeyObservedInstance*` outside the guarded
+  helpers and the listed exceptions. S1: delete `WriteNetworkAllocation` (or replace with an op builder used by the
+  agent) and update its tests; S2 doc name; Sg2 positive control.
+- [ ] 3e.3 Docs: Flow 35 and D4 state the rule ("all per-instance observed writes are guarded by placement") and
+  its exceptions; graphs updated.
+- [ ] 3e.4 Checks as in 3.1.
+- Run 45254885232 (first closing full run, dispatched on 1a7869d before this round) tests code that 3e changes: it
+  can't count towards the two closing runs.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
