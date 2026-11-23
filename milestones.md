@@ -668,6 +668,8 @@ Overlap found 2026-11-23 (external review): M208 (Cloud-Backed Cluster Autoscali
 
 ### Phase 259 — Code Rules Checked in CI (M259)
 
+Known violation to fix when the linters land (found in M267 rework 3e, 2026-11-23): `executeReconciliationCycle` (`agent/agent.go`) is about 111 lines, over the 80-line limit; it was 114 before M267.
+
 Found 2026-11-23. CLAUDE.md, `design/Anti-pattern.md` and the `code-quality` agent all state the same rules: comment every function, no magic numbers, the 80-line limit, no duplication and typed enums. `design/Anti-pattern.md` said violations are caught "in code review and CI linting". Only code review checks them: `.golangci.yml` has never enabled `funlen`, `mnd`, `dupl`, `gocognit` or `revive`, and no test or script checks them. The M243 patterns review found typed-enum and duplication violations in fresh code that passed CI.
 
 A one-off measurement (temporary config, 83.8k lines of non-test Go):
