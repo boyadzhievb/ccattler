@@ -121,9 +121,12 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	placedInThisCycle := collectPlacedInstanceIDs(changes)
 
 	preemptionChanges := attemptPreemptions(
-		placeableUnplaced, placedInThisCycle, nodes, instances, placements,
-		placementConstraints, servicePriorities, statefulServices,
-		invalidResourceRequests,
+		placeableUnplaced, placedInThisCycle, nodes, changes,
+		preemptionInputs{
+			instances: instances, placements: placements, serviceResources: serviceResources,
+			placementConstraints: placementConstraints, servicePriorities: servicePriorities,
+			statefulServices: statefulServices, invalidResourceRequests: invalidResourceRequests,
+		},
 	)
 	changes = append(changes, preemptionChanges...)
 
@@ -202,76 +205,80 @@ func extractServicePriorities(facts []store.Fact) map[string]int {
 	return priorities
 }
 
-// attemptPreemptions tries to place still-unplaced instances by preempting
-// lower-priority running instances on eligible nodes. Only preempts when the
-// unplaced service has strictly higher priority than the victim.
+// preemptionInputs holds the read-only values attemptPreemptions and
+// findPreemptionVictim use: the cycle's facts and the request map placement
+// uses (M243 D12). The mutable state is in preemptionReservations.
+type preemptionInputs struct {
+	instances               map[string]*schedulerInstanceInfo      // instances are all known instances by ID
+	placements              map[string]string                      // placements map placed instance IDs to node IDs (from the store)
+	serviceResources        map[string]serviceResourceRequirements // serviceResources are the requests (millicores, whole MiB)
+	placementConstraints    map[string]*servicePlacementConstraint // placementConstraints are the services' placement rules
+	servicePriorities       map[string]int                         // servicePriorities are the declared priorities (0-1000)
+	statefulServices        map[string]bool                        // statefulServices are never victims (volume affinity)
+	invalidResourceRequests map[string]string                      // invalidResourceRequests are never victims (size unknown, B4)
+}
+
+// preemptionReservations is the state one cycle's preemptions change, so a
+// later requester in the cycle sees the earlier ones' reservations. Built by
+// newPreemptionReservations; only reserve writes it (P-N3).
+type preemptionReservations struct {
+	aliveNodes         []candidateNode   // aliveNodes carry remaining capacity; a preemption adds the victim's and takes the requester's
+	aliveNodeIndex     map[string]int    // aliveNodeIndex maps a node ID to its index in aliveNodes (read-only)
+	cyclePlacements    map[string]string // cyclePlacements are stored plus this cycle's placements; a preemption adds requester → node
+	preemptedInstances map[string]bool   // preemptedInstances are this cycle's victims, never chosen twice
+}
+
+// attemptPreemptions preempts, for each still-unplaced instance of a
+// priority > 0 service (highest first), one strictly lower-priority victim
+// whose stop makes room for it (D12). Only when such a requester exists does it
+// merge this cycle's placement changes and compute node usage (P-N1).
 func attemptPreemptions(
 	unplaced []string,
 	placedInThisCycle map[string]bool,
 	nodes map[string]*schedulerNodeInfo,
-	instances map[string]*schedulerInstanceInfo,
-	placements map[string]string,
-	placementConstraints map[string]*servicePlacementConstraint,
-	servicePriorities map[string]int,
-	statefulServices map[string]bool,
-	invalidResourceRequests map[string]string,
+	thisCycleChanges []controllers.Change,
+	inputs preemptionInputs,
 ) []controllers.Change {
-	var stillUnplaced []string
+	var requesters []string
 	for _, instanceID := range unplaced {
-		if !placedInThisCycle[instanceID] {
-			stillUnplaced = append(stillUnplaced, instanceID)
+		if instanceInfo := inputs.instances[instanceID]; !placedInThisCycle[instanceID] && instanceInfo != nil &&
+			inputs.servicePriorities[instanceInfo.service] > 0 {
+			requesters = append(requesters, instanceID)
 		}
 	}
-	if len(stillUnplaced) == 0 {
+	if len(requesters) == 0 {
 		return nil
 	}
-	sort.Slice(stillUnplaced, func(i, j int) bool {
-		serviceI := instances[stillUnplaced[i]].service
-		serviceJ := instances[stillUnplaced[j]].service
-		priorityI := servicePriorities[serviceI]
-		priorityJ := servicePriorities[serviceJ]
+	sort.Slice(requesters, func(i, j int) bool {
+		priorityI := inputs.servicePriorities[inputs.instances[requesters[i]].service]
+		priorityJ := inputs.servicePriorities[inputs.instances[requesters[j]].service]
 		if priorityI != priorityJ {
 			return priorityI > priorityJ
 		}
-		return stillUnplaced[i] < stillUnplaced[j]
+		return requesters[i] < requesters[j]
 	})
+	reservations := newPreemptionReservations(nodes, mergeThisCyclePlacements(inputs.placements, thisCycleChanges), inputs)
 
 	var changes []controllers.Change
 	preemptionCount := 0
-	preemptedInstances := make(map[string]bool)
-
-	for _, instanceID := range stillUnplaced {
+	for _, instanceID := range requesters {
 		if preemptionCount >= maxPreemptionsPerCycle {
 			break
 		}
-		instanceInfo := instances[instanceID]
-		if instanceInfo == nil {
-			continue
-		}
-		requesterPriority := servicePriorities[instanceInfo.service]
-		if requesterPriority == 0 {
-			continue
-		}
-
-		victimID, victimNode := findPreemptionVictim(
-			instanceInfo.service, requesterPriority,
-			nodes, instances, placements,
-			servicePriorities, placementConstraints,
-			statefulServices, invalidResourceRequests, preemptedInstances,
-		)
+		requesterService := inputs.instances[instanceID].service
+		victimID, victimNode := findPreemptionVictim(requesterService, inputs, reservations)
 		if victimID == "" {
 			continue
 		}
-
-		preemptedInstances[victimID] = true
+		reservations.reserve(instanceID, victimID, victimNode, inputs)
 		preemptionCount++
 		logging.Default().Info("scheduler: preempting instance",
 			"victim", victimID,
-			"victim_service", instances[victimID].service,
-			"victim_priority", strconv.Itoa(servicePriorities[instances[victimID].service]),
+			"victim_service", inputs.instances[victimID].service,
+			"victim_priority", strconv.Itoa(inputs.servicePriorities[inputs.instances[victimID].service]),
 			"requester", instanceID,
-			"requester_service", instanceInfo.service,
-			"requester_priority", strconv.Itoa(requesterPriority),
+			"requester_service", requesterService,
+			"requester_priority", strconv.Itoa(inputs.servicePriorities[requesterService]),
 			"node", victimNode,
 		)
 		changes = append(changes, controllers.Change{
@@ -283,73 +290,130 @@ func attemptPreemptions(
 	return changes
 }
 
-// findPreemptionVictim finds the lowest-priority running instance on an
-// eligible node that can be preempted by a service with the given priority.
-// Skips per-node and stateful services, and services whose request cannot
-// be read (stopping one frees an unknown amount). Returns "" if no victim.
-func findPreemptionVictim(
-	requesterService string,
-	requesterPriority int,
-	nodes map[string]*schedulerNodeInfo,
-	instances map[string]*schedulerInstanceInfo,
-	placements map[string]string,
-	servicePriorities map[string]int,
-	placementConstraints map[string]*servicePlacementConstraint,
-	statefulServices map[string]bool,
-	invalidResourceRequests map[string]string,
-	alreadyPreempted map[string]bool,
-) (string, string) {
-	type victimCandidate struct {
-		instanceID string
-		nodeID     string
-		priority   int
+// newPreemptionReservations builds the cycle's mutable preemption state: each
+// alive node's remaining capacity after cyclePlacements (stored plus this
+// cycle's placements), as placement computes it.
+func newPreemptionReservations(nodes map[string]*schedulerNodeInfo, cyclePlacements map[string]string, inputs preemptionInputs) *preemptionReservations {
+	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(cyclePlacements, inputs.instances, inputs.serviceResources)
+	reservations := &preemptionReservations{
+		aliveNodes: buildAliveCandidateNodes(nodes, usedCPU, usedMemory), cyclePlacements: cyclePlacements,
+		preemptedInstances: make(map[string]bool),
 	}
-	var candidates []victimCandidate
+	reservations.aliveNodeIndex = buildNodeIndexMap(reservations.aliveNodes)
+	return reservations
+}
 
-	for instanceID, nodeID := range placements {
-		if alreadyPreempted[instanceID] {
-			continue
-		}
-		instanceInfo := instances[instanceID]
-		if instanceInfo == nil || instanceInfo.state != types.InstanceRunning {
-			continue
-		}
-		node := nodes[nodeID]
-		if node == nil || node.state != types.NodeAlive {
+// reserve records a chosen preemption, the only writer of reservations
+// (P-N3): the node gains the victim's requests and loses the requester's (it
+// takes the room next cycle), the victim is never chosen again, and the
+// requester counts as placed there for a later per-node requester.
+func (reservations *preemptionReservations) reserve(requesterInstanceID string, victimID string, nodeID string, inputs preemptionInputs) {
+	freed := inputs.serviceResources[inputs.instances[victimID].service]
+	requested := inputs.serviceResources[inputs.instances[requesterInstanceID].service]
+	node := &reservations.aliveNodes[reservations.aliveNodeIndex[nodeID]]
+	node.availCPU += freed.cpu - requested.cpu
+	node.availMemory += freed.memory - requested.memory
+	reservations.preemptedInstances[victimID] = true
+	reservations.cyclePlacements[requesterInstanceID] = nodeID
+}
+
+// findPreemptionVictim returns the lowest-priority (then node ID, then
+// instance ID) running instance on a node placement would use for the
+// requester, whose stop makes room: node remaining + victim requests cover the
+// requester's (D12). Only finds; reserve records it. Returns "" if none.
+func findPreemptionVictim(requesterService string, inputs preemptionInputs, reservations *preemptionReservations) (string, string) {
+	type victimCandidate struct {
+		instanceID string // instanceID is the running instance that would be stopped
+		nodeID     string // nodeID is its node
+		priority   int    // priority is its service's priority, the first sort key
+	}
+	requesterPriority := inputs.servicePriorities[requesterService]
+	allowedNodes := make(map[string]*candidateNode)
+	for _, allowedNode := range allowedPreemptionNodes(requesterService, inputs, reservations) {
+		allowedNodes[allowedNode.id] = &reservations.aliveNodes[reservations.aliveNodeIndex[allowedNode.id]]
+	}
+	requested := inputs.serviceResources[requesterService]
+	var candidates []victimCandidate
+	for instanceID, nodeID := range inputs.placements {
+		instanceInfo := inputs.instances[instanceID]
+		victimNode := allowedNodes[nodeID]
+		if reservations.preemptedInstances[instanceID] || instanceInfo == nil || instanceInfo.state != types.InstanceRunning || victimNode == nil {
 			continue
 		}
 		victimService := instanceInfo.service
-		if victimService == requesterService {
+		victimPriority := inputs.servicePriorities[victimService]
+		if victimService == requesterService || victimPriority >= requesterPriority || !isPreemptibleService(victimService, inputs) {
 			continue
 		}
-		victimPriority := servicePriorities[victimService]
-		if victimPriority >= requesterPriority {
-			continue
+		if !stopMakesRoom(victimNode, inputs.serviceResources[victimService], requested) {
+			continue // stopping it would not let the requester fit (D12)
 		}
-		constraint := placementConstraints[victimService]
-		if constraint != nil && constraint.mode == types.PlacementModePerNode {
-			continue
-		}
-		if statefulServices[victimService] || invalidResourceRequests[victimService] != "" {
-			continue // stateful: volume affinity; unreadable request: size unknown (M243 B4)
-		}
-		candidates = append(candidates, victimCandidate{
-			instanceID: instanceID,
-			nodeID:     nodeID,
-			priority:   victimPriority,
-		})
+		candidates = append(candidates, victimCandidate{instanceID: instanceID, nodeID: nodeID, priority: victimPriority})
 	}
 	if len(candidates) == 0 {
 		return "", ""
 	}
-
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].priority != candidates[j].priority {
 			return candidates[i].priority < candidates[j].priority
 		}
+		if candidates[i].nodeID != candidates[j].nodeID {
+			return candidates[i].nodeID < candidates[j].nodeID
+		}
 		return candidates[i].instanceID < candidates[j].instanceID
 	})
 	return candidates[0].instanceID, candidates[0].nodeID
+}
+
+// allowedPreemptionNodes returns the alive nodes placement would consider for
+// the requester: its constraints, and for a per-node service only nodes not
+// already hosting it, counting stored, this cycle's and reserved placements
+// (review round 2 I1). A victim elsewhere would free room it never uses.
+func allowedPreemptionNodes(requesterService string, inputs preemptionInputs, reservations *preemptionReservations) []candidateNode {
+	candidates := filterByConstraints(reservations.aliveNodes, requesterService, inputs.placementConstraints)
+	if constraint := inputs.placementConstraints[requesterService]; constraint != nil && constraint.mode == types.PlacementModePerNode {
+		candidates = filterOutNodesAlreadyHostingService(candidates, requesterService, reservations.cyclePlacements, inputs.instances)
+	}
+	return candidates
+}
+
+// isPreemptibleService reports whether a service's instances may be victims:
+// never per-node, stateful (volume affinity) or with an unreadable request
+// (stopping one frees an unknown amount, M243 B4).
+func isPreemptibleService(victimService string, inputs preemptionInputs) bool {
+	if constraint := inputs.placementConstraints[victimService]; constraint != nil && constraint.mode == types.PlacementModePerNode {
+		return false
+	}
+	return !inputs.statefulServices[victimService] && inputs.invalidResourceRequests[victimService] == ""
+}
+
+// stopMakesRoom reports whether the node's remaining capacity plus the
+// victim's freed requests cover the requested CPU and memory, checked as
+// placement checks them (a zero request always fits, node_heap.go).
+func stopMakesRoom(node *candidateNode, freed serviceResourceRequirements, requested serviceResourceRequirements) bool {
+	if requested.cpu > 0 && node.availCPU+freed.cpu < requested.cpu {
+		return false
+	}
+	return requested.memory <= 0 || node.availMemory+freed.memory >= requested.memory
+}
+
+// mergeThisCyclePlacements returns the stored placements plus the placement
+// puts in changes, so preemption counts this cycle's placements against node
+// capacity.
+func mergeThisCyclePlacements(placements map[string]string, changes []controllers.Change) map[string]string {
+	merged := make(map[string]string, len(placements))
+	for instanceID, nodeID := range placements {
+		merged[instanceID] = nodeID
+	}
+	for _, change := range changes {
+		if change.Type != store.OpPut || !strings.HasPrefix(change.Key, types.ScanPlacements) {
+			continue
+		}
+		if instanceID := strings.TrimPrefix(change.Key, types.ScanPlacements); !strings.Contains(instanceID, "/") {
+			merged[instanceID] = string(change.Value)
+		}
+	}
+	return merged
 }
 
 // extractStatefulServices reads desired/service/{name}/stateful facts and

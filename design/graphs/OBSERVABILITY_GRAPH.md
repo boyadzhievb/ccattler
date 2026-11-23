@@ -91,7 +91,7 @@ Histogram.ObserveSince(startTime, labelValues...)   (:253)
 
 ### Recording call chain
 ```
-HARunner.Run → LeaderElection.Run                  (controllers/ha_runner.go:78)
+HARunner.Run → LeaderElection.Run                  (controllers/ha_runner.go:96)
   └── startControllers → Runner.Run                 (:101)
       └── runSingleController → runControllerLoop   (controllers/runner.go:238)
           └── executeReconciliationCycle             (:409)
@@ -137,7 +137,7 @@ GetAllTransitions() → map[string]int64                     (:113)
 cmd/cca/command_server.go:
   NewMetricsCollector()                             (:382)
   → NewHARunner(factStore, nodeID, metrics, ...)    (:396)
-  → haRunner.Metrics() → *MetricsCollector          (ha_runner.go:95)
+  → haRunner.Metrics() → *MetricsCollector          (ha_runner.go:113)
 ```
 
 ---

@@ -26,17 +26,24 @@ func TestCollectResourceQuantitiesReadEffectiveFirst(t *testing.T) {
 	}
 	store.SortFacts(facts)
 
-	cpuMillicores, unreadableCPU := collectCPUMillicoresBySuffix(facts, "resources/cpu", "test", "skipped")
+	testReader := resourceQuantityReader{readerName: "test", consequence: "skipped"}
+	cpuMillicores := collectResourceQuantities(facts, types.ResourceKindCPU, testReader)
 	if cpuMillicores["web"] != 1500 || cpuMillicores["api"] != 2000 {
 		t.Errorf("cpu = %v, want web 1500 (effective) and api 2000 (bare cores)", cpuMillicores)
 	}
-	if _, hasDB := cpuMillicores["db"]; hasDB || !unreadableCPU["db"] {
-		t.Errorf("db's unreadable effective cpu: values %v, unreadable %v; want db only unreadable", cpuMillicores, unreadableCPU)
+	if _, hasDB := cpuMillicores["db"]; hasDB {
+		t.Errorf("db's unreadable effective cpu read as %d, want it left out (no fallback to desired)", cpuMillicores["db"])
 	}
 
-	memoryBytes, unreadableMemory := collectMemoryBytesBySuffix(facts, "resources/memory", "test", "skipped")
-	if memoryBytes["web"] != 1000000000 || !unreadableMemory["api"] || len(memoryBytes) != 1 {
-		t.Errorf("memory = %v, unreadable %v; want web 1000000000 and api unreadable", memoryBytes, unreadableMemory)
+	memoryBytes := collectResourceQuantities(facts, types.ResourceKindMemory, testReader)
+	if memoryBytes["web"] != 1000000000 || len(memoryBytes) != 1 {
+		t.Errorf("memory = %v, want only web 1000000000 (api's 512MB left out)", memoryBytes)
+	}
+
+	webOnlyReader := resourceQuantityReader{readerName: "test", consequence: "skipped",
+		includeService: func(serviceName string) bool { return serviceName == "web" }}
+	if selectedCPU := collectResourceQuantities(facts, types.ResourceKindCPU, webOnlyReader); len(selectedCPU) != 1 || selectedCPU["web"] != 1500 {
+		t.Errorf("cpu with a web-only filter = %v, want only web 1500", selectedCPU)
 	}
 }
 

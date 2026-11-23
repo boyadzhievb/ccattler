@@ -120,16 +120,16 @@ IntentResolverController.Reconcile(ctx, facts)               :53
 │           (never delete: the instance controller only sees names with an
 │            effective count, so 0 is what stops the orphan instances)
 │
-├── extractAutoscalerResourceIntents(facts)                  :318  (by key suffix: team/web works, M243 B5)
-│   └── collectServiceResourceValues(facts, intent/autoscaler/service/) :343
-│       └── splitServiceResourceKey(key, prefix)             [resource_migration.go:99]
-├── extractEffectiveResources(facts)                         :336  → "{svc}/{cpu|memory}" → value
+├── extractAutoscalerRecommendations(facts)                  :303  (by key suffix: team/web works, M243 B5)
+│   └── collectServiceResourceValues(facts, intent/autoscaler/service/) :316
+│       └── types.SplitServiceResourceKey(key, prefix)       [types/resource_kind.go:95]
+├── extractEffectiveResources(facts)                         :309  → map[types.ServiceResourceKey]value
 │
-├── resolveEffectiveResourceChanges(intents, effective)      :208
-│   └── FOR EACH service (sorted), FOR cpu, memory WITH a recommendation:
-│       └── PUT effective/service/{svc}/resources/{kind} = recommendation (when it differs)
-└── deleteEffectiveResourcesWithoutIntent(intents, effective) :233  (M243 D7, B3)
-    └── FOR EACH effective "{svc}/{kind}" (sorted; split at the LAST slash) whose kind has
+├── resolveEffectiveResourceChanges(recommendations, effective) :207
+│   └── FOR EACH types.SortedServiceResourceKeys(recommendations) WITH a value:
+│       └── PUT types.LookupResourceKindSpec(kind).EffectiveKey(svc) = recommendation (when it differs)
+└── deleteEffectiveResourcesWithoutIntent(recommendations, effective) :230  (M243 D7, B3)
+    └── FOR EACH effective {svc, kind} (sorted by service, then kind; a struct key, 3f.2) with
         no recommendation (also when desired has none):
         └── DELETE effective/service/{svc}/resources/{kind} (desired applies again)
 ```
@@ -338,63 +338,83 @@ AutoscaleController.Reconcile(ctx, facts)                    :123
 ├── extractStabilizationWindows(facts)                       :538
 ├── extractEventTargets(facts)                               :630
 ├── extractScheduleRules(facts)                              :671
-├── extractVerticalBoundsByResource(facts)                   :799
-│   └── "{svc}/{cpu|memory}" → verticalResourceBounds{minimum, maximum, unreadable}, found by the
-│       /scale/vertical/ segment (team/web works); types.ParseCPUMillicores / ParseMemoryBytes;
-│       unreadable → logged once, flagged (no recommendation for that resource, S4)
-├── extractCurrentResources(facts)                           :837
-│   ├── collectCPUMillicoresBySuffix(facts, "resources/cpu")     [helpers.go:106]
-│   └── collectMemoryBytesBySuffix(facts, "resources/memory")    [helpers.go:114]
-│       └── collectResourceQuantitiesEffectiveFirst              [helpers.go:121]
-│           (effective/service/ first, then desired/service/; unreadable → left out,
-│            logged once → no recommendation)
+├── extractVerticalBoundsByResource(facts)                   :841
+│   └── map[types.ServiceResourceKey]verticalResourceBounds{minimum, maximum, unreadable}, found by the
+│       /scale/vertical/ segment (team/web works); kind via types.ParseResourceKind, parsed with
+│       types.LookupResourceKindSpec(kind).Parse; unreadable → logged once, flagged (no recommendation, S4)
+├── extractCurrentResources(facts, verticalBounds)           :876  → map[types.ServiceResourceKey]int64 (P-N5)
+│   ├── types.CollectEffectiveFirstResourceValues(facts), once per cycle (R5-N5) [types/resource_kind.go:120]
+│   └── FOR EACH kind in types.ResourceKindSpecs(): parseChosenResourceQuantities(chosen, kind, reader) [helpers.go:121]
+│           (effective/service/ first, then desired/service/, no fallback from an unreadable effective
+│            value; only services with a vertical policy for that kind (resourceQuantityReader.includeService,
+│            review N4); unreadable → left out, logged once → no recommendation)
 │
 ├── buildHorizontalScalingChanges(facts, policies, ...)      :154
 │   └── FOR EACH service with scale policy:
 │       ├── computeRawHorizontalRecommendation(...)          :214
 │       │   └── ceil(currentInstances * currentMetric / targetMetric)
 │       ├── clamp to [min, max]
-│       ├── applyStabilizationWindow(...)                    :464
+│       ├── applyStabilizationWindow(...)                    :501
 │       │   └── windowed max for scale-down, windowed min for scale-up
-│       ├── isWithinScheduleWindow(now, schedule)            :706
+│       ├── isWithinScheduleWindow(now, schedule)            :743
 │       │   └── enforce minimum during window
 │       └── PUT intent/autoscaler/service/{svc}/instances = N
 │
-└── buildVerticalScalingChanges(bounds, cpu, memory, metrics, intents, now) :278
-    ├── recordVerticalMetricSamples(...)                      :337
-    ├── FOR EACH declared "{svc}/{kind}" (sorted; split at the LAST slash):
-    │   └── computeVerticalResourceChange(svc, dimension, now) :357
+└── buildVerticalScalingChanges(bounds, current, metrics, recommendations, now) :312
+    ├── recordVerticalMetricSamples(...)                      :361
+    ├── FOR EACH types.SortedServiceResourceKeys(bounds) (service, then kind; struct key, 3f.2):
+    │   ├── kindSpec = lookupVerticalResourceSpec(kind)       :282  (verticalResourceSpecs :273, one entry per
+    │   │   kind: toVerticalUnit, boundsInVerticalUnit, formatVerticalUnit; memory = whole MiB, min up /
+    │   │   max down via inWholeMebibytes :825, D7 / review finding 1; CPU = keepQuantity / keepBounds)
+    │   └── computeVerticalResourceChange(svc, dimension, now) :381
     │       ├── current unknown, a bound unreadable (S4) or no max → no recommendation
-    │       ├── computeP95FromSamples(samples)               :446
-    │       ├── applyVerticalStabilization(...)               :397
-    │       └── PUT intent/autoscaler/service/{svc}/resources/{kind}
-    │           = types.FormatCPUMillicores / types.FormatMemoryMiB (rounded up)
-    └── buildRemovedVerticalPolicyDeletions(bounds, intents)  :313  (per resource, B3)
-        └── kind with no scale/vertical/{kind}/ fact → DELETE intent/autoscaler/service/{svc}/resources/{kind}
+    │       ├── computeP95FromSamples(samples)               :474
+    │       ├── raw = ceil(current × p95 / target), clampToRange (int64) :513
+    │       ├── applyVerticalStabilization(...)               :423  (int history, shared with its tests)
+    │       ├── stabilized == current (same unit) → no change (no repeated put, no write loop)
+    │       └── PUT kindSpec.IntentKey(svc) = kindSpec.formatVerticalUnit (types.FormatCPUMillicores / FormatMebibytes)
+    └── buildRemovedVerticalPolicyDeletions(bounds, recommendations) :345  (per resource, B3)
+        └── recommendation whose {svc, kind} has no bounds → DELETE types.LookupResourceKindSpec(kind).IntentKey(svc)
     (bare legacy recommendations are no longer rewritten here: startup migration, below)
 ```
 
 ### Startup migration (controllers/resource_migration.go, M243 D9)
 
 ```
-cca server → startControllersWithLeaderElection (cmd/cca/command_server.go) builds the HA runner, then
-└── go RunControllersAfterResourceMigration(ctx, store, start)  :206  (returns at once to the server: API comes up)
-    └── runControllersAfterResourceMigration(ctx, store, backoff, start) :214
-        ├── LOOP attempt = 1, 2, …:
-        │   ├── MigrateUnitlessResourceRecommendations(ctx, store)   :57   (up to resourceMigrationMaxAttempts = 5)
-        │   │   ├── planUnitlessResourceRewrites(ctx, store)         :77
-        │   │   │   ├── Scan desired/service/ → extractVerticalBoundsByResource (bounds only; desired/ never written)
-        │   │   │   └── Scan intent/autoscaler/service/ and effective/service/:
-        │   │   │       ├── splitServiceResourceKey(key, prefix)     :111  (suffix /resources/{cpu|memory})
-        │   │   │       ├── skip unless types.IsBareInteger(value) (idempotent: unit values untouched)
-        │   │   │       └── formatLegacyQuantity(kind, bounds.clamp(n)) :123 (cpu "{n}m"; memory MiB rounded up; B2)
-        │   │   └── commitResourceRewrites(ctx, store, rewrites)     :133
-        │   │       ├── batchRewritesByService(rewrites)             :155  (whole services; 2 items per rewrite
-        │   │       │                                                       (compare + put) ≤ etcdTransactionOperationLimit, C1)
-        │   │       └── store.Transaction(Compare{key, scanned revision}, Put{key, unit value}); lost CAS → scan again
-        │   ├── success → start() = haControllerRunner.Run(ctx); RETURN true   (controllers start only now, C2)
-        │   └── failure → log attempt + next delay; wait resourceMigrationBackoff.delayAfterAttempt(attempt) :194
-        │                 (1s doubling to 1min) or ctx.Done() → RETURN false (controllers never start)
+cca server → startControllersWithLeaderElection (cmd/cca/command_server.go) builds the HA runner with
+NewHARunner(…, ResourceMigrationPrecondition(store) [resource_migration.go:211], …) (required, R5-I1), then
+└── go RunControllersAfterResourceMigration(ctx, store, start)  :222  (returns at once to the server: API comes up)
+    └── runControllersAfterResourceMigration(ctx, store, backoff, start) :228
+        └── runAfterPreconditionSucceeds(ctx, precondition, backoff, start)  [precondition_gate.go:64; generic gate,
+            │   P-N7; ControllerPrecondition{Name "resource unit migration", Check} :21, the name in its log, R5-N7]
+            ├── LOOP attempt = 1, 2, …:
+            │   ├── precondition.Check = MigrateUnitlessResourceRecommendations(ctx, store) :41  (up to
+            │   │   │   resourceMigrationMaxAttempts = 5; count = total over batches and attempts, N3)
+            │   │   ├── planUnitlessResourceRewrites(ctx, store)     :68  (two explicit passes, P-N8)
+            │   │   │   ├── scanMigrationLayer × 3 (desired/ for bounds only, never written; intent; effective) :104
+            │   │   │   ├── pass 1: collectRecommendedResources(intentFacts) :92  → set of {svc, kind} with an intent
+            │   │   │   └── pass 2: planLayerRewrites(intent, all) + planLayerRewrites(effective, recommended only) :115
+            │   │   │       ├── types.SplitServiceResourceKey(key, prefix)  (suffix /resources/{cpu|memory})
+            │   │   │       ├── skip unless types.IsBareInteger(value) (idempotent: unit values untouched)
+            │   │   │       ├── effective: skip unless its {svc, kind} has an intent (D9, review N6)
+            │   │   │       └── formatLegacyQuantity(lookupVerticalResourceSpec(kind), n, bounds) :146
+            │   │   │           (a legacy 0 under a declared max becomes the max, CPU and memory, R5-N1; clamp in
+            │   │   │            the sizing unit: "{n}m" / whole MiB; a max of 0 is no max; when
+            │   │   │            boundsInVerticalUnit(bounds).maximum == 0 (memory < 1 MiB, R5-N2) clamp exactly and
+            │   │   │            write types.FormatMemoryBytesExactly ("100k", "512Ki"; 3e.7, 3e.8); B2, D7)
+            │   │   └── commitResourceRewrites(ctx, store, rewrites) :162  → (committed count, all committed, error)
+            │   │       ├── batchRewritesByService(rewrites)         :189  (whole services; 2 items per rewrite
+            │   │       │                                                   (compare + put) ≤ etcdTransactionOperationLimit, C1)
+            │   │       └── store.Transaction(Compare{key, scanned revision}, Put{key, unit value}); lost CAS → scan again
+            │   ├── success → start() = haControllerRunner.Run(ctx); RETURN true   (controllers start only now, C2)
+            │   ├── ctx cancelled → RETURN false, no error log (leadership loss or shutdown, round 2 N-b)
+            │   └── failure → log precondition.Name + attempt + next delay; wait
+            │                 preconditionRetryBackoff.delayAfterAttempt(attempt) [precondition_gate.go:52] (1s doubling to 1min) or ctx.Done() → RETURN false
+
+Each leadership acquisition (HA_GRAPH: HARunner.startControllers, ha_runner.go:121) runs the leadership
+precondition (the same migration, a required NewHARunner argument from cmd/cca) through runAfterPreconditionSucceeds in a goroutine with
+controllerCtx, before Runner.Run; leadership loss cancels the retry (D9, review finding 3). HARunner never
+names the migration (P-N7).
 ```
 
 **Watch:** `desired/service/`, `observed/metric/`, `observed/instance/`, `derived/instance/`, `intent/autoscaler/service/`, `derived/service/`, `effective/service/` (current request, M243)
@@ -440,16 +460,17 @@ EvictionController.Reconcile(ctx, facts)                     :81
 ├── extractNodeMemoryCapacity(facts)                         :250
 ├── extractNodeMemoryAvailable(facts)                        :256
 │   └── extractNodeMemoryMiB(facts, suffix)                  :263  (plain MiB integers via Atoi, M243 D6;
-│       corrupt → node skipped)
-├── extractInstanceNodeMapping(facts)                        :286
-├── extractServiceMemoryRequests(facts)                      :371
-│   └── collectMemoryBytesBySuffix (effective-first) → MiB rounded up; unreadable services returned apart
-├── excludeUnreadableServiceInstances(extractInstanceServiceMapping(facts) :305, unreadable) :384
-│   └── instances of a service with an unreadable request are not ranked (logged once)
-├── extractInstanceStates(facts)                             :324
-├── extractServiceQoSClasses(facts)                          :348
-├── extractServicePrioritiesFromFacts(facts)                 :431
-├── extractExistingNodePressure(facts)                       :399
+│       corrupt → node skipped, warnCorruptNodeMemoryOnce :290 logs it once per key/value via types.OccurrenceSet, review N2, P-N6)
+├── extractInstanceNodeMapping(facts)                        :299
+├── extractServiceMemoryRequests(facts)                      :385
+│   └── collectResourceQuantities(facts, types.ResourceKindMemory, reader) (effective-first) → MiB rounded up; an unreadable request is
+│       left out and logged once, so its instances stay candidates credited 0 MiB (D6, decision A:
+│       never immune; other instances may then also be evicted in the cycle, up to the cap)
+├── extractInstanceServiceMapping(facts)                     :318  (no filtering: every service ranks)
+├── extractInstanceStates(facts)                             :337
+├── extractServiceQoSClasses(facts)                          :361
+├── extractServicePrioritiesFromFacts(facts)                 :429
+├── extractExistingNodePressure(facts)                       :397
 │
 ├── reconcileNodePressure(capacity, available, existing)     :117
 │   └── FOR EACH node (all in MiB):
@@ -738,13 +759,24 @@ The node agent is NOT a controller — it runs its own loop (1s ticker + watch e
 | `effectiveInstanceState` | buildInstanceMapsFromFields, processInstanceForRecovery, markInstancesOnUnreachableNodesAsFailed |
 | `endpointEligibleState` | buildDesiredEndpoints |
 | `splitFactKeyIntoEntityAndSuffix` | collectStringValuesBySuffix, collectIntValuesBySuffix |
-| `splitServiceResourceKey` | planUnitlessResourceRewrites, collectServiceResourceValues |
+| `types.SplitServiceResourceKey` | planLayerRewrites, collectRecommendedResources, collectServiceResourceValues, types.CollectEffectiveFirstResourceValues |
+| `types.CollectEffectiveFirstResourceValues` | collectResourceQuantities (controllers), extractServiceResourcesFromFacts (scheduler); the agent follows the same rule per key |
+| `types.LookupResourceKindSpec` / `types.ResourceKindSpecs` | collectResourceQuantities, extractVerticalBoundsByResource, extractCurrentResources, resolveEffectiveResourceChanges, deleteEffectiveResourcesWithoutIntent, buildRemovedVerticalPolicyDeletions, verticalResourceSpecs, scheduler parseServiceRequest, lang validateServiceResourceValues |
+| `types.SortedServiceResourceKeys` | buildVerticalScalingChanges, buildRemovedVerticalPolicyDeletions, resolveEffectiveResourceChanges, deleteEffectiveResourcesWithoutIntent |
+| `types.OccurrenceSet.IsFirstOccurrence` | types.WarnUnreadableResourceOnce, warnCorruptNodeMemoryOnce (P-N6) |
+| `lookupVerticalResourceSpec` | buildVerticalScalingChanges, planLayerRewrites |
 | `extractVerticalBoundsByResource` | AutoscaleController.Reconcile, planUnitlessResourceRewrites |
-| `MigrateUnitlessResourceRecommendations` | runControllersAfterResourceMigration (retried until it succeeds) |
+| `extractAutoscalerRecommendations` | IntentResolverController.Reconcile, AutoscaleController.Reconcile |
+| `MigrateUnitlessResourceRecommendations` | ResourceMigrationPrecondition (retried until it succeeds) |
+| `ResourceMigrationPrecondition` | runControllersAfterResourceMigration, startControllersWithLeaderElection → NewHARunner (required argument, R5-I1) |
+| `parseChosenResourceQuantities` | collectResourceQuantities, extractCurrentResources (effective-first map built once per cycle, R5-N5) |
 | `RunControllersAfterResourceMigration` | startControllersWithLeaderElection (cmd/cca/command_server.go), in a goroutine; starts the HA runner |
-| `collectCPUMillicoresBySuffix` | extractCurrentResources (autoscale) |
-| `collectMemoryBytesBySuffix` | extractCurrentResources (autoscale), extractServiceMemoryRequests (eviction) |
-| `collectResourceQuantitiesEffectiveFirst` | collectCPUMillicoresBySuffix, collectMemoryBytesBySuffix |
+| `runControllersAfterResourceMigration` | RunControllersAfterResourceMigration (server start) |
+| `runAfterPreconditionSucceeds` | runControllersAfterResourceMigration (server start), HARunner.startControllers goroutine (each leadership acquisition, D9, P-N7) |
+| `planLayerRewrites` / `collectRecommendedResources` / `scanMigrationLayer` | planUnitlessResourceRewrites (P-N8) |
+| `verticalResourceBounds.inWholeMebibytes` | verticalResourceSpecs (memory boundsInVerticalUnit: buildVerticalScalingChanges, formatLegacyQuantity; D7) |
+| `warnCorruptNodeMemoryOnce` | extractNodeMemoryMiB (eviction, review N2) |
+| `collectResourceQuantities` | extractCurrentResources (autoscale), extractServiceMemoryRequests (eviction) |
 | `collectStringValuesBySuffix` | parseCurrentNodeStates, parseNodeAdvertiseAddresses |
 | `extractServiceExposedPorts` | EndpointController.Reconcile |
 | `controllerOutputPrefixes` | buildControllerDependencyGraph, enforceWriteDomain, appendInputKeyGuards |

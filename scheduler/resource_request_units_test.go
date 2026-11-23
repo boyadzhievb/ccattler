@@ -302,3 +302,144 @@ func TestSchedulerRebalanceLeavesInvalidRequestServiceInPlace(t *testing.T) {
 		t.Errorf("%d placement changes for a service with an unreadable request, want none", invalidMoves)
 	}
 }
+
+// TestSchedulerSkipsPreemptionThatCannotMakeRoom: spec resource-requests, "No
+// victim makes room" (D12). Stopping small's 128Mi on a 3072 MiB node never
+// lets a 64Gi request fit, so nothing is preempted.
+func TestSchedulerSkipsPreemptionThatCannotMakeRoom(t *testing.T) {
+	facts := buildFacts(
+		kv(types.KeyDesiredServicePriority("big"), "900"),
+		kv(types.KeyDesiredServiceResourcesMemory("big"), "64Gi"),
+		kv(types.KeyObservedInstanceService("big-1"), "big"),
+		kv(types.KeyObservedInstanceState("big-1"), "pending"),
+		kv(types.KeyDesiredServicePriority("small"), "10"),
+		kv(types.KeyDesiredServiceResourcesMemory("small"), "128Mi"),
+		kv(types.KeyObservedInstanceService("small-1"), "small"),
+		kv(types.KeyObservedInstanceState("small-1"), "running"),
+		kv(types.KeyPlacementInstance("small-1"), "node-1"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "3072"),
+	)
+	changes, reconcileError := newTestScheduler().Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if _, stopped := putValueOf(changes, types.KeyDerivedInstanceControllerStopped("small-1")); stopped {
+		t.Errorf("preempted small-1, although stopping it cannot make room for 64Gi")
+	}
+	if reason, _ := putValueOf(changes, types.KeyDerivedSchedulerUnplacedReason("big-1")); reason != string(types.UnplacedInsufficientCapacity) {
+		t.Errorf("big-1 unplaced reason = %q, want %s", reason, types.UnplacedInsufficientCapacity)
+	}
+}
+
+// TestSchedulerPreemptsOnlyAVictimThatMakesRoom: spec resource-requests, "The
+// victim that makes room" (D12). node-1 is full with tiny (128Mi) and medium
+// (1Gi); only stopping medium lets 768Mi fit. node-2's cheap victim would make
+// room too, but the requester requires a label only node-1 has.
+func TestSchedulerPreemptsOnlyAVictimThatMakesRoom(t *testing.T) {
+	facts := buildFacts(
+		kv(types.KeyDesiredServicePriority("urgent"), "900"),
+		kv(types.KeyDesiredServiceResourcesMemory("urgent"), "768Mi"),
+		kv(types.KeyDesiredServicePlacementRequire("urgent", "tier"), "gold"),
+		kv(types.KeyObservedInstanceService("urgent-1"), "urgent"),
+		kv(types.KeyObservedInstanceState("urgent-1"), "pending"),
+		kv(types.KeyDesiredServicePriority("tiny"), "5"),
+		kv(types.KeyDesiredServiceResourcesMemory("tiny"), "128Mi"),
+		kv(types.KeyObservedInstanceService("tiny-1"), "tiny"),
+		kv(types.KeyObservedInstanceState("tiny-1"), "running"),
+		kv(types.KeyPlacementInstance("tiny-1"), "node-1"),
+		kv(types.KeyDesiredServicePriority("medium"), "10"),
+		kv(types.KeyDesiredServiceResourcesMemory("medium"), "1Gi"),
+		kv(types.KeyObservedInstanceService("medium-1"), "medium"),
+		kv(types.KeyObservedInstanceState("medium-1"), "running"),
+		kv(types.KeyPlacementInstance("medium-1"), "node-1"),
+		kv(types.KeyDesiredServicePriority("cheap"), "1"),
+		kv(types.KeyDesiredServiceResourcesMemory("cheap"), "1Gi"),
+		kv(types.KeyObservedInstanceService("cheap-1"), "cheap"),
+		kv(types.KeyObservedInstanceState("cheap-1"), "running"),
+		kv(types.KeyPlacementInstance("cheap-1"), "node-2"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "1152"),
+		kv(testKeyObservedNodeLabel("node-1", "tier"), "gold"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "1024"),
+	)
+	changes, reconcileError := newTestScheduler().Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if _, stopped := putValueOf(changes, types.KeyDerivedInstanceControllerStopped("medium-1")); !stopped {
+		t.Errorf("medium-1 not preempted; it is the only victim that makes room on a node urgent may use")
+	}
+	for _, keptInstance := range []string{"tiny-1", "cheap-1"} {
+		if _, stopped := putValueOf(changes, types.KeyDerivedInstanceControllerStopped(keptInstance)); stopped {
+			t.Errorf("preempted %s, want only medium-1", keptInstance)
+		}
+	}
+}
+
+// perNodeRequesterFacts returns a per-node agent (priority 900) running on
+// node-1 with a second instance pending, cheap (priority 5) on node-1, and the
+// extra facts; agent's request is agentCPU ("" for none).
+func perNodeRequesterFacts(agentCPU string, extraEntries ...struct{ k, v string }) []store.Fact {
+	entries := []struct{ k, v string }{
+		kv(types.KeyDesiredServicePriority("agent"), "900"),
+		kv(types.KeyDesiredServicePlacementMode("agent"), "per-node"),
+		kv(types.KeyObservedInstanceService("agent-1"), "agent"),
+		kv(types.KeyObservedInstanceState("agent-1"), "running"),
+		kv(types.KeyPlacementInstance("agent-1"), "node-1"),
+		kv(types.KeyObservedInstanceService("agent-2"), "agent"),
+		kv(types.KeyObservedInstanceState("agent-2"), "pending"),
+		kv(types.KeyDesiredServicePriority("cheap"), "5"),
+		kv(types.KeyObservedInstanceService("cheap-1"), "cheap"),
+		kv(types.KeyObservedInstanceState("cheap-1"), "running"),
+		kv(types.KeyPlacementInstance("cheap-1"), "node-1"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "4096"),
+	}
+	if agentCPU != "" {
+		entries = append(entries, kv(types.KeyDesiredServiceResourcesCPU("agent"), agentCPU))
+	}
+	return buildFacts(append(entries, extraEntries...)...)
+}
+
+// TestSchedulerPerNodeRequesterPreemptsOnlyOnNodesItCanUse: spec
+// resource-requests, "The victim that makes room" (D12, review round 2 I1).
+// node-1 already hosts agent-1, so placement never puts agent-2 there: cheap
+// on node-1 is not a victim even though stopping it frees enough; low, which
+// fills node-2, is. With no other node, nothing is preempted (zero request).
+func TestSchedulerPerNodeRequesterPreemptsOnlyOnNodesItCanUse(t *testing.T) {
+	twoNodeFacts := perNodeRequesterFacts("500m",
+		kv(types.KeyDesiredServiceResourcesCPU("cheap"), "200m"),
+		kv(types.KeyDesiredServicePriority("low"), "10"),
+		kv(types.KeyDesiredServiceResourcesCPU("low"), "1000m"),
+		kv(types.KeyObservedInstanceService("low-1"), "low"),
+		kv(types.KeyObservedInstanceState("low-1"), "running"),
+		kv(types.KeyPlacementInstance("low-1"), "node-2"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "1000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "4096"),
+	)
+	changes, reconcileError := newTestScheduler().Reconcile(context.Background(), twoNodeFacts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if _, stopped := putValueOf(changes, types.KeyDerivedInstanceControllerStopped("cheap-1")); stopped {
+		t.Errorf("preempted cheap-1 on node-1, which already hosts agent-1, so agent-2 can never use it")
+	}
+	if _, stopped := putValueOf(changes, types.KeyDerivedInstanceControllerStopped("low-1")); !stopped {
+		t.Errorf("low-1 not preempted; it is the victim on node-2, the only node agent-2 may use")
+	}
+
+	zeroRequestChanges, zeroRequestError := newTestScheduler().Reconcile(context.Background(), perNodeRequesterFacts(""))
+	if zeroRequestError != nil {
+		t.Fatal(zeroRequestError)
+	}
+	if _, stopped := putValueOf(zeroRequestChanges, types.KeyDerivedInstanceControllerStopped("cheap-1")); stopped {
+		t.Errorf("zero request: preempted cheap-1, although agent-2 cannot use node-1, the only node")
+	}
+}

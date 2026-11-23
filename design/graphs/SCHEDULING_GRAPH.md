@@ -9,21 +9,20 @@ without reading scheduler source files.
 ### Scheduler.Reconcile → top-level pipeline
 ```
 Scheduler.Reconcile(ctx, facts)                                  :93
-├── extractNodeInfoFromFacts(facts)                              :97/:1453  → map[nodeID]*schedulerNodeInfo
-├── extractInstanceInfoFromFacts(facts)                          :98/:1419  → map[instanceID]*schedulerInstanceInfo
+├── extractNodeInfoFromFacts(facts)                              :97/:1517  → map[nodeID]*schedulerNodeInfo
+├── extractInstanceInfoFromFacts(facts)                          :98/:1483  → map[instanceID]*schedulerInstanceInfo
 │   └── derived/instance/{id}/controller_stopped = true → state stopped: never placed, no
 │       load, resources, spread or per-node slot (a surplus the instance controller marked;
 │       without it the testbed per-node cpu 1500 rollout stalled, M241 2i.2)
 ├── extractPlacementsFromFacts(facts)                            :99  → map[instanceID]nodeID
-├── extractServiceResourcesFromFacts(facts)                      :100 [resource_requests.go:82]
+├── extractServiceResourcesFromFacts(facts)                      :100 [resource_requests.go:28]
 │   │   → map[svc]serviceResourceRequirements{cpu millicores, memory MiB rounded up},
 │   │     map[svc]"{key}={value}" of an unreadable request (M243 D4/D5)
-│   ├── collectStoredResourceRequests(facts, desired/service/)   [resource_requests.go:46]
-│   ├── collectStoredResourceRequests(facts, effective/service/) (keys ending /resources/cpu|memory)
-│   ├── effectiveFirst(effective, desired) per resource          [resource_requests.go:71]
+│   ├── types.CollectEffectiveFirstResourceValues(facts)         [types/resource_kind.go:120; shared with
+│   │   controllers.collectResourceQuantities, 3f.3] → {svc, kind} → {FactKey, FactValue}
 │   │   (an unreadable effective value does NOT fall back to desired: the agent uses it)
-│   └── parseServiceRequest(cpu, memory)                         [resource_requests.go:119]
-│       ├── types.ParseCPUMillicores / types.ParseMemoryBytes → types.MemoryBytesToMiBRoundedUp
+│   └── parseServiceRequest(svc, chosen)                         [resource_requests.go:51]
+│       ├── FOR EACH types.ResourceKindSpecs() (CPU first): kindSpec.Parse; memory → types.MemoryBytesToMiBRoundedUp
 │       └── parse error → types.WarnUnreadableResourceOnce("scheduler", key, value) → invalid,
 │           no request entry (its placed instances count 0: the stated exception)
 ├── extractPlacementConstraints(facts)                           :101 → map[svc]*servicePlacementConstraint
@@ -32,36 +31,36 @@ Scheduler.Reconcile(ctx, facts)                                  :93
 ├── extractStatefulServices(facts)                               :105 → map[svc]bool
 │
 ├── findUnplacedPendingInstances(instances, placements)          :108 → []instanceID
-├── excludeInvalidRequestInstances(unplaced, instances, invalid) :109 [resource_requests.go:142]
+├── excludeInvalidRequestInstances(unplaced, instances, invalid) :109 [resource_requests.go:75]
 │   └── → placeableUnplaced (instances of invalid services are never placed nor preempt)
-├── buildInvalidResourceRequestChanges(facts, invalid)           :110 [resource_requests.go:163]
+├── buildInvalidResourceRequestChanges(facts, invalid)           :110 [resource_requests.go:96]
 │   ├── PUT derived/scheduler/invalid_resource_request/{svc} = "{key}={value}" (when changed)
 │   └── DELETE it for services no longer invalid
 │
-├── shouldDeferInitialPlacement(placements, unplaced, nodes)     :112/:152
+├── shouldDeferInitialPlacement(placements, unplaced, nodes)     :112/:155
 │   ├── existing placements > 0 → false (scale-up, not first boot)
 │   ├── gracePeriod <= 0 → false (tests)
 │   ├── first call → record firstPendingSeenAt, return true
 │   ├── elapsed < gracePeriod → true (still waiting)
 │   └── elapsed >= gracePeriod → false (proceed)
 │
-├── attemptPlacements(placeableUnplaced, nodes, ...)             :115/:735
+├── attemptPlacements(placeableUnplaced, nodes, ...)             :115/:799
 │   [full tree in §2]
 │
 ├── collectPlacedInstanceIDs(changes)                            :121 → map[instanceID]bool
 │
-├── attemptPreemptions(placeableUnplaced, placedInThisCycle, ...) :123/:208
+├── attemptPreemptions(placeableUnplaced, placed, nodes, changes, inputs) :123/:235
 │   [full tree in §5]
 │
-├── emitUnplacedDemandFacts(unplaced, placed, nodes, ..., invalid) :130/:796
+├── emitUnplacedDemandFacts(unplaced, placed, nodes, ..., invalid) :133/:860
 │   [full tree in §6]
 │
-├── cleanupStaleUnplacedFacts(facts, placements, placed)         :135
+├── cleanupStaleUnplacedFacts(facts, placements, placed)         :138
 │
-├── rebalancePlacedInstances(nodes, instances, ..., pinned)      :137/:455
-│   [full tree in §4; pinned = extractRebalancePinnedServices(facts, stateful, invalid) :140]
+├── rebalancePlacedInstances(nodes, instances, ..., pinned)      :140/:519
+│   [full tree in §4; pinned = extractRebalancePinnedServices(facts, stateful, invalid) :143]
 │
-└── detectAndLogNodePressure(nodes, placements, instances, ...)  :144/:708
+└── detectAndLogNodePressure(nodes, placements, instances, ...)  :147/:772
     └── FOR EACH alive node:
         ├── cpuPercent = usedCPU * 100 / availCPU
         ├── memPercent = usedMemory * 100 / availMemory
@@ -159,7 +158,7 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
     │   ├── maxSkew from constraint (default 1): zone eligible if count < minCount + maxSkew
     │   └── cache.BestNodeInZones(acceptableZones)               [cache.go:48]
     ├── [default] cache.BestNode()                               [cache.go:38]
-    ├── loadPerNode[bestNode]++                                  :967
+    ├── loadPerNode[bestNode]++                                  :979
     ├── serviceInstancesPerNode[bestNode]++
     ├── cache.RecordPlacement(bestNode, reqCPU, reqMem)          :968
     │   └── decrement resources, ++load, ++serviceInstanceCount, heap.Fix or heap.Remove [cache.go:71]
@@ -199,15 +198,15 @@ placeGroupedInstances(groupedUnplaced, svcToGroup, state)        :1661
 
 ### rebalancePlacedInstances → detect imbalance → migrate
 ```
-Reconcile → extractRebalancePinnedServices(facts, stateful, invalid) :140/:414
-├── stateful services (extractStatefulServices :357)
+Reconcile → extractRebalancePinnedServices(facts, stateful, invalid) :143/:478
+├── stateful services (extractStatefulServices :421)
 ├── services with an unreadable resource request (size unknown, M243 D5)
 ├── extractSharedVolumeNames(facts)                              :434
 │   └── observed/volume/{name}/access == "shared"
 └── + services with desired/service/{svc}/volume/{vol} where vol not shared
     [absent access mode = exclusive → pinned]
 
-rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
+rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:421
 ├── collectAliveNodeIDs(nodes)                                   :500
 │   └── sorted list of alive node IDs
 │
@@ -254,27 +253,41 @@ rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
 
 ### attemptPreemptions → stop low-priority victims for high-priority requesters
 ```
-attemptPreemptions(placeableUnplaced, placedInThisCycle, nodes, ...) :208
+Reconcile :123 → attemptPreemptions(placeableUnplaced, placedInThisCycle, nodes, changes,
+    preemptionInputs{instances, placements, serviceResources, constraints, priorities,
+                     stateful, invalid})                       :211  (read-only; M243 D12: the request map placement uses)
+
+attemptPreemptions(unplaced, placed, nodes, thisCycleChanges, inputs) :235
 │   (placeableUnplaced excludes services with an unreadable request: they never preempt, M243 D5)
-├── stillUnplaced = unplaced \ placedInThisCycle
+├── requesters = unplaced \ placedInThisCycle, priority > 0 only; none → return (no copy, no usage, P-N1)
+├── sort requesters: highest priority first, then instanceID    :252
+├── reservations = newPreemptionReservations(nodes,              :296  (the only mutable state, N-d)
+│       mergeThisCyclePlacements(placements, thisCycleChanges) :403, inputs)
+│   ├── computeNodeLoadAndResourceUsage(cyclePlacements, ...) → usedCPU, usedMemory
+│   └── {aliveNodes: buildAliveCandidateNodes(...) → remaining cpu (millicores) / memory (MiB),
+│        aliveNodeIndex: buildNodeIndexMap(aliveNodes), cyclePlacements, preemptedInstances}
 │
-├── sort stillUnplaced: highest priority first, then instanceID  :214
-│
-└── FOR EACH stillUnplaced with priority > 0:                    :243
-    ├── findPreemptionVictim(svc, priority, nodes, ..., invalid)  :256/:290
-    │   └── FOR EACH placed running instance:                    :309
-    │       ├── skip if already preempted
-    │       ├── skip if not running
-    │       ├── skip if node not alive
-    │       ├── skip if same service as requester
-    │       ├── skip if victimPriority >= requesterPriority      :326 [strictly less]
-    │       ├── skip if per-node mode                            :330
-    │       ├── skip if stateful, or its request is unreadable :333 (size unknown, M243 B4)
-    │       └── collect → sort by priority asc, then instanceID  :346
-    │   └── return first candidate (lowest priority victim)
+└── FOR EACH requester, while preemptionCount < maxPreemptionsPerCycle (explicit counter, P-N4): :264
+    ├── findPreemptionVictim(svc, inputs, reservations)          :324  (single victim, D12; only finds, P-N3)
+    │   ├── allowedPreemptionNodes(requester, inputs, reservations) :372  (as placement does):
+    │   │   ├── filterByConstraints(aliveNodes, requester, constraints)
+    │   │   └── per-node requester → filterOutNodesAlreadyHostingService(…, reservations.cyclePlacements, …)
+    │   │       (stored + this cycle's + reserved placements; review round 2 I1)
+    │   └── FOR EACH stored placement (instance → node):         :337
+    │       ├── skip if already preempted, not running, or its node is not alive and allowed
+    │       ├── skip if same service, or victimPriority >= requesterPriority [strictly less]  :345
+    │       ├── skip unless isPreemptibleService(victim)         :383  (not per-node, stateful or
+    │       │                                                           unreadable request, M243 B4)
+    │       ├── skip unless stopMakesRoom(node, victim requests, requester requests) :348/:393
+    │       │   (node remaining + victim's cpu/MiB ≥ requester's; a zero request always fits)
+    │       └── collect → sort by priority asc, then node ID, then instanceID  :356
+    │   └── first candidate, or "" (nothing preempted; the requester stays insufficient_capacity)
+    ├── reservations.reserve(requester, victim, node, inputs)    :310  (the only writer, P-N3):
+    │   node remaining += victim − requester; victim marked preempted; cyclePlacements[requester] = node
+    │   (a later per-node requester of the service skips it)
     │
     └── emit:
-        └── PUT derived/instance/{victimID}/controller_stopped = "true"  :279
+        └── PUT derived/instance/{victimID}/controller_stopped = "true"  :286
     [cap: maxPreemptionsPerCycle (3)]
 ```
 
@@ -288,32 +301,34 @@ attemptPreemptions(placeableUnplaced, placedInThisCycle, nodes, ...) :208
 | Priority 0 requesters | Yes | Default/unset never preempts |
 | Same service | Yes | Don't cannibalize own instances |
 | Unreadable resource request | Yes | Size unknown, so stopping it frees an unknown amount (M243 B4) |
+| Stop would not make room | Yes | Node remaining + its requests do not cover the requester's (M243 D12); no victim sets |
+| Node the requester may not use | Yes | Only nodes placement would use: `filterByConstraints`, and for a per-node requester none already hosting it (M243 D12, round 2 I1) |
 
 ## 6. Unplaced Demand Facts
 
 ### emitUnplacedDemandFacts → signal autoscaler
 ```
-emitUnplacedDemandFacts(unplaced, placed, nodes, instances, ..., invalid) :796
-├── countAliveNodes(nodes)                                       :819
+emitUnplacedDemandFacts(unplaced, placed, nodes, instances, ..., invalid) :860
+├── countAliveNodes(nodes)                                       :883
 │
 └── FOR EACH unplaced instance not in placedInThisCycle:
-    ├── classifyUnplacedReason(info, alive, nodes, constraints, invalid) :832
+    ├── classifyUnplacedReason(info, alive, nodes, constraints, invalid) :896
     │   ├── service request unreadable → "invalid_resource_request" (checked FIRST, so it is never
     │   │   "no_nodes", which cluster scaling counts as demand; filterInsufficientCapacityDemand
     │   │   is an allow-list and ignores it, M243 D5)
     │   ├── aliveCount == 0 → "no_nodes"
-    │   ├── countConstraintMatchingNodes() == 0 → "volume_home_node_unavailable" | "unsatisfiable_constraint" :865
+    │   ├── countConstraintMatchingNodes() == 0 → "volume_home_node_unavailable" | "unsatisfiable_constraint" :929
     │   └── else → "insufficient_capacity" (a request no node's remaining cpu/MiB covers)
     │
-    └── buildUnplacedFactChanges(instanceID, reason, requirements) :915
+    └── buildUnplacedFactChanges(instanceID, reason, requirements) :979
         ├── PUT derived/scheduler/unplaced/{id}/reason = reason
         └── PUT derived/scheduler/unplaced/{id}/requirements = JSON {cpu millicores, memory MiB}
 ```
 
 ### cleanupStaleUnplacedFacts
 ```
-cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)  :958
-├── extractExistingUnplacedInstanceIDs(facts)                    :980
+cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)  :1022
+├── extractExistingUnplacedInstanceIDs(facts)                    :1044
 └── FOR EACH existing unplaced ID:
     └── if now placed → DELETE derived/scheduler/unplaced/{id}/*
 ```
@@ -399,14 +414,14 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `observed/node/{id}/restrict/{key}` | agent | `extractNodeInfoFromFacts` :1269 |
 | `observed/instance/{id}/state` | agent | `extractInstanceInfoFromFacts` :1243 |
 | `observed/instance/{id}/service` | agent | `extractInstanceInfoFromFacts` :1243 |
-| `effective/service/{svc}/resources/cpu` | intent resolver (from the vertical autoscaler) | `extractServiceResourcesFromFacts` resource_requests.go:82, read first (M243 D4) |
+| `effective/service/{svc}/resources/cpu` | intent resolver (from the vertical autoscaler) | `extractServiceResourcesFromFacts` resource_requests.go:28, read first (M243 D4) |
 | `effective/service/{svc}/resources/memory` | intent resolver | `extractServiceResourcesFromFacts`, read first |
 | `desired/service/{svc}/resources/cpu` | compiler | `extractServiceResourcesFromFacts` (when no effective value); `types.ParseCPUMillicores` |
 | `desired/service/{svc}/resources/memory` | compiler | `extractServiceResourcesFromFacts`; `types.ParseMemoryBytes`, then MiB rounded up |
 | `derived/scheduler/invalid_resource_request/{svc}` | self | `buildInvalidResourceRequestChanges` (stale ones deleted) |
 | `desired/service/{svc}/placement/*` | compiler | `extractPlacementConstraints` :1359 |
 | `desired/service/{svc}/priority` | compiler | `extractServicePriorities` :174 |
-| `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :347 |
+| `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :421 |
 | `desired/service/{svc}/placement/rebalance` | compiler | `extractPlacementConstraints` → `constraint.rebalance` (opt-in for `findMovableInstances`) |
 | `desired/service/{svc}/volume/{vol}` | compiler | `extractRebalancePinnedServices` :371 |
 | `observed/volume/{vol}/access` | node agent | `extractSharedVolumeNames` :392 |
@@ -422,16 +437,16 @@ RemoveNode(nodeID)                                               [cache.go:93]
 |---|---|---|
 | `placement/instance/{id}` | nodeID | `placeBatchedInstances` :976, `placeOneGroup` :1712, `buildRebalanceMoveChanges` :586 |
 | `placement/node/{nodeID}/{id}` | "" | `placeBatchedInstances` :977, `placeOneGroup` :1713, `buildRebalanceMoveChanges` :588 |
-| `derived/scheduler/unplaced/{id}/reason` | reason string (incl. `invalid_resource_request`) | `buildUnplacedFactChanges` :915 |
-| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :915 |
-| `derived/scheduler/invalid_resource_request/{svc}` | `{key}={value}` of the unreadable request | `buildInvalidResourceRequestChanges` resource_requests.go:163; read by `/api/status` → `cca status` "Resources:" line (M243 D5) |
-| `derived/instance/{id}/controller_stopped` | "true" | `attemptPreemptions` :208 |
+| `derived/scheduler/unplaced/{id}/reason` | reason string (incl. `invalid_resource_request`) | `buildUnplacedFactChanges` :979 |
+| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :979 |
+| `derived/scheduler/invalid_resource_request/{svc}` | `{key}={value}` of the unreadable request | `buildInvalidResourceRequestChanges` resource_requests.go:96; read by `/api/status` → `cca status` "Resources:" line (M243 D5) |
+| `derived/instance/{id}/controller_stopped` | "true" | `attemptPreemptions` :235 (only a victim whose stop makes room, D12) |
 
 ### Deletes
 | Key Pattern | Deleted By |
 |---|---|
-| `placement/node/{oldNode}/{id}` | `buildRebalanceMoveChanges` :697 |
-| `derived/scheduler/unplaced/{id}/*` | `cleanupStaleUnplacedFacts` :958 |
+| `placement/node/{oldNode}/{id}` | `buildRebalanceMoveChanges` :761 |
+| `derived/scheduler/unplaced/{id}/*` | `cleanupStaleUnplacedFacts` :1022 |
 | `derived/scheduler/invalid_resource_request/{svc}` | `buildInvalidResourceRequestChanges` (request readable again) |
 
 ## DSL Syntax → Fact Keys → Constraint Fields
@@ -455,65 +470,71 @@ RemoveNode(nodeID)                                               [cache.go:93]
 |---|---|---|
 | `Scheduler.Reconcile` | scheduler.go:93 | Runner.executeReconciliationCycle |
 | `Scheduler.Watch` | scheduler.go:67 | Runner.setupControllerWatches |
-| `shouldDeferInitialPlacement` | scheduler.go:152 | Reconcile |
-| `extractNodeInfoFromFacts` | scheduler.go:1453 | Reconcile |
-| `extractInstanceInfoFromFacts` | scheduler.go:1419 | Reconcile |
-| `extractPlacementsFromFacts` | scheduler.go:1511 | Reconcile |
-| `extractServiceResourcesFromFacts` | resource_requests.go:82 | Reconcile (M243 D4: effective-first, MiB rounded up) |
-| `extractPlacementConstraints` | scheduler.go:1551 | Reconcile |
-| `extractServiceGroupMemberships` | scheduler.go:1907 | Reconcile |
-| `extractServicePriorities` | scheduler.go:188 | Reconcile |
-| `extractStatefulServices` | scheduler.go:357 | Reconcile |
-| `findUnplacedPendingInstances` | scheduler.go:1179 | Reconcile |
-| `attemptPlacements` | scheduler.go:735 | Reconcile |
-| `collectPlacedInstanceIDs` | scheduler.go:781 | Reconcile |
-| `attemptPreemptions` | scheduler.go:208 | Reconcile |
-| `findPreemptionVictim` | scheduler.go:290 | attemptPreemptions |
-| `emitUnplacedDemandFacts` | scheduler.go:796 | Reconcile |
-| `classifyUnplacedReason` | scheduler.go:832 | emitUnplacedDemandFacts (invalid request checked first) |
-| `countConstraintMatchingNodes` | scheduler.go:865 | classifyUnplacedReason |
-| `buildUnplacedFactChanges` | scheduler.go:915 | emitUnplacedDemandFacts |
-| `buildUnplacedRequirements` | scheduler.go:936 | buildUnplacedFactChanges |
-| `cleanupStaleUnplacedFacts` | scheduler.go:958 | Reconcile |
-| `extractExistingUnplacedInstanceIDs` | scheduler.go:980 | cleanupStaleUnplacedFacts |
-| `rebalancePlacedInstances` | scheduler.go:455 | Reconcile |
-| `executeRebalanceMoves` | scheduler.go:496 | rebalancePlacedInstances |
-| `collectAliveNodeIDs` | scheduler.go:546 | rebalancePlacedInstances |
-| `computeRunningLoadPerNode` | scheduler.go:559 | rebalancePlacedInstances |
-| `computeMaxMinLoad` | scheduler.go:580 | rebalancePlacedInstances |
-| `sumNodeLoad` | scheduler.go:596 | rebalancePlacedInstances |
-| `findOverloadedNodes` | scheduler.go:606 | rebalancePlacedInstances |
-| `findMovableInstances` | scheduler.go:621 | executeRebalanceMoves |
-| `selectRebalanceTarget` | scheduler.go:668 | executeRebalanceMoves |
-| `countServiceInstancesPerNode` | scheduler.go:1194 | attemptPlacements, executeRebalanceMoves |
-| `buildRebalanceMoveChanges` | scheduler.go:697 | executeRebalanceMoves |
-| `detectAndLogNodePressure` | scheduler.go:708 | Reconcile |
-| `computeNodeLoadAndResourceUsage` | scheduler.go:1212 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |
-| `buildAliveCandidateNodes` | scheduler.go:1239 | attemptPlacements, rebalancePlacedInstances |
-| `buildNodeIndexMap` | scheduler.go:1263 | attemptPlacements |
-| `buildNodeZoneMap` | scheduler.go:1273 | attemptPlacements |
-| `computeServiceZonePlacements` | scheduler.go:1287 | attemptPlacements |
-| `buildNodeServicesMap` | scheduler.go:1839 | attemptPlacements |
-| `partitionUnplacedByGroup` | scheduler.go:1926 | attemptPlacements |
-| `placeGroupedInstances` | scheduler.go:1953 | attemptPlacements |
-| `placeOneGroup` | scheduler.go:1976 | placeGroupedInstances |
-| `findExistingGroupNode` | scheduler.go:2019 | placeOneGroup |
-| `computeGroupResourceTotal` | scheduler.go:2039 | placeOneGroup |
-| `selectLeastLoadedNode` | scheduler.go:1362 | placeOneGroup |
-| `placeUngroupedInstances` | scheduler.go:1019 | attemptPlacements |
-| `groupInstancesByService` | scheduler.go:1030 | placeUngroupedInstances |
-| `sortedServiceNames` | scheduler.go:1043 | placeUngroupedInstances |
-| `placeBatchedInstances` | scheduler.go:1056 | placeUngroupedInstances |
-| `filterByConstraints` | scheduler.go:1639 | placeBatchedInstances, selectRebalanceTarget |
-| `filterByRestrictions` | scheduler.go:1787 | filterByConstraints (no constraints path) |
-| `satisfiesRequireLabels` | scheduler.go:1762 | filterByConstraints |
-| `toleratesRestrictions` | scheduler.go:1776 | filterByConstraints, filterByRestrictions |
-| `filterOutNodesAlreadyHostingService` | scheduler.go:1613 | placeBatchedInstances (per-node) |
-| `rankByPreferences` | scheduler.go:1804 | placeBatchedInstances |
-| `rankByAffinityHints` | scheduler.go:1861 | placeBatchedInstances |
-| `findMinZones` | scheduler.go:1127 | placeBatchedInstances (zone-spread, maxSkew param) |
-| `resolveInstanceResourceNeeds` | scheduler.go:1163 | placeOneGroup, computeGroupResourceTotal |
-| `updateNodeResourcesAfterPlacement` | scheduler.go:1314 | placeBatchedInstances, placeOneGroup |
+| `shouldDeferInitialPlacement` | scheduler.go:155 | Reconcile |
+| `extractNodeInfoFromFacts` | scheduler.go:1517 | Reconcile |
+| `extractInstanceInfoFromFacts` | scheduler.go:1483 | Reconcile |
+| `extractPlacementsFromFacts` | scheduler.go:1575 | Reconcile |
+| `extractServiceResourcesFromFacts` | resource_requests.go:28 | Reconcile (M243 D4: effective-first, MiB rounded up) |
+| `extractPlacementConstraints` | scheduler.go:1615 | Reconcile |
+| `extractServiceGroupMemberships` | scheduler.go:1971 | Reconcile |
+| `extractServicePriorities` | scheduler.go:191 | Reconcile |
+| `extractStatefulServices` | scheduler.go:421 | Reconcile |
+| `findUnplacedPendingInstances` | scheduler.go:1243 | Reconcile |
+| `attemptPlacements` | scheduler.go:799 | Reconcile |
+| `collectPlacedInstanceIDs` | scheduler.go:845 | Reconcile |
+| `attemptPreemptions` | scheduler.go:235 | Reconcile |
+| `findPreemptionVictim` | scheduler.go:324 | attemptPreemptions |
+| `isPreemptibleService` | scheduler.go:383 | findPreemptionVictim |
+| `stopMakesRoom` | scheduler.go:393 | findPreemptionVictim (M243 D12) |
+| `mergeThisCyclePlacements` | scheduler.go:403 | attemptPreemptions (only when a priority > 0 requester exists, P-N1) |
+| `newPreemptionReservations` | scheduler.go:296 | attemptPreemptions |
+| `preemptionReservations.reserve` | scheduler.go:310 | attemptPreemptions (the only writer of reservations, P-N3) |
+| `allowedPreemptionNodes` | scheduler.go:372 | findPreemptionVictim (same node set as placement, review round 2 I1) |
+| `emitUnplacedDemandFacts` | scheduler.go:860 | Reconcile |
+| `classifyUnplacedReason` | scheduler.go:896 | emitUnplacedDemandFacts (invalid request checked first) |
+| `countConstraintMatchingNodes` | scheduler.go:929 | classifyUnplacedReason |
+| `buildUnplacedFactChanges` | scheduler.go:979 | emitUnplacedDemandFacts |
+| `buildUnplacedRequirements` | scheduler.go:1000 | buildUnplacedFactChanges |
+| `cleanupStaleUnplacedFacts` | scheduler.go:1022 | Reconcile |
+| `extractExistingUnplacedInstanceIDs` | scheduler.go:1044 | cleanupStaleUnplacedFacts |
+| `rebalancePlacedInstances` | scheduler.go:519 | Reconcile |
+| `executeRebalanceMoves` | scheduler.go:560 | rebalancePlacedInstances |
+| `collectAliveNodeIDs` | scheduler.go:610 | rebalancePlacedInstances |
+| `computeRunningLoadPerNode` | scheduler.go:623 | rebalancePlacedInstances |
+| `computeMaxMinLoad` | scheduler.go:644 | rebalancePlacedInstances |
+| `sumNodeLoad` | scheduler.go:660 | rebalancePlacedInstances |
+| `findOverloadedNodes` | scheduler.go:670 | rebalancePlacedInstances |
+| `findMovableInstances` | scheduler.go:685 | executeRebalanceMoves |
+| `selectRebalanceTarget` | scheduler.go:732 | executeRebalanceMoves |
+| `countServiceInstancesPerNode` | scheduler.go:1258 | attemptPlacements, executeRebalanceMoves |
+| `buildRebalanceMoveChanges` | scheduler.go:761 | executeRebalanceMoves |
+| `detectAndLogNodePressure` | scheduler.go:772 | Reconcile |
+| `computeNodeLoadAndResourceUsage` | scheduler.go:1276 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure, newPreemptionReservations |
+| `buildAliveCandidateNodes` | scheduler.go:1303 | attemptPlacements, rebalancePlacedInstances, newPreemptionReservations |
+| `buildNodeIndexMap` | scheduler.go:1327 | attemptPlacements, newPreemptionReservations |
+| `buildNodeZoneMap` | scheduler.go:1337 | attemptPlacements |
+| `computeServiceZonePlacements` | scheduler.go:1351 | attemptPlacements |
+| `buildNodeServicesMap` | scheduler.go:1903 | attemptPlacements |
+| `partitionUnplacedByGroup` | scheduler.go:1990 | attemptPlacements |
+| `placeGroupedInstances` | scheduler.go:2017 | attemptPlacements |
+| `placeOneGroup` | scheduler.go:2040 | placeGroupedInstances |
+| `findExistingGroupNode` | scheduler.go:2083 | placeOneGroup |
+| `computeGroupResourceTotal` | scheduler.go:2103 | placeOneGroup |
+| `selectLeastLoadedNode` | scheduler.go:1426 | placeOneGroup |
+| `placeUngroupedInstances` | scheduler.go:1083 | attemptPlacements |
+| `groupInstancesByService` | scheduler.go:1094 | placeUngroupedInstances |
+| `sortedServiceNames` | scheduler.go:1107 | placeUngroupedInstances |
+| `placeBatchedInstances` | scheduler.go:1120 | placeUngroupedInstances |
+| `filterByConstraints` | scheduler.go:1703 | placeBatchedInstances, selectRebalanceTarget, allowedPreemptionNodes |
+| `filterByRestrictions` | scheduler.go:1851 | filterByConstraints (no constraints path) |
+| `satisfiesRequireLabels` | scheduler.go:1826 | filterByConstraints |
+| `toleratesRestrictions` | scheduler.go:1840 | filterByConstraints, filterByRestrictions |
+| `filterOutNodesAlreadyHostingService` | scheduler.go:1677 | placeBatchedInstances (per-node), allowedPreemptionNodes (per-node requester, I1) |
+| `rankByPreferences` | scheduler.go:1868 | placeBatchedInstances |
+| `rankByAffinityHints` | scheduler.go:1925 | placeBatchedInstances |
+| `findMinZones` | scheduler.go:1191 | placeBatchedInstances (zone-spread, maxSkew param) |
+| `resolveInstanceResourceNeeds` | scheduler.go:1227 | placeOneGroup, computeGroupResourceTotal |
+| `updateNodeResourcesAfterPlacement` | scheduler.go:1378 | placeBatchedInstances, placeOneGroup |
 | `NewNodeCapacityCache` | cache.go:27 | placeBatchedInstances |
 | `BestNode` | cache.go:39 | placeBatchedInstances |
 | `BestNodeInZones` | cache.go:49 | placeBatchedInstances (zone-spread) |
@@ -521,16 +542,14 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `RemoveNode` | cache.go:95 | placeBatchedInstances (per-node) |
 | `buildNodeHeap` | node_heap.go:66 | NewNodeCapacityCache |
 | `selectFromHeap` | node_heap.go:93 | BestNode |
-| `countAliveNodes` | scheduler.go:819 | shouldDeferInitialPlacement, emitUnplacedDemandFacts |
-| `satisfiesRequireLabelsForNode` | scheduler.go:892 | countConstraintMatchingNodes |
-| `toleratesRestrictionsForNode` | scheduler.go:904 | countConstraintMatchingNodes |
-| `collectStoredResourceRequests` | resource_requests.go:46 | extractServiceResourcesFromFacts |
-| `effectiveFirst` | resource_requests.go:71 | extractServiceResourcesFromFacts |
-| `parseServiceRequest` | resource_requests.go:119 | extractServiceResourcesFromFacts |
-| `excludeInvalidRequestInstances` | resource_requests.go:142 | Reconcile |
-| `buildInvalidResourceRequestChanges` | resource_requests.go:163 | Reconcile |
-| `sortedStringMapKeys` | resource_requests.go:189 | buildInvalidResourceRequestChanges |
-| `extractRebalancePinnedServices` | scheduler.go:414 | Reconcile |
+| `countAliveNodes` | scheduler.go:883 | shouldDeferInitialPlacement, emitUnplacedDemandFacts |
+| `satisfiesRequireLabelsForNode` | scheduler.go:956 | countConstraintMatchingNodes |
+| `toleratesRestrictionsForNode` | scheduler.go:968 | countConstraintMatchingNodes |
+| `types.CollectEffectiveFirstResourceValues` | types/resource_kind.go:120 | extractServiceResourcesFromFacts (and controllers.collectResourceQuantities) |
+| `parseServiceRequest` | resource_requests.go:51 | extractServiceResourcesFromFacts |
+| `excludeInvalidRequestInstances` | resource_requests.go:75 | Reconcile |
+| `buildInvalidResourceRequestChanges` | resource_requests.go:96 | Reconcile |
+| `extractRebalancePinnedServices` | scheduler.go:478 | Reconcile |
 
 ## Constants
 
@@ -540,14 +559,14 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `maxRebalanceMovesPerCycle` | 2 | scheduler.go:31 | executeRebalanceMoves |
 | `rebalanceLoadImbalanceThreshold` | 2 | scheduler.go:34 | rebalancePlacedInstances |
 | `nodeAllocationPressurePercent` | 80 | scheduler.go:37 | detectAndLogNodePressure |
-| `maxPreemptionsPerCycle` | 3 | scheduler.go:184 | attemptPreemptions |
-| `cpuRequestKeySuffix` / `memoryRequestKeySuffix` | `/resources/cpu`, `/resources/memory` | resource_requests.go:21 | collectStoredResourceRequests |
+| `maxPreemptionsPerCycle` | 3 | scheduler.go:187 | attemptPreemptions |
+| `types.ResourceKindSpec.RequestKeySuffix` | `/resources/cpu`, `/resources/memory` | types/resource_kind.go:37 | types.SplitServiceResourceKey |
 
 ## File Index
 
 | File | Lines | Purpose |
 |---|---|---|
-| `scheduler/scheduler.go` | ~2048 | Pipeline, filters, rank, rebalance, preemption, pressure |
+| `scheduler/scheduler.go` | ~2112 | Pipeline, filters, rank, rebalance, preemption, pressure |
 | `scheduler/resource_requests.go` | ~195 | Effective-first request reading via the shared parser (`types/resource_quantity.go`), invalid-request handling (M243) |
 | `scheduler/cache.go` | ~105 | NodeCapacityCache: persistent heap for batch placement |
 | `scheduler/node_heap.go` | ~92 | Min-heap (container/heap.Interface) |

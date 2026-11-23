@@ -44,7 +44,13 @@ type HARunner struct {
 	// runnerDone is closed when the runner goroutine exits, signaling
 	// that all controller goroutines have terminated.
 	runnerDone chan struct{}
-	mutex      sync.Mutex
+	// leadershipPrecondition runs, retried with preconditionBackoff, each time
+	// this node becomes leader, before the controllers start (required, R5-I1).
+	leadershipPrecondition ControllerPrecondition
+	// preconditionBackoff is the retry back-off of leadershipPrecondition;
+	// tests use short delays.
+	preconditionBackoff preconditionRetryBackoff
+	mutex               sync.Mutex
 }
 
 // SetEventLog attaches an event log to the HA runner. When the runner becomes
@@ -54,13 +60,25 @@ func (haRunner *HARunner) SetEventLog(eventLog *types.EventLog) {
 }
 
 // NewHARunner creates a high-availability runner for the given controllers.
-// The nodeID identifies this control-plane replica. Only the elected leader
-// actively runs controllers.
-func NewHARunner(factStore store.StateStore, nodeID string, metrics *MetricsCollector, controllerList ...Controller) *HARunner {
+// The nodeID identifies this control-plane replica; only the elected leader
+// runs controllers, each time after leadershipPrecondition succeeds. The
+// precondition is required: a nil Check panics (a wiring error, R5-I1).
+func NewHARunner(
+	factStore store.StateStore,
+	nodeID string,
+	metrics *MetricsCollector,
+	leadershipPrecondition ControllerPrecondition,
+	controllerList ...Controller,
+) *HARunner {
+	if leadershipPrecondition.Check == nil {
+		panic("controllers: NewHARunner needs a leadership precondition (got a nil Check)")
+	}
 	haRunner := &HARunner{
-		factStore:   factStore,
-		controllers: controllerList,
-		metrics:     metrics,
+		factStore:              factStore,
+		controllers:            controllerList,
+		metrics:                metrics,
+		leadershipPrecondition: leadershipPrecondition,
+		preconditionBackoff:    defaultPreconditionRetryBackoff(),
 	}
 
 	haRunner.election = NewLeaderElection(factStore, LeaderElectionConfig{
@@ -96,8 +114,10 @@ func (haRunner *HARunner) Metrics() *MetricsCollector {
 	return haRunner.metrics
 }
 
-// startControllers is called when this node acquires leadership. It creates
-// a new Runner and starts all controllers in a background goroutine.
+// startControllers is called when this node acquires leadership. In a
+// background goroutine it runs the leadership precondition, retried with
+// back-off, and only then the controllers (M243 D9). Never blocks the
+// election loop.
 func (haRunner *HARunner) startControllers() {
 	haRunner.mutex.Lock()
 	defer haRunner.mutex.Unlock()
@@ -106,23 +126,28 @@ func (haRunner *HARunner) startControllers() {
 		return
 	}
 
+	// Leadership loss cancels this context: it ends the precondition retry, or
+	// the controllers once they run.
 	controllerCtx, cancelFunc := context.WithCancel(context.Background())
 	haRunner.cancelRunner = cancelFunc
 
-	haRunner.runner = NewRunner(haRunner.factStore, haRunner.controllers...)
-	haRunner.runner.SetMetricsCollector(haRunner.metrics)
+	controllerRunner := NewRunner(haRunner.factStore, haRunner.controllers...)
+	controllerRunner.SetMetricsCollector(haRunner.metrics)
 	if haRunner.eventLog != nil {
-		haRunner.runner.SetEventLog(haRunner.eventLog)
+		controllerRunner.SetEventLog(haRunner.eventLog)
 	}
-	haRunner.runnerDone = make(chan struct{})
+	haRunner.runner = controllerRunner
+	runnerDone := make(chan struct{})
+	haRunner.runnerDone = runnerDone
 	go func() {
-		defer close(haRunner.runnerDone)
-		if err := haRunner.runner.Run(controllerCtx); err != nil && controllerCtx.Err() == nil {
-			logging.Default().Error("controller error", "component", "ha-runner", "error", err.Error())
-		}
+		defer close(runnerDone)
+		runAfterPreconditionSucceeds(controllerCtx, haRunner.leadershipPrecondition, haRunner.preconditionBackoff, func() {
+			logging.Default().Info("controllers started (leader)", "component", "ha-runner")
+			if err := controllerRunner.Run(controllerCtx); err != nil && controllerCtx.Err() == nil {
+				logging.Default().Error("controller error", "component", "ha-runner", "error", err.Error())
+			}
+		})
 	}()
-
-	logging.Default().Info("controllers started (leader)", "component", "ha-runner")
 }
 
 // stopControllers is called when this node loses leadership. It cancels

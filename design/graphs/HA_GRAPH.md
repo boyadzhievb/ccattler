@@ -107,8 +107,10 @@ release(ctx)                                        [controllers/leader.go:259]
 
 ### NewHARunner → constructor
 ```
-NewHARunner(factStore, nodeID, metrics, controllers...) [controllers/ha_runner.go:59]
-├── create HARunner{factStore, controllers, metrics}
+NewHARunner(factStore, nodeID, metrics, leadershipPrecondition, controllers...) [controllers/ha_runner.go:66]
+├── leadershipPrecondition.Check == nil → panic (required: a wiring error, R5-I1; cmd/cca passes
+│   controllers.ResourceMigrationPrecondition, tests an explicit no-op)
+├── create HARunner{factStore, controllers, metrics, leadershipPrecondition, preconditionBackoff (1s doubling to 1min)}
 └── NewLeaderElection(factStore, LeaderElectionConfig{
         NodeID:     nodeID,
         OnAcquired: haRunner.startControllers,
@@ -118,33 +120,38 @@ NewHARunner(factStore, nodeID, metrics, controllers...) [controllers/ha_runner.g
 
 ### HARunner.Run → entry point
 ```
-HARunner.Run(ctx)                                   [controllers/ha_runner.go:78]
+HARunner.Run(ctx)                                   [controllers/ha_runner.go:96]
 ├── awaitPendingOperation()                         [mutex.Lock/Unlock, blocks until start/stop done]
 └── election.Run(ctx)                               [blocks until ctx cancelled]
 ```
 
 ### startControllers → called by OnAcquired callback
 ```
-startControllers()                                  [controllers/ha_runner.go:101]
-├── mutex.Lock
+startControllers()                                  [controllers/ha_runner.go:121]
+├── mutex.Lock (released on return: never held across the precondition retry)
 ├── IF cancelRunner != nil → return                 [already running, guard]
-├── context.WithCancel(context.Background())
+├── controllerCtx = context.WithCancel(context.Background())   [cancelled by stopControllers]
 ├── NewRunner(factStore, controllers...)
 ├── runner.SetMetricsCollector(metrics)             [runner records per-controller metrics]
 ├── IF eventLog != nil:
 │   └── runner.SetEventLog(eventLog)
 ├── runnerDone = make(chan struct{})
-├── go runner.Run(controllerCtx)                    [goroutine]
-│   └── defer close(runnerDone)
-└── log "controllers started (leader)"
+└── go func (returns at once, so the election loop keeps renewing the lease):   [goroutine]
+    ├── defer close(runnerDone)
+    └── runAfterPreconditionSucceeds(controllerCtx, leadershipPrecondition, preconditionBackoff, start)
+        │                            [controllers/precondition_gate.go:64; failures logged under precondition.Name, R5-N7]
+        ├── precondition retried with back-off until it succeeds or controllerCtx ends
+        │   (leadership lost → no controllers start; the server's precondition is the M243 D9
+        │   migration, so bare values an older leader wrote are migrated first)
+        └── on success: start() → log "controllers started (leader)"; runner.Run(controllerCtx)
 ```
 
 ### stopControllers → called by OnLost callback
 ```
-stopControllers()                                   [controllers/ha_runner.go:133]
+stopControllers()                                   [controllers/ha_runner.go:158]
 ├── mutex.Lock
 ├── IF cancelRunner != nil:
-│   ├── cancelRunner()                              [cancel all controllers]
+│   ├── cancelRunner()                              [cancels the precondition retry or the controllers]
 │   ├── select:
 │   │   ├── <-runnerDone → log "controllers stopped (lost leadership)"
 │   │   └── <-time.After(10s) → log ERROR "runner shutdown timed out"
@@ -260,13 +267,18 @@ startControllersWithLeaderElection(ctx, factStore, eventLog, config) [cmd/cca/co
 │   ├── NewNodeLifecycleController(cloudProvider)
 │   ├── NewCloudLoadBalancerController(cloudProvider, factStore)
 │   └── NewCloudRouteController(cloudProvider, factStore)
-├── NewHARunner(factStore, nodeID, metricsCollector, controllerList...)   [:375]
-├── haRunner.SetEventLog(eventLog)                                        [:377]
-└── go controllers.RunControllersAfterResourceMigration(ctx, factStore, start) [:383, goroutine; returns at once]
-    └── runControllersAfterResourceMigration        [controllers/resource_migration.go:214]
+├── NewHARunner(factStore, nodeID, metricsCollector,
+│       controllers.ResourceMigrationPrecondition(factStore), controllerList...)  [:377, R5-I1]
+├── haRunner.SetEventLog(eventLog)                                        [:379]
+└── go controllers.RunControllersAfterResourceMigration(ctx, factStore, start) [:385, goroutine; returns at once]
+    └── runControllersAfterResourceMigration        [controllers/resource_migration.go:228]
+        → runAfterPreconditionSucceeds(ctx, ResourceMigrationPrecondition(store), …)
+          [controllers/precondition_gate.go:64]
         ├── MigrateUnitlessResourceRecommendations, retried with back-off (1s doubling to 1min) until it
         │   succeeds or ctx ends (M243 D9, C2); the API server is not blocked
-        └── on success: start() → haRunner.Run(ctx)  [callback, cmd/cca/command_server.go:385]
+        └── on success: start() → haRunner.Run(ctx)  [callback, cmd/cca/command_server.go:387]
+            └── each leadership acquisition → startControllers runs the precondition (the migration) before the runner
+                starts (see startControllers above; D9, review finding 3)
 ```
 
 ## Node Failure Detection (controllers/nodefailure.go)
@@ -338,11 +350,14 @@ EventProjector.Run(ctx)                             [controllers/event_projector
 | `parseLeaseTimestamp` | `tryAcquireOrRenew` |
 | `HARunner.Run` | the start callback of `controllers.RunControllersAfterResourceMigration` (goroutine from `startControllersWithLeaderElection`), after the M243 migration succeeds |
 | `startControllers` | `LeaderElection.onAcquired` callback |
-| `stopControllers` | `LeaderElection.onLost` callback |
+| `runControllersAfterResourceMigration` | `RunControllersAfterResourceMigration` (server start) |
+| `runAfterPreconditionSucceeds` | `runControllersAfterResourceMigration` (server start), `startControllers` goroutine (each leadership acquisition, M243 D9) |
+| `ResourceMigrationPrecondition` | `startControllersWithLeaderElection` → `NewHARunner` (required argument, R5-I1), `runControllersAfterResourceMigration` |
+| `stopControllers` | `LeaderElection.onLost` callback (cancels a pending precondition retry too) |
 | `awaitPendingOperation` | `HARunner.Run` (before election start) |
 | `Runner.SetMetricsCollector` | `startControllers` (HARunner) |
 | `invokeControllerReconcile` | `computeReconciliationChanges` |
-| `Runner.Run` | `startControllers` (goroutine), `startControllerRunner` (non-HA path) |
+| `Runner.Run` | `startControllers` (goroutine, after the leadership precondition), `startControllerRunner` (non-HA path) |
 | `runSingleController` | `Runner.Run` (goroutine per controller) |
 | `runControllerLoop` | `runSingleController` |
 | `setupControllerWatches` | `runControllerLoop` |
@@ -428,8 +443,11 @@ Old leader loses leadership:
   Only AFTER stopControllers returns does the mutex unlock.
 
 New leader acquires via CAS:
-  startControllers() → mutex.Lock → creates fresh Runner
+  startControllers() → mutex.Lock → creates fresh Runner → goroutine: resource unit
+  leadership precondition = the migration (retried with back-off), then Runner.Run (M243 D9)
   The new leader's CAS on etcd ensures the old lease is stale.
+  The precondition retry never holds the mutex, so a stopControllers during it cancels it
+  and returns at once.
 ```
 **Why it matters:** If old leader's controllers overlap with new leader's
 controllers, both write to the same keys → CAS conflicts escalate → convergence stalls.

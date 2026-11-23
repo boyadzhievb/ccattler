@@ -481,41 +481,48 @@ func compileServiceResourceFacts(serviceName string, resourcesDecl *ResourcesDec
 	return resourceFacts
 }
 
-// declaredResourceValue is one resource value of a service declaration with
-// the field name an error shows and the parser for its kind.
+// declaredResourceValue is one resource value a service declares, with the
+// field name an error or warning shows and its kind (which picks the parser).
 type declaredResourceValue struct {
-	fieldName   string                      // fieldName is the field as written, e.g. "memory" or "cpu max"
-	valueText   string                      // valueText is the value after template rendering
-	parseValues func(string) (int64, error) // parseValues is types.ParseCPUMillicores or types.ParseMemoryBytes
+	fieldName string             // fieldName is the field as written, e.g. "memory" or "cpu max"
+	valueText string             // valueText is the value after template rendering, "" when not declared
+	kind      types.ResourceKind // kind is CPU or memory; types.LookupResourceKindSpec(kind).Parse reads it
 }
 
-// validateServiceResourceValues refuses a service whose resources or vertical
-// scaling bounds cannot be parsed or are finer than 1m CPU or 1 byte, naming
-// the service, field and value, so an apply writes nothing (M243 D3).
-func validateServiceResourceValues(serviceDecl ServiceDecl, sourceLines []string) error {
+// declaredResourceValues enumerates every resource value a service declares
+// (the 4 resources fields, then the vertical min/max), in a fixed order. The
+// compiler's validation and the linter's bare-CPU warning both use it (P-N9).
+func declaredResourceValues(serviceDecl ServiceDecl) []declaredResourceValue {
 	var declaredValues []declaredResourceValue
 	if resourcesDecl := serviceDecl.Resources; resourcesDecl != nil {
 		declaredValues = append(declaredValues,
-			declaredResourceValue{"cpu", resourcesDecl.CPU, types.ParseCPUMillicores},
-			declaredResourceValue{"memory", resourcesDecl.Memory, types.ParseMemoryBytes},
-			declaredResourceValue{"cpu_limit", resourcesDecl.CPULimit, types.ParseCPUMillicores},
-			declaredResourceValue{"memory_limit", resourcesDecl.MemoryLimit, types.ParseMemoryBytes},
+			declaredResourceValue{"cpu", resourcesDecl.CPU, types.ResourceKindCPU},
+			declaredResourceValue{"memory", resourcesDecl.Memory, types.ResourceKindMemory},
+			declaredResourceValue{"cpu_limit", resourcesDecl.CPULimit, types.ResourceKindCPU},
+			declaredResourceValue{"memory_limit", resourcesDecl.MemoryLimit, types.ResourceKindMemory},
 		)
 	}
 	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
 		verticalDecl := serviceDecl.Scale.Vertical
 		declaredValues = append(declaredValues,
-			declaredResourceValue{"cpu min", verticalDecl.CPUMin, types.ParseCPUMillicores},
-			declaredResourceValue{"cpu max", verticalDecl.CPUMax, types.ParseCPUMillicores},
-			declaredResourceValue{"memory min", verticalDecl.MemoryMin, types.ParseMemoryBytes},
-			declaredResourceValue{"memory max", verticalDecl.MemoryMax, types.ParseMemoryBytes},
+			declaredResourceValue{"cpu min", verticalDecl.CPUMin, types.ResourceKindCPU},
+			declaredResourceValue{"cpu max", verticalDecl.CPUMax, types.ResourceKindCPU},
+			declaredResourceValue{"memory min", verticalDecl.MemoryMin, types.ResourceKindMemory},
+			declaredResourceValue{"memory max", verticalDecl.MemoryMax, types.ResourceKindMemory},
 		)
 	}
-	for _, declaredValue := range declaredValues {
+	return declaredValues
+}
+
+// validateServiceResourceValues refuses a service whose resources or vertical
+// scaling bounds cannot be parsed, naming the service, field and value, so an
+// apply writes nothing (M243 D3).
+func validateServiceResourceValues(serviceDecl ServiceDecl, sourceLines []string) error {
+	for _, declaredValue := range declaredResourceValues(serviceDecl) {
 		if declaredValue.valueText == "" {
 			continue
 		}
-		if _, parseError := declaredValue.parseValues(declaredValue.valueText); parseError != nil {
+		if _, parseError := types.LookupResourceKindSpec(declaredValue.kind).Parse(declaredValue.valueText); parseError != nil {
 			return &ParseError{
 				Line: serviceDecl.Line,
 				Message: fmt.Sprintf("service %q %s %q cannot be read: %v (CPU: 250m, 0.5 or 2; memory: 512Mi, 1Gi, 1G or bytes)",

@@ -204,6 +204,7 @@ func (nodeReporter *NodeReporter) lookupServiceResourcesFromStore(ctx context.Co
 // lookupResourceWithFallback parses the primary key's value, or the
 // fallback's when the primary has none. Returns 0 if neither key has a value,
 // or if the chosen value cannot be parsed (logged once; no fallback then).
+// One key at a time, the rule of types.CollectEffectiveFirstResourceValues.
 func lookupResourceWithFallback(
 	ctx context.Context,
 	factStore store.StateStore,

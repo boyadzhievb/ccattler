@@ -18,14 +18,20 @@ import (
 // stored value has one meaning: CPU in millicores, memory in bytes.
 
 const (
-	// millicoresPerCore converts a CPU value in cores to millicores.
-	millicoresPerCore = 1000
+	// MillicoresPerCore converts a CPU value in cores to millicores (also the
+	// lang bare-CPU warning threshold, M243 D10).
+	MillicoresPerCore = 1000
 
 	// millicoreSuffix marks a CPU value written in millicores ("250m").
 	millicoreSuffix = "m"
 
 	// mebibyteSuffix is the unit the vertical autoscaler writes memory in.
 	mebibyteSuffix = "Mi"
+
+	// kibibyteSuffix and kilobyteSuffix write an exact memory max under 1 MiB
+	// (FormatMemoryBytesExactly, D9).
+	kibibyteSuffix = "Ki"
+	kilobyteSuffix = "k"
 
 	// maxResourceQuantityLength bounds the text a parser looks at; an int64
 	// has at most 19 digits, so anything longer is either padding or overflow.
@@ -68,7 +74,7 @@ func ParseCPUMillicores(cpuText string) (int64, error) {
 	if millicoreDigits, hasMillicoreSuffix := strings.CutSuffix(cpuText, millicoreSuffix); hasMillicoreSuffix {
 		return parseScaledDecimal(cpuText, "cpu", millicoreDigits, 1)
 	}
-	return parseScaledDecimal(cpuText, "cpu", cpuText, millicoresPerCore)
+	return parseScaledDecimal(cpuText, "cpu", cpuText, MillicoresPerCore)
 }
 
 // ParseMemoryBytes reads a memory value: a decimal number with an optional
@@ -94,7 +100,7 @@ func splitMemorySuffix(memoryText string) (string, int64) {
 	return memoryText, 1
 }
 
-// parseScaledDecimal multiplies the decimal numberText ("12" or "1.25") by
+// parseScaledDecimal multiplies the decimal numberText ("12", "1.25", ".5") by
 // multiplier with exact integer arithmetic, rounds a fraction up to the next
 // whole unit, and returns it when it fits int64. fullText and resourceName
 // name the value in errors.
@@ -103,7 +109,8 @@ func parseScaledDecimal(fullText string, resourceName string, numberText string,
 		return 0, fmt.Errorf("%s %q: too long", resourceName, fullText)
 	}
 	integerDigits, fractionDigits, hasFraction := strings.Cut(numberText, ".")
-	if !IsBareInteger(integerDigits) || (hasFraction && !IsBareInteger(fractionDigits)) {
+	hasLeadingDot := hasFraction && integerDigits == "" // ".5", as Kubernetes accepts (D2); "5." stays refused
+	if (!hasLeadingDot && !IsBareInteger(integerDigits)) || (hasFraction && !IsBareInteger(fractionDigits)) {
 		return 0, fmt.Errorf("%s %q: not a number with a known unit", resourceName, fullText)
 	}
 	scaledValue, parsed := new(big.Int).SetString(integerDigits+fractionDigits, decimalBase)
@@ -141,10 +148,31 @@ func FormatCPUMillicores(millicores int64) string {
 	return strconv.FormatInt(millicores, decimalBase) + millicoreSuffix
 }
 
-// FormatMemoryMiB writes bytes as whole MiB rounded up ("768Mi"), so the
-// written value never undercounts the request.
-func FormatMemoryMiB(memoryBytes int64) string {
-	return strconv.FormatInt(MemoryBytesToMiBRoundedUp(memoryBytes), decimalBase) + mebibyteSuffix
+// FormatMemoryBytesExactly writes bytes exactly in unit form (D9): whole KiB as
+// "{n}Ki", otherwise decimal "k" with up to 3 decimals ("524.289k"). Never bare
+// digits; ParseMemoryBytes reads it back to the same bytes.
+func FormatMemoryBytesExactly(memoryBytes int64) string {
+	if memoryBytes%kibibyteMultiplier == 0 {
+		return strconv.FormatInt(memoryBytes/kibibyteMultiplier, decimalBase) + kibibyteSuffix
+	}
+	wholeKilobytes := strconv.FormatInt(memoryBytes/kilobyteMultiplier, decimalBase)
+	fractionDigits := strings.TrimRight(fmt.Sprintf("%03d", memoryBytes%kilobyteMultiplier), "0")
+	if fractionDigits == "" {
+		return wholeKilobytes + kilobyteSuffix
+	}
+	return wholeKilobytes + "." + fractionDigits + kilobyteSuffix
+}
+
+// FormatMebibytes writes a whole number of MiB in unit form ("768Mi"); the
+// vertical autoscaler computes memory in whole MiB (D7).
+func FormatMebibytes(mebibytes int64) string {
+	return strconv.FormatInt(mebibytes, decimalBase) + mebibyteSuffix
+}
+
+// MemoryBytesToMiBRoundedDown converts bytes to whole MiB, rounding down, so
+// a maximum bound that is not whole MiB is never exceeded (D7).
+func MemoryBytesToMiBRoundedDown(memoryBytes int64) int64 {
+	return memoryBytes / mebibyteMultiplier
 }
 
 // MemoryBytesToMiBRoundedUp converts bytes to whole MiB, rounding up, so a
@@ -157,16 +185,29 @@ func MemoryBytesToMiBRoundedUp(memoryBytes int64) int64 {
 	return wholeMebibytes
 }
 
+// OccurrenceSet remembers identities already seen, so a log-once cache can ask
+// whether this is the first time. Safe for concurrent use; the zero value is
+// empty and ready.
+type OccurrenceSet struct {
+	seenIdentities sync.Map // seenIdentities holds every identity passed to IsFirstOccurrence
+}
+
+// IsFirstOccurrence records the identity built from parts (joined with NUL, so
+// "a"+"bc" and "ab"+"c" differ) and reports whether it was new.
+func (occurrenceSet *OccurrenceSet) IsFirstOccurrence(identityParts ...string) bool {
+	_, alreadySeen := occurrenceSet.seenIdentities.LoadOrStore(strings.Join(identityParts, "\x00"), true)
+	return !alreadySeen
+}
+
 // unreadableResourceWarnings remembers the reader/key/value triples already
 // logged by WarnUnreadableResourceOnce.
-var unreadableResourceWarnings sync.Map
+var unreadableResourceWarnings OccurrenceSet
 
 // WarnUnreadableResourceOnce logs, once per reader, key and value, that a
 // stored resource value cannot be parsed, with what the reader does instead.
 // Every reader of requests uses it, so a bad value does not flood the log.
 func WarnUnreadableResourceOnce(readerName string, factKey string, factValue string, parseError error, consequence string) {
-	warningIdentity := readerName + "\x00" + factKey + "\x00" + factValue
-	if _, alreadyLogged := unreadableResourceWarnings.LoadOrStore(warningIdentity, true); alreadyLogged {
+	if !unreadableResourceWarnings.IsFirstOccurrence(readerName, factKey, factValue) {
 		return
 	}
 	logging.Default().Warn("unreadable resource value; re-apply the configuration to fix it",

@@ -354,12 +354,22 @@ func extractResourceRequests(container map[string]interface{}) *lang.ResourcesDe
 	if !isMap {
 		return nil
 	}
-	cpuValue := extractStringFromYAML(requestsMap, "cpu")
-	memoryValue := extractStringFromYAML(requestsMap, "memory")
+	cpuValue := addLeadingZeroToQuantity(extractStringFromYAML(requestsMap, "cpu"))
+	memoryValue := addLeadingZeroToQuantity(extractStringFromYAML(requestsMap, "memory"))
 	if cpuValue == "" && memoryValue == "" {
 		return nil
 	}
 	return &lang.ResourcesDecl{CPU: cpuValue, Memory: memoryValue}
+}
+
+// addLeadingZeroToQuantity writes a Kubernetes quantity that starts with a
+// dot (".5", ".5Gi") with a leading zero ("0.5", "0.5Gi"): the DSL lexer
+// refuses a value starting with "." (M243 D2). Other values are unchanged.
+func addLeadingZeroToQuantity(quantityText string) string {
+	if strings.HasPrefix(quantityText, ".") {
+		return "0" + quantityText
+	}
+	return quantityText
 }
 
 // extractHealthCheck reads livenessProbe or readinessProbe from a container

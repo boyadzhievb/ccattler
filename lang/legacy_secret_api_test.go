@@ -38,7 +38,7 @@ func TestLegacySecretAPICompilesToOptInFact(testContext *testing.T) {
 	if !foundOptIn {
 		testContext.Fatal("legacy_secret_api true must emit desired/service/web/legacy_secret_api = true")
 	}
-	warnings := DeprecationWarnings(parsedFile)
+	warnings := ApplyTimeWarnings(parsedFile)
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "deprecated") {
 		testContext.Fatalf("expected one deprecation warning, got %+v", warnings)
 	}
@@ -55,7 +55,7 @@ func TestServiceWithoutLegacySecretAPIEmitsNoOptIn(testContext *testing.T) {
 			testContext.Fatalf("unexpected opt-in fact %s", fact.Key)
 		}
 	}
-	if warnings := DeprecationWarnings(parsedFile); len(warnings) != 0 {
+	if warnings := ApplyTimeWarnings(parsedFile); len(warnings) != 0 {
 		testContext.Fatalf("unexpected warnings %+v", warnings)
 	}
 }

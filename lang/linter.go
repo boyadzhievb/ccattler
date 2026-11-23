@@ -31,7 +31,7 @@ func Lint(file *File) []LintDiagnostic {
 	diagnostics = append(diagnostics, lintPortRanges(file)...)
 	diagnostics = append(diagnostics, lintUndefinedReferences(file)...)
 	diagnostics = append(diagnostics, lintTCPHealthWithoutExpose(file)...)
-	diagnostics = append(diagnostics, DeprecationWarnings(file)...)
+	diagnostics = append(diagnostics, ApplyTimeWarnings(file)...)
 	return diagnostics
 }
 
@@ -383,10 +383,10 @@ func FormatDiagnostics(diagnostics []LintDiagnostic) string {
 	return result
 }
 
-// DeprecationWarnings returns warnings for deprecated or ambiguous constructs.
-// cca lint and cca apply both print them. Today: legacy_secret_api (decision
+// ApplyTimeWarnings returns warnings for deprecated or ambiguous constructs;
+// they never refuse an apply. cca lint and cca apply both print them. Today: legacy_secret_api (decision
 // C, M174), and bare CPU values of 64 cores or more (M243 D10).
-func DeprecationWarnings(file *File) []LintDiagnostic {
+func ApplyTimeWarnings(file *File) []LintDiagnostic {
 	var diagnostics []LintDiagnostic
 	for _, serviceDecl := range file.Services {
 		if serviceDecl.LegacySecretAPI {
@@ -404,23 +404,16 @@ func DeprecationWarnings(file *File) []LintDiagnostic {
 // bareCPUWarningMillicores is the smallest CPU value written without m that
 // draws a warning: 64 cores, more than most nodes have, so a bare value this
 // large was probably meant as millicores (M243 D10).
-const bareCPUWarningMillicores = 64 * 1000
+const bareCPUWarningMillicores = 64 * types.MillicoresPerCore
 
 // bareCPUValueWarnings warns for each CPU request, limit or vertical bound of
 // a service written without m that reads as 64 cores or more. Bare CPU means
 // cores since M243; such a value was probably meant as millicores.
 func bareCPUValueWarnings(serviceDecl ServiceDecl) []LintDiagnostic {
-	var namedCPUValues [][2]string
-	if serviceDecl.Resources != nil {
-		namedCPUValues = append(namedCPUValues, [2]string{"cpu", serviceDecl.Resources.CPU}, [2]string{"cpu_limit", serviceDecl.Resources.CPULimit})
-	}
-	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
-		namedCPUValues = append(namedCPUValues, [2]string{"cpu min", serviceDecl.Scale.Vertical.CPUMin}, [2]string{"cpu max", serviceDecl.Scale.Vertical.CPUMax})
-	}
 	var diagnostics []LintDiagnostic
-	for _, namedValue := range namedCPUValues {
-		fieldName, valueText := namedValue[0], namedValue[1]
-		if valueText == "" || strings.HasSuffix(valueText, "m") {
+	for _, declaredValue := range declaredResourceValues(serviceDecl) {
+		fieldName, valueText := declaredValue.fieldName, declaredValue.valueText
+		if declaredValue.kind != types.ResourceKindCPU || valueText == "" || strings.HasSuffix(valueText, "m") {
 			continue
 		}
 		if millicores, parseError := types.ParseCPUMillicores(valueText); parseError != nil || millicores < bareCPUWarningMillicores {

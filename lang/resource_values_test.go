@@ -147,6 +147,26 @@ func TestClassifyQoSComparesParsedQuantities(t *testing.T) {
 	}
 }
 
+// TestClassifyQoSRequestsWithoutLimitsIsGuaranteed: spec resource-requests,
+// "Requests without limits". The agent uses the request as the container's
+// limit, so requests alone class Guaranteed (Kubernetes would say Burstable).
+func TestClassifyQoSRequestsWithoutLimitsIsGuaranteed(t *testing.T) {
+	facts, compileError := compileServiceSource(t, `service web {
+    image nginx:1.28
+    instances 1
+    resources {
+        cpu 250m
+        memory 256Mi
+    }
+}`)
+	if compileError != nil {
+		t.Fatalf("compile failed: %v", compileError)
+	}
+	if qosClass := factMap(facts)[types.KeyDerivedServiceQoSClass("web")]; qosClass != "Guaranteed" {
+		t.Errorf("qos_class = %q, want Guaranteed", qosClass)
+	}
+}
+
 // TestApplyRefusesUnparseableTemplatedResourceValue: spec resource-requests,
 // "Template value". The check runs on the rendered value, and a refused apply
 // leaves the store unchanged.
@@ -254,7 +274,7 @@ service api {
 		t.Fatal(parseError)
 	}
 	var warningTexts []string
-	for _, diagnostic := range DeprecationWarnings(parsedFile) {
+	for _, diagnostic := range ApplyTimeWarnings(parsedFile) {
 		warningTexts = append(warningTexts, diagnostic.Message)
 	}
 	allWarnings := strings.Join(warningTexts, "\n")

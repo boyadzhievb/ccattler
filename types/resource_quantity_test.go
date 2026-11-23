@@ -25,6 +25,9 @@ func TestParseCPUMillicoresAcceptsKubernetesForms(t *testing.T) {
 		{cpuText: "0.001", wantMillicores: 1},
 		{cpuText: "0.5000", wantMillicores: 500},
 		{cpuText: "1500m", wantMillicores: 1500},
+		{cpuText: ".5", wantMillicores: 500},
+		{cpuText: ".25", wantMillicores: 250},
+		{cpuText: ".5m", wantMillicores: 1},
 	}
 	for _, testCase := range testCases {
 		gotMillicores, parseError := ParseCPUMillicores(testCase.cpuText)
@@ -62,6 +65,9 @@ func TestParseMemoryBytesAcceptsKubernetesForms(t *testing.T) {
 		{memoryText: "1P", wantBytes: 1000000000000000},
 		{memoryText: "9E", wantBytes: 9000000000000000000},
 		{memoryText: "0.5Ki", wantBytes: 512},
+		{memoryText: ".5Gi", wantBytes: 536870912},
+		{memoryText: ".5Ki", wantBytes: 512},
+		{memoryText: ".5", wantBytes: 1},
 	}
 	for _, testCase := range testCases {
 		gotBytes, parseError := ParseMemoryBytes(testCase.memoryText)
@@ -81,7 +87,7 @@ func TestParseMemoryBytesAcceptsKubernetesForms(t *testing.T) {
 func TestParseResourceQuantitiesRefuseOtherForms(t *testing.T) {
 	refusedCPUTexts := []string{
 		"", " 1", "1 ", "-1", "+1", "1e3", "512MB", "lots", "1.5mm", "-1m",
-		"1Gi", ".5", "5.", "1..5", "m", "9223372036854775808m", "9999999999999999",
+		"1Gi", ".", ".m", "5.", "5.m", "1..5", "m", "9223372036854775808m", "9999999999999999",
 	}
 	for _, cpuText := range refusedCPUTexts {
 		if gotMillicores, parseError := ParseCPUMillicores(cpuText); parseError == nil {
@@ -92,7 +98,7 @@ func TestParseResourceQuantitiesRefuseOtherForms(t *testing.T) {
 	}
 	refusedMemoryTexts := []string{
 		"", " 1", "1 ", "512MB", "-1", "+1", "1e3", "0.3k1", "512mi", "1m",
-		"9999999Ei", "8Ei", "9223372036854775808", "Mi", ".5Gi", "1.Gi", "1 Gi",
+		"9999999Ei", "8Ei", "9223372036854775808", "Mi", ".", ".Gi", "5.", "1.Gi", "1 Gi",
 	}
 	for _, memoryText := range refusedMemoryTexts {
 		if gotBytes, parseError := ParseMemoryBytes(memoryText); parseError == nil {
@@ -149,11 +155,41 @@ func TestFormatResourceQuantitiesWithUnits(t *testing.T) {
 		{memoryBytes: 64 << 30, wantText: "65536Mi", wantMiB: 65536},
 	}
 	for _, testCase := range memoryTestCases {
-		if gotText := FormatMemoryMiB(testCase.memoryBytes); gotText != testCase.wantText {
-			t.Errorf("FormatMemoryMiB(%d) = %q, want %q", testCase.memoryBytes, gotText, testCase.wantText)
+		if gotText := FormatMebibytes(MemoryBytesToMiBRoundedUp(testCase.memoryBytes)); gotText != testCase.wantText {
+			t.Errorf("FormatMebibytes(MemoryBytesToMiBRoundedUp(%d)) = %q, want %q", testCase.memoryBytes, gotText, testCase.wantText)
 		}
 		if gotMiB := MemoryBytesToMiBRoundedUp(testCase.memoryBytes); gotMiB != testCase.wantMiB {
 			t.Errorf("MemoryBytesToMiBRoundedUp(%d) = %d, want %d", testCase.memoryBytes, gotMiB, testCase.wantMiB)
+		}
+	}
+	// Rounded down, for a maximum bound (D7): 1G is 953.67 MiB, so 953.
+	for memoryBytes, wantMiB := range map[int64]int64{0: 0, 1: 0, 1000000000: 953, 805306368: 768} {
+		if gotMiB := MemoryBytesToMiBRoundedDown(memoryBytes); gotMiB != wantMiB {
+			t.Errorf("MemoryBytesToMiBRoundedDown(%d) = %d, want %d", memoryBytes, gotMiB, wantMiB)
+		}
+	}
+	if gotText := FormatMebibytes(953); gotText != "953Mi" {
+		t.Errorf("FormatMebibytes(953) = %q, want 953Mi", gotText)
+	}
+}
+
+// TestFormatMemoryBytesExactly checks the exact memory form the migration
+// writes for a max under 1 MiB (design D9): whole KiB as Ki, otherwise decimal
+// k with up to 3 decimals; never bare digits, and it parses back to the bytes.
+func TestFormatMemoryBytesExactly(t *testing.T) {
+	for memoryBytes, wantText := range map[int64]string{
+		524288: "512Ki", 1024: "1Ki", 524289: "524.289k", 524000: "524k",
+		524200: "524.2k", 500: "0.5k", 1: "0.001k", 1048575: "1048.575k",
+	} {
+		gotText := FormatMemoryBytesExactly(memoryBytes)
+		if gotText != wantText {
+			t.Errorf("FormatMemoryBytesExactly(%d) = %q, want %q", memoryBytes, gotText, wantText)
+		}
+		if IsBareInteger(gotText) {
+			t.Errorf("FormatMemoryBytesExactly(%d) = %q is bare digits", memoryBytes, gotText)
+		}
+		if parsedBytes, parseError := ParseMemoryBytes(gotText); parseError != nil || parsedBytes != memoryBytes {
+			t.Errorf("ParseMemoryBytes(%q) = %d, %v; want %d", gotText, parsedBytes, parseError, memoryBytes)
 		}
 	}
 }
@@ -164,7 +200,42 @@ func TestFormattedQuantitiesParseBack(t *testing.T) {
 	if gotMillicores, parseError := ParseCPUMillicores(FormatCPUMillicores(1234)); parseError != nil || gotMillicores != 1234 {
 		t.Errorf("CPU round trip = %d, %v; want 1234", gotMillicores, parseError)
 	}
-	if gotBytes, parseError := ParseMemoryBytes(FormatMemoryMiB(768 << 20)); parseError != nil || gotBytes != 768<<20 {
+	if gotBytes, parseError := ParseMemoryBytes(FormatMebibytes(768)); parseError != nil || gotBytes != 768<<20 {
 		t.Errorf("memory round trip = %d, %v; want %d", gotBytes, parseError, int64(768<<20))
+	}
+}
+
+// TestOccurrenceSetReportsOnlyTheFirstOccurrence checks the dedup the log-once
+// caches share (3f.5 P-N6): an identity is first exactly once, identities whose
+// joined text would match ("a"+"bc", "ab"+"c") stay distinct, and concurrent
+// callers see exactly one first occurrence.
+func TestOccurrenceSetReportsOnlyTheFirstOccurrence(t *testing.T) {
+	var occurrenceSet OccurrenceSet
+	if !occurrenceSet.IsFirstOccurrence("eviction", "observed/node/n1/capacity/memory", "lots") {
+		t.Errorf("first call reported as seen")
+	}
+	if occurrenceSet.IsFirstOccurrence("eviction", "observed/node/n1/capacity/memory", "lots") {
+		t.Errorf("second call with the same identity reported as first")
+	}
+	if !occurrenceSet.IsFirstOccurrence("eviction", "observed/node/n1/capacity/memory", "more") {
+		t.Errorf("a different value reported as seen")
+	}
+	if !occurrenceSet.IsFirstOccurrence("a", "bc") || !occurrenceSet.IsFirstOccurrence("ab", "c") {
+		t.Errorf("identities with the same joined text collided")
+	}
+
+	const concurrentCallers = 32
+	firstOccurrences := make(chan bool, concurrentCallers)
+	for callerIndex := 0; callerIndex < concurrentCallers; callerIndex++ {
+		go func() { firstOccurrences <- occurrenceSet.IsFirstOccurrence("concurrent", "key") }()
+	}
+	firstCount := 0
+	for callerIndex := 0; callerIndex < concurrentCallers; callerIndex++ {
+		if <-firstOccurrences {
+			firstCount++
+		}
+	}
+	if firstCount != 1 {
+		t.Errorf("%d concurrent callers saw a first occurrence, want exactly 1", firstCount)
 	}
 }

@@ -159,7 +159,7 @@ func executeApplyCommand(parsedConfig configurationCommandConfig) {
 func applyRenderedFilesToSimulatedStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent) {
 	for _, rendered := range renderedFiles {
 		fmt.Printf("Applying %s...\n", rendered.filePath)
-		printDeprecationWarnings(rendered)
+		printApplyTimeWarnings(rendered)
 		baseDir := filepath.Dir(rendered.filePath)
 		if applyError := lang.ApplyWithBaseDir(ctx, factStore, rendered.content, baseDir, localSimulationGateKeyWriter{}); applyError != nil {
 			exitWithFileError(applyError, rendered.filePath)
@@ -181,14 +181,14 @@ func setupLocalSimulationEnvironment(ctx context.Context, factStore store.StateS
 	return controllers.NewRunner(factStore, controllerList...)
 }
 
-// printDeprecationWarnings prints deprecation warnings for a rendered file to
+// printApplyTimeWarnings prints the apply-time warnings for a rendered file to
 // stderr. Parse errors are left to the apply step, which reports them.
-func printDeprecationWarnings(rendered renderedDSLContent) {
+func printApplyTimeWarnings(rendered renderedDSLContent) {
 	parsedFile, parseError := lang.Parse(rendered.content)
 	if parseError != nil {
 		return
 	}
-	for _, diagnostic := range lang.DeprecationWarnings(parsedFile) {
+	for _, diagnostic := range lang.ApplyTimeWarnings(parsedFile) {
 		fmt.Fprintf(os.Stderr, "warning: %s:%d: %s\n", rendered.filePath, diagnostic.Line, diagnostic.Message)
 	}
 }

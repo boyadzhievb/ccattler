@@ -383,13 +383,562 @@ verified both.
   - Graphs: CONTROLLER_DATA_FLOW_GRAPH "Startup migration" (gate, back-off, batching, line numbers) and its reverse index,
     AUDIT_GRAPH and EXTENSIBILITY_GRAPH (HARunner.Run starts through the gate), Flow 10.
 
+## 3d. Rework after the milestone review (task 4.2 findings, design D2/D6/D7/D9/D12, added 2026-11-23)
+
+The code-reviewer (Opus, high) review of 329e0fa and the Codex check of the decisions; user decisions A, B (single
+victim) and C on 2026-11-23. The main session verified every finding in the code.
+
+- [x] 3d.0 Failing tests first, one per item below (names in the spec). Record the red run.
+  - The red run had only one stub: an unused `HARunner.migrationBackoff` field, so that the new HA test compiles.
+    Nothing else had changed yet.
+  - `go test -count=1 ./types/ -run TestParse`: `TestParseCPUMillicoresAcceptsKubernetesForms` fails with
+    `ParseCPUMillicores(".5"): unexpected error cpu ".5": not a number with a known unit`, and the same for `.25` and
+    `.5m`. `TestParseMemoryBytesAcceptsKubernetesForms` fails the same way for `.5Gi`, `.5Ki` and `.5`.
+  - `go test -count=1 ./controllers/ -run '…'`:
+    - `TestHARunnerMigratesOnLeadershipAcquisition`: the first reconcile saw
+      `intent/autoscaler/service/web/resources/cpu = "750"`, want 750m.
+    - `TestHARunnerLeadershipLossCancelsMigrationRetry`: the controllers ran (saw `"750"`) although the migration
+      never succeeded.
+    - `TestMigrationRecoversFromCASLossInLaterBatch`: reported 68 rewritten values, want the total 132.
+    - `TestMigrateUnitlessResourceRecommendations`: `effective/service/batch/resources/cpu = "2m"`, want `"2"`;
+      `effective/service/solo/resources/memory = "1Mi"`, want `"2048"`; rewrote 8 values, want 6.
+    - `TestVerticalMemoryRecommendationSettlesOnWholeMiB`: the second reconcile proposed `"96Mi"` again; high usage
+      gave `"954Mi"`, want 953Mi; the 1Mi request at 60% proposed `"1Mi"`, want no write.
+    - `TestEvictionReadsResourceRequestsWithUnits` (case 3 inverted): evicted `map[inst-b:true]`, want
+      `map[inst-a:true inst-b:true]`.
+  - `go test -count=1 ./scheduler/ -run '…'`:
+    - `TestSchedulerSkipsPreemptionThatCannotMakeRoom`: preempted small-1, although stopping it cannot make room for
+      64Gi.
+    - `TestSchedulerPreemptsOnlyAVictimThatMakesRoom`: medium-1 not preempted, and cheap-1 (node-2, which the
+      requester's `require tier=gold` excludes) was preempted instead.
+  - Already green, as expected: `TestClassifyQoSRequestsWithoutLimitsIsGuaranteed`, which pins current behaviour.
+- [x] 3d.1 Finding 1 (D7): compute vertical memory in whole MiB: min bound rounded up, max rounded down, raw
+  recommendation rounded up, current value converted the same way before the comparison. Test
+  `TestVerticalMemoryRecommendationSettlesOnWholeMiB` (`min 100M max 1G`: `96Mi` once, no write on the second
+  reconcile; never above `953Mi`). Also cover a small request whose raw recommendation lands in the same MiB.
+  - `buildVerticalScalingChanges` puts the memory dimension into whole MiB:
+    - the current value via `types.MemoryBytesToMiBRoundedUp`;
+    - the bounds via the new `verticalResourceBounds.inWholeMebibytes` (min up, max down; when both fall inside one
+      MiB, the max wins);
+    - the format via the new `types.FormatMebibytes`.
+  - `computeVerticalResourceChange` is unchanged. Its `ceil(current × p95 / target)` is now in MiB, so the raw value is
+    rounded up, and the comparison with the current value is in the same unit.
+  - New in `types`: `FormatMebibytes` and `MemoryBytesToMiBRoundedDown` (`FormatMemoryMiB` now calls
+    `FormatMebibytes`). Both are covered in `TestFormatResourceQuantitiesWithUnits`.
+  - Also applied to the migration, so it cannot write above a non-MiB max either: `formatLegacyQuantity` clamps memory
+    in whole MiB with the same bounds.
+  - Green: `TestVerticalMemoryRecommendationSettlesOnWholeMiB`:
+    - `96Mi` once, then no write when 96Mi is read back;
+    - `953Mi` at 200% of 900Mi;
+    - a `1Mi` request at 60% gives no write.
+- [x] 3d.2 Finding 3 (D9): `HARunner.startControllers` runs the migration, with the same back-off and cancelled when
+  leadership is lost, before it starts the runner. Test `TestHARunnerMigratesOnLeadershipAcquisition` (a bare value
+  written after start is `750m` before the controllers run).
+  - Under the mutex, `startControllers` only creates `controllerCtx`, the runner and `runnerDone`. It then starts a
+    goroutine that runs `runControllersAfterResourceMigration(controllerCtx, …, haRunner.migrationBackoff, start)`,
+    where `start` calls `Runner.Run`, and returns at once.
+  - The election loop is not blocked, because the OnAcquired callback is synchronous in `tryAcquireOrRenew`. The mutex
+    is never held across the retry.
+  - `stopControllers` cancels `controllerCtx`, which ends a pending retry or the runner, and waits on `runnerDone` as
+    before.
+  - The back-off defaults are set in `NewHARunner` (1 s doubling to 1 min).
+  - The goroutine captures the runner and done channel locally instead of reading `haRunner.runner` or
+    `haRunner.runnerDone`. Before, it read those fields, which `stopControllers` resets after its timeout.
+  - The migration at server start (`RunControllersAfterResourceMigration`) is kept, as D9 states. On a fresh start the
+    leadership run is then a no-op scan.
+  - Green:
+    - `TestHARunnerMigratesOnLeadershipAcquisition`: the first reconcile sees `750m`.
+    - `TestHARunnerLeadershipLossCancelsMigrationRetry` (added): with a store that always fails, `startControllers`
+      returns at once, `stopControllers` returns well within `stopControllersTimeout`, and no controller ever ran.
+- [x] 3d.3 D9 nits: rewrite an effective value only when the same resource has an autoscaler recommendation
+  (scenario "Effective value without a recommendation"); the logged and returned count is the total over all batches
+  and attempts.
+  - `planUnitlessResourceRewrites` records each `"{svc}/{kind}"` that has an intent; the intent layer is scanned first.
+    It plans an effective rewrite only for those.
+  - `commitResourceRewrites` now returns the committed count. `MigrateUnitlessResourceRecommendations` adds it up over
+    batches and attempts, and logs and returns that total. It logs only when the total is above 0.
+  - Green:
+    - `TestMigrateUnitlessResourceRecommendations`: batch `2` stays `2`, and solo's memory `2048` stays (solo has
+      only a CPU intent); 6 rewritten.
+    - `TestMigrationRecoversFromCASLossInLaterBatch`: 132 reported after a lost CAS.
+- [x] 3d.4 Finding 2 (D6, decision A): eviction keeps instances of services with an unreadable request as candidates
+  in normal QoS/priority order, credited 0 MiB, logged once. Remove `excludeUnreadableServiceInstances`. Invert case 3
+  of `TestEvictionReadsResourceRequestsWithUnits` (the unreadable service is evicted; scenario "Still evictable") and
+  assert the extra eviction of the next candidate in the same cycle.
+  - `excludeUnreadableServiceInstances` is removed. `extractServiceMemoryRequests` returns only the request map; an
+    unreadable service has no entry, so it is credited 0. The consequence logged once now says the instances stay
+    candidates credited 0 MiB.
+  - With no production reader of the unreadable-services set left, `collectCPUMillicoresBySuffix`,
+    `collectMemoryBytesBySuffix` and `collectResourceQuantitiesEffectiveFirst` return one map and take a
+    `resourceQuantityReader` (name, consequence, optional service filter; see 3d.7). `helpers_test.go` is updated.
+  - Green: `TestEvictionReadsResourceRequestsWithUnits`, case 3: inst-a (unreadable `512MB`) and then inst-b are
+    evicted.
+- [x] 3d.5 Finding 4 (D12, decision B, single victim): `findPreemptionVictim` takes the request map and node remaining
+  capacity and returns only a victim whose node's remaining CPU and memory plus its requests cover the requester's,
+  on a node the requester's constraints allow; lowest priority, then node ID, then instance ID; none → no preemption.
+  Tests `TestSchedulerSkipsPreemptionThatCannotMakeRoom`, `TestSchedulerPreemptsOnlyAVictimThatMakesRoom`; existing
+  preemption tests (`integration/priority_preemption_test.go`) still pass.
+  - Inputs:
+    - The new `preemptionInputs` struct holds the instances, stored placements, `serviceResources`, constraints,
+      priorities, stateful and invalid services.
+    - `attemptPreemptions` computes the remaining capacity as placement does:
+      `computeNodeLoadAndResourceUsage` → `buildAliveCandidateNodes`. It uses `mergeThisCyclePlacements(placements,
+      changes)`, so placements made earlier in the same cycle count.
+  - Victim choice in `findPreemptionVictim`:
+    - Only nodes in `filterByConstraints(aliveNodes, requester, …)` are allowed (the same filter and fallback as
+      placement).
+    - The existing exclusions moved to `isPreemptibleService` (per-node, stateful, unreadable request).
+    - The new `stopMakesRoom` requires node remaining + victim requests ≥ requester requests, per resource. A zero
+      request always fits, as in `buildNodeHeap`.
+    - Sort: priority, then node ID, then instance ID.
+    - The chosen victim's room is reserved (remaining += victim − requester), so a later requester in the same cycle
+      does not count it again.
+  - Green: both new tests, every existing `TestPreemption*` scheduler test, and the three tests in
+    `integration/priority_preemption_test.go` (`go test -count=1 -v ./integration/ -run 'Priority|Preempt'` →
+    `TestPriorityPreemptionLifecycle`, `TestPriorityPreemptionRespectsEqual` and `TestPriorityEvictionOrder` PASS).
+- [x] 3d.6 D2: the parser accepts a leading dot (`.5`, `.5Gi`); `5.` stays refused. Extend the two parser form tests.
+  - `parseScaledDecimal` accepts an empty integer part when a fraction follows (`hasLeadingDot`). `.`, `.m`, `.Gi`,
+    `5.`, `5.m` and `1.Gi` stay refused, and are in the refusal table.
+  - Forms tests: `.5` = 500m, `.25` = 250m, `.5m` = 1m (rounded up); `.5Gi` = 536870912, `.5Ki` = 512, `.5` = 1 byte.
+  - **Open, for the main session:** the DSL lexer refuses a `.` that starts a token. `cca lint` on
+    `resources { cpu .5  memory .5Gi }` gives `parse error: 5:13: unexpected character '.'`, and `cpu ".5"` is refused
+    the same way. Templates render before lexing. So the parser change reaches only values that bypass the lexer,
+    such as store values. A `.cca` file, including one written by `k8s-to-cca`, still cannot declare `.5`, which the
+    "CPU forms" scenario (`cpu .5`) and the D2 rationale assume.
+  - Making the scenario hold needs a lexer change: `scanNextToken` must start a numeric literal at `.` followed by a
+    digit. That is outside 3d.6 as written, so it was not done. `design/dsl-reference.md` is not changed, so it does not
+    claim `.5` works in a configuration.
+  - Main session (2026-11-23, after the Codex stop review flagged it): spec "CPU forms" / "Memory forms" no longer
+    list `.5` / `.5Gi`; a new scenario "Leading dot outside a configuration file" states what holds; D2 says the DSL
+    refuses it. User decision 2026-11-23: option 2, `k8s-to-cca` writes `0.5` (3d.10).
+- [x] 3d.10 `k8s-to-cca` writes a leading-dot request or limit (`.5`, `.5Gi`) with a leading zero (`0.5`, `0.5Gi`).
+  Test `TestConvertWritesLeadingDotQuantitiesWithZero`: the converted output declares `cpu 0.5` / `memory 0.5Gi`
+  and compiles. Red first.
+  - The converter copies quantities in one place: `extractResourceRequests` (cmd/k8s-to-cca/main.go). It reads
+    `resources.requests`, or `resources.limits` when there are no requests, and no other field copies cpu or memory.
+    The new `addLeadingZeroToQuantity` puts `0` before a value that starts with `.`. An unquoted YAML `.5` is already
+    decoded as the float 0.5 and written `0.5`; the quoted form is the one that kept the dot.
+  - Test: `TestConvertWritesLeadingDotQuantitiesWithZero` (cmd/k8s-to-cca/main_test.go). It runs for `requests` and
+    for `limits`. It formats the result with `lang.Format`, then runs `lang.Parse` and `lang.Compile` on it.
+  - Red: `go test -count=1 ./cmd/k8s-to-cca/ -run TestConvertWritesLeadingDotQuantitiesWithZero` →
+    `requests: output does not declare cpu 0.5 and memory 0.5Gi` (the output had `cpu .5` / `memory .5Gi`), then
+    `requests: converted output does not parse: 5:13: unexpected character '.'`; `FAIL`.
+  - Green: the same command → `--- PASS: TestConvertWritesLeadingDotQuantitiesWithZero`.
+  - Checks: `gofmt -l .` is empty; `golangci-lint run ./...` → `0 issues.`; `go test -count=1 ./cmd/... ./lang/` →
+    `cmd/cca`, `cmd/k8s-to-cca` and `lang` all `ok`.
+- [x] 3d.7 Spec C and nits: `TestClassifyQoSRequestsWithoutLimitsIsGuaranteed` (pins current behaviour, no code
+  change expected); `eviction.go` logs a corrupt node memory fact once (`WarnUnreadableResourceOnce` or equivalent);
+  `extractCurrentResources` logs "no vertical recommendation" only for a service with a vertical policy for that
+  resource.
+  - `TestClassifyQoSRequestsWithoutLimitsIsGuaranteed` (lang/resource_values_test.go) is green with no code change.
+  - N2: `warnCorruptNodeMemoryOnce`, a `sync.Map` keyed by key and value, in eviction.go. It is an equivalent, not
+    `WarnUnreadableResourceOnce`, whose text ("re-apply the configuration to fix it") does not fit an agent-written
+    node fact.
+  - N4: `extractCurrentResources(facts, verticalBounds)` reads, and so warns about, a service's current value only
+    when `"{svc}/{kind}"` has vertical bounds (`resourceQuantityReader.includeService`). The filter is covered in
+    `TestCollectResourceQuantitiesReadEffectiveFirst`.
+  - The once-only logging itself has no test. Capturing the logger would mean swapping the process-wide
+    `logging.SetDefault` while runner goroutines from other tests still log, which races under `-race`.
+- [x] 3d.8 Graphs and flows: SCHEDULING_GRAPH (preemption inputs), HA_GRAPH (migration in `startControllers`),
+  CONTROLLER_DATA_FLOW_GRAPH (fix `splitServiceResourceKey` and `computeP95FromSamples` line numbers; eviction no
+  longer filters), Flow 10 where it mentions the migration or eviction.
+  - SCHEDULING_GRAPH:
+    - §5 is rewritten: inputs, the allowed nodes, `isPreemptibleService`, `stopMakesRoom`, the sort and the
+      reservation.
+    - The immunity table has two new rows.
+    - The §1 Reconcile line numbers are updated.
+    - The reverse index is regenerated from the code: 62 scheduler.go rows moved by +3 or +26, there are 3 new rows,
+      and the callers of `computeNodeLoadAndResourceUsage`, `buildAliveCandidateNodes`, `buildNodeIndexMap` and
+      `filterByConstraints` now include preemption.
+    - The §6, writes/deletes and constants line numbers are updated.
+    - §2–§4 statement-level line numbers were already stale before this change and are not part of 3d.
+  - HA_GRAPH: `NewHARunner`, `Run`, `startControllers` (goroutine → migration → `Runner.Run`) and `stopControllers`;
+    the server-start note; the reverse index (`runControllersAfterResourceMigration`, `stopControllers`,
+    `Runner.Run`); ordering constraint 1.
+  - CONTROLLER_DATA_FLOW_GRAPH:
+    - `splitServiceResourceKey` is at :122 in both places, and `computeP95FromSamples` at :450.
+    - The autoscale vertical tree shows whole MiB, and the migration tree shows the intent-first effective rule, the
+      total count and the leadership note.
+    - The eviction tree has no filtering, has the once-only node warning and current line numbers.
+    - There are 3 new reverse-index rows.
+  - Flow 10 (design/runtime-invariant-flows.md): a preemption bullet (D12); eviction credits 0 MiB; the autoscaler log
+    rule; whole-MiB memory; the migration at start and on becoming leader, with the effective-only-with-recommendation
+    rule.
+- [x] 3d.9 Checks: gofmt, golangci-lint, `go test -count=1 ./...`, `-race` on the affected packages.
+  - `gofmt -l .` → empty; `go vet ./...` clean; `golangci-lint run ./...` → `0 issues.`; `go test -count=1 ./...` → 20
+    packages `ok`, no FAIL.
+  - `go test -count=1 -race ./types/ ./scheduler/ ./controllers/ ./lang/ ./integration/ ./cmd/cca/` → all `ok` except
+    one `integration` failure: `TestClusterAutoscaleProvisionesNodesForUnplacedInstances`, 25 s, in the run where all
+    6 packages ran in parallel.
+    - That test sets no priorities, so the preemption change cannot act in it.
+    - It passed alone under `-race`, and `go test -count=1 -race ./integration/` then passed 3 times in a row (15.8 s,
+      16.6 s, 18.6 s). It is recorded as a load flake, not fixed.
+  - No changed or new non-test function is over 80 lines.
+
+## 3e. Rework after review round 2 (task 4.2 round 2, added 2026-11-23)
+
+- [x] 3e.1 I1 (D12): for a per-node requester, `findPreemptionVictim` also drops nodes already hosting the requester's
+  service (`filterOutNodesAlreadyHostingService`, using stored plus this-cycle placements), as placement does. Red
+  first: `TestSchedulerPerNodeRequesterPreemptsOnlyOnNodesItCanUse` (the reviewer's probe: per-node `agent` on
+  node-1, `cheap` on node-1, `low` filling node-2 → `low` is the victim, `cheap` keeps running), plus the zero-request
+  per-node case.
+  - Red: `go test -count=1 ./scheduler/ -run TestSchedulerPerNodeRequesterPreemptsOnlyOnNodesItCanUse` →
+    `preempted cheap-1 on node-1, which already hosts agent-1, so agent-2 can never use it`; `low-1 not preempted`;
+    `zero request: preempted cheap-1, although agent-2 cannot use node-1, the only node`; `FAIL`.
+  - Fix: the new `allowedPreemptionNodes` in scheduler.go makes the same choice as `placeBatchedInstances`.
+    - It runs `filterByConstraints`.
+    - For a per-node requester, it also runs `filterOutNodesAlreadyHostingService` over `reservations.cyclePlacements`,
+      which holds the stored placements, this cycle's placements (`mergeThisCyclePlacements`) and the earlier
+      preemptions of the cycle.
+    - After a preemption, `attemptPreemptions` records requester → victim node in `cyclePlacements`. A second pending
+      per-node instance of the same service in the cycle therefore does not pick the same node.
+  - Green: the new test (both cases), and all scheduler tests.
+- [x] 3e.2 I2: delete `types.FormatMemoryMiB`; its tests use `FormatMebibytes(MemoryBytesToMiBRoundedUp(x))`. Update
+  design D1, D7, D9 and any graph that names it.
+  - The function is removed from types/resource_quantity.go. `TestFormatResourceQuantitiesWithUnits` uses
+    `FormatMebibytes(MemoryBytesToMiBRoundedUp(x))`, and `TestFormattedQuantitiesParseBack` uses
+    `FormatMebibytes(768)`.
+  - `grep -rn FormatMemoryMiB --include=*.go --include=*.md .` now finds only this file: no code, design doc or graph
+    names it. The main session had already updated D1, D7 and D9.
+  - No red run: this is a deletion of dead code, with only test callers.
+- [x] 3e.3 N-a: in the migration clamp, a max that rounds down to 0 MiB is enforced, not read as unset (test: legacy
+  `200000000` with `memory { max 512Ki }`). N-b: `runControllersAfterResourceMigration` does not log an error when
+  the context is cancelled.
+  - N-a red: `TestMigrationEnforcesMaximumBelowOneMebibyte` (controllers/resource_migration_test.go) →
+    `intent/autoscaler/service/web/resources/memory = "191Mi" after the migration, want 0Mi`.
+  - N-a fix: `verticalResourceBounds.hasMaximum` is set when a max fact parses. `clamp` and `inWholeMebibytes` use it
+    instead of `maximum > 0`, so a declared max of 0 (or one that rounds down to 0 MiB) is enforced.
+    `computeVerticalResourceChange` is unchanged: a max ≤ 0 still means no recommendation. Green: the test gives
+    `0Mi`.
+  - N-b: after a failed attempt, `runControllersAfterResourceMigration` returns false without logging when
+    `ctx.Err() != nil`. This covers leadership loss and shutdown.
+  - The N-b log line has no test, for the same reason as in 3d.7: capturing it needs the process-wide
+    `logging.SetDefault`, which races under `-race`. The existing gate tests (`TestControllersNeverStart…`,
+    `TestHARunnerLeadershipLossCancelsMigrationRetry`) still pass.
+- [x] 3e.4 N-d: inline comments on `victimCandidate` fields; `preemptionInputs` documents which fields it mutates (or
+  splits the mutable state out if that stays small).
+  - Split: `preemptionInputs` is now read-only: instances, placements, requests, constraints, priorities, stateful
+    and invalid services.
+  - The new `preemptionReservations` holds the mutable state: `aliveNodes` (remaining capacity), `aliveNodeIndex`,
+    `cyclePlacements` and `preemptedInstances`. Each field's comment says how a preemption changes it.
+  - `findPreemptionVictim(requester, priority, inputs, reservations)` takes both. The `victimCandidate` fields have
+    inline comments.
+- [x] 3e.5 Checks: gofmt, golangci-lint, `go test -count=1 ./...`, `-race` on scheduler and controllers; graphs
+  (SCHEDULING_GRAPH §5 "as placement does" holds again).
+  - `gofmt -l .` → empty; `golangci-lint run ./...` → `0 issues.`; `go test -count=1 ./...` → 20 packages `ok`, no
+    FAIL; `go test -count=1 -race ./scheduler/ ./controllers/` → both `ok`.
+  - SCHEDULING_GRAPH:
+    - §5 shows `preemptionReservations` and `allowedPreemptionNodes` (constraints + per-node filter over the
+      stored, cycle and reserved placements) and the per-node reservation.
+    - The immunity row "Node the requester may not use" names the per-node rule.
+    - The reverse index is regenerated from the code again, with a new `allowedPreemptionNodes` row and updated callers
+      of `filterByConstraints` and `filterOutNodesAlreadyHostingService`. The §1, §4 header, §6 and table line numbers
+      are shifted.
+  - CONTROLLER_DATA_FLOW_GRAPH: the autoscale line numbers moved by 1 for the new field, and the migration tree notes
+    `hasMaximum` (N-a) and the quiet return on cancel (N-b).
+  - Not changed (M258): placement order by priority (P1) and group preemption (P2).
+
+- [x] 3e.6 R3-N1: when a max is declared and the migration's clamped value is 0, write the smallest unit (`1m` CPU,
+  `1Mi` memory), never 0, which the runtimes read as no limit. Red first: `max 0` CPU and `max 512Ki` memory with a
+  legacy value give `1m` / `1Mi` (update `TestMigrationEnforcesMaximumBelowOneMebibyte`'s `0Mi` expectation).
+  - Test: `TestMigrationEnforcesMaximumBelowOneMebibyte` now also covers `cpu { max 0 }` with a legacy `750`, and
+    expects `1Mi` / `1m`.
+  - Red: `go test -count=1 ./controllers/ -run TestMigrationEnforcesMaximumBelowOneMebibyte` →
+    `…/resources/memory = "0Mi" after the migration, want 1Mi` and `…/resources/cpu = "0m" after the migration, want
+    1m`; `FAIL`.
+  - Fix: the named constant `smallestLimitedQuantity = 1` in controllers/autoscale.go. Under a declared max
+    (`hasMaximum`), `verticalResourceBounds.clamp` raises a result below it to 1 millicore or 1 MiB, the unit clamp
+    works in.
+  - `clamp` has no caller other than `formatLegacyQuantity`, so the autoscaler is unchanged: a max ≤ 0 still means no
+    recommendation in `computeVerticalResourceChange`.
+  - Green: the test passes, `go test -count=1 ./controllers/` → `ok`, and `go test -count=1 -race ./controllers/` →
+    `ok`. `gofmt -l .` is empty; `golangci-lint run ./...` → `0 issues.`
+  - CONTROLLER_DATA_FLOW_GRAPH: the autoscale line numbers moved (:825, :863, :808), and the migration note names the
+    floor.
+  - **Superseded by 3e.7.** The Codex stop review found that the floor exceeds a declared max (`max 512Ki` → `1Mi`).
+    `smallestLimitedQuantity` and `hasMaximum` were removed again. The test now expects the 3e.7 values.
+
+- [x] 3e.7 Codex stop review: the 3e.6 floor exceeds a declared max (`max 512Ki` → `1Mi`; `cpu max 0` → `1m`).
+  Replace it per design D9: a max of 0 is no max (no floor, no 0 written); a memory max in (0, 1 MiB) gives exactly
+  the max in unit form (`512Ki`, or decimal `k` such as `524.288k`), parsed back to the same bytes and never bare.
+  Remove `smallestLimitedQuantity` if unused. Red first: `TestMigrationEnforcesMaximumBelowOneMebibyte` expects
+  `512Ki` for `max 512Ki`, `524.289k` for `max 524289` (not whole KiB), and `750m` for `cpu { max 0 }` with legacy
+  `750`; each written value parses to at most the max.
+  - Tests:
+    - `TestMigrationEnforcesMaximumBelowOneMebibyte` is rewritten. web has `memory max 512Ki` and `cpu max 0` with
+      legacy `200000000` / `750`; odd has `memory max 524289`. It runs the migration twice and checks the values and
+      that each memory value parses to at most its max. On the second run the store revision must not move.
+    - `TestFormatMemoryBytesExactly` (types) is new. It checks Ki for whole KiB, decimal k otherwise, that the result is
+      never bare digits, and that `ParseMemoryBytes` reads it back to the same bytes. Cases: 524288, 1024, 524289,
+      524000, 524200, 500, 1, 1048575.
+  - Red (the formatter a stub returning `""`, the 3e.6 code in place):
+    - `go test -count=1 ./controllers/ -run TestMigrationEnforcesMaximumBelowOneMebibyte`:
+      - odd memory = `"1Mi"`, want `"524.289k"`;
+      - web cpu = `"1m"`, want `"750m"`;
+      - web memory = `"1Mi"`, want `"512Ki"`;
+      - both memory values parse to 1048576, above their max;
+      - the same failures on the second run; `FAIL`.
+    - `go test -count=1 ./types/ -run TestFormatMemoryBytesExactly`: `FormatMemoryBytesExactly(524200) = "", want
+      "524.2k"` and similar; `FAIL`.
+  - Fix:
+    - `types.FormatMemoryBytesExactly` (new constants `kibibyteSuffix` and `kilobyteSuffix`). Its caller is the
+      migration.
+    - `formatLegacyQuantity` writes `FormatMemoryBytesExactly(max)` when a readable memory max is above 0 but under
+      1 MiB. Otherwise it writes whole MiB, as before.
+    - `verticalResourceBounds.clamp` and `inWholeMebibytes` treat a max of 0 as no max again (`maximum > 0`), as the
+      autoscaler does. `hasMaximum` and `smallestLimitedQuantity` are removed, and nothing names them.
+    - The autoscaler is unchanged: a max ≤ 0 still means no recommendation.
+  - Green:
+    - `go test -count=1 ./controllers/ ./types/` → both `ok`.
+    - `go test -count=1 -race ./controllers/` → `ok`.
+    - `gofmt -l .` is empty; `golangci-lint run ./...` → `0 issues.`
+  - Graphs: the CONTROLLER_DATA_FLOW_GRAPH migration note describes the new rule. Line numbers are updated in
+    autoscale (:816, :854, :800) and in resource_migration (:136, :150, :177, :216, :228, :236). HA_GRAPH's
+    `resource_migration.go:232` becomes :236.
+
+- [x] 3e.8 Codex stop review: with a memory max under 1 MiB, `formatLegacyQuantity` (resource_migration.go:140)
+  writes the max whatever the legacy value, so a smaller value is raised (`100000` with `max 512Ki` → `512Ki`). Per D9:
+  clamp the legacy bytes to [min, max] exactly and write `FormatMemoryBytesExactly` of that; a legacy `0` becomes the
+  max. Red first: `100000` + `max 512Ki` → `100k`; `0` + `max 512Ki` → `512Ki`; `600000` + `min 524289 max 900000` stays
+  `600k`; each parses to at most the max and at least the min; second run changes nothing.
+  - Test: `TestMigrationClampsLegacyMemoryExactlyUnderSubMebibyteMax` (controllers/resource_migration_test.go) has the
+    three cases. Each value must parse within [min, max], and on the second run the store revision must not move.
+  - Red: `go test -count=1 ./controllers/ -run TestMigrationClampsLegacyMemoryExactlyUnderSubMebibyteMax` →
+    `small/resources/memory = "512Ki", want "100k"` and `ranged/resources/memory = "900k", want "600k"`, on both runs;
+    `FAIL`. The legacy `0` case already gave `512Ki`.
+  - Fix: in the sub-MiB branch, `formatLegacyQuantity` now writes `FormatMemoryBytesExactly(bounds.clamp(legacy))`
+    (exact bytes, [min, max]). A legacy `0` (no limit) writes the max. The function comment is updated.
+  - Green:
+    - `go test -count=1 ./controllers/ ./types/` → both `ok`.
+    - `go test -count=1 -race ./controllers/` → `ok`.
+    - `gofmt -l .` is empty; `golangci-lint run ./...` → `0 issues.`
+    - `TestMigrationEnforcesMaximumBelowOneMebibyte` (3e.7) still passes.
+  - Graphs: the CONTROLLER_DATA_FLOW_GRAPH migration note describes the clamp, with line numbers :153, :180, :219,
+    :231, :239. HA_GRAPH's `resource_migration.go:236` becomes :239.
+
+## 3f. Refactor after the patterns / anti-patterns review (added 2026-11-23, user approved)
+
+Review by `code-reviewer` (Opus, high) of `git diff 9159e19 -- '*.go'` against design/Anti-pattern.md, CLAUDE.md,
+the freeCodeCamp anti-patterns, design-patterns-for-humans (GoF) and the DSA checklist repo. No correctness bug and no
+architecture-rule violation; three structural findings break mandatory CLAUDE.md rules. Main session verified I1–I3
+(17 raw `"cpu"`/`"memory"` literals in autoscale/intent/migration; `LastIndex` splits at autoscale.go:293,
+intent.go:239, :321; effective-first in scheduler/resource_requests.go:46-138, controllers/helpers.go:128,
+agent/telemetry.go:207). Behaviour must not change: every existing test stays green unmodified except for renames.
+
+- [x] 3f.1 P-I1 (typed enums, duplication, Strategy): `type resourceKind string` with `resourceKindCPU` /
+  `resourceKindMemory`, and one table of per-kind specs (key suffix, parser, intent key, effective key, formatter,
+  MiB conversion for memory). Replace the literals and if-pairs in autoscale.go, intent.go, resource_migration.go,
+  helpers.go and eviction.go; replace `collectCPUMillicoresBySuffix` / `collectMemoryBytesBySuffix` (middlemen) with
+  one collector taking the kind, so a reader cannot pass the wrong suffix.
+  - Where the types live: the kind type is exported as `types.ResourceKind` (`ResourceKindCPU` /
+    `ResourceKindMemory`) in the new types/resource_kind.go, not as an unexported `resourceKind` in controllers. The
+    3f.3 helper and the scheduler need it, and the scheduler imports controllers, so types is the only package both
+    reach without a cycle.
+  - The spec table (Strategy as function values) is in two layers, because two packages need it:
+    - `types.ResourceKindSpec`: kind, `RequestKeySuffix`, `Parse`, `IntentKey`, `EffectiveKey`. Accessors are
+      `ResourceKindSpecs()` (CPU first), `LookupResourceKindSpec` and `ParseResourceKind`. Its users are controllers,
+      the scheduler and lang.
+    - `controllers.verticalResourceSpecs`: it embeds the types spec and adds the sizing unit (`toVerticalUnit`,
+      `maximumToVerticalUnit`, `boundsInVerticalUnit`, `formatVerticalUnit`, `formatExact`). Memory is whole MiB via
+      `inWholeMebibytes`, and CPU is `keepQuantity` / `keepBounds`.
+    - CPU keeps its own bounds function instead of a generic min-up/max-down conversion. A generic one would change
+      the result when CPU min > max (clamp gives min today).
+  - Literals and if-pairs: autoscale.go, intent.go, resource_migration.go, helpers.go and eviction.go no longer
+    compare `"cpu"` / `"memory"` or build `/resources/{kind}` keys. `grep -n '"cpu"\|"memory"\|resources/cpu\|resources/memory\|LastIndex'`
+    over them leaves only the eviction pressure value `"memory"`, which is not a resource-kind lookup.
+  - Collectors: `collectCPUMillicoresBySuffix`, `collectMemoryBytesBySuffix` and
+    `collectResourceQuantitiesEffectiveFirst` are replaced by one `collectResourceQuantities(facts, kind, reader)`.
+    The kind picks the suffix and the parser together. helpers_test.go call sites were renamed.
+  - Migration: `formatLegacyQuantity(kindSpec, …)` is now one generic branch. For CPU, a max below one sizing unit is
+    impossible, so the CPU result is unchanged. `resourceKindSuffixes` and `resourceMigrationScanPrefixes` are
+    removed.
+- [x] 3f.2 P-I2 (map key choice): a struct key `serviceResourceKey{serviceName, kind}` (or per-service structs) instead
+  of building and re-splitting `"{svc}/{kind}"`; sorted deterministically.
+  - `types.ServiceResourceKey{ServiceName, Kind}` is the key of vertical bounds, current requests, recommendations
+    and effective values (map[ServiceResourceKey]…). `types.SortedServiceResourceKeys` (generic) orders by service,
+    then kind.
+  - All three `strings.LastIndex` splits and every `serviceName+"/"+kind` join are gone. intent.go no longer imports
+    `strings`.
+  - `autoscalerResourceIntent{cpu, memory}` is removed: the struct key makes it redundant. So P-N13 (inline
+    comments on its fields) has nothing left to comment.
+  - Order: the deterministic order of the emitted changes is now (service, kind) instead of the "{svc}/{kind}"
+    string order. The two differ for names with `-` or `.` (e.g. `web-api` sorts after `web` here, before it in the
+    string order), corrected after review R5. The set of changes is the same.
+- [x] 3f.3 P-I3 (3+ duplication): one shared split-service-resource-key and effective-first-without-fallback helper,
+  used by the scheduler and controllers; it returns the chosen key and value so the scheduler still builds its
+  `invalid_resource_request` text. The agent (one key at a time) shares the rule by a doc reference.
+  - `types.SplitServiceResourceKey(key, prefix)` returns (ServiceResourceKey, ok) and matches the key suffix (B5).
+  - `types.CollectEffectiveFirstResourceValues(facts)` returns `map[ServiceResourceKey]StoredResourceValue{FactKey,
+    FactValue}`: effective when stored, otherwise desired, with no fallback from an unreadable effective value.
+  - Users:
+    - controllers `collectResourceQuantities`;
+    - scheduler `extractServiceResourcesFromFacts` / `parseServiceRequest`, which still builds the
+      `invalid_resource_request` "{key}={value}" text from FactKey and FactValue;
+    - the migration and intent.go, for the per-layer split.
+  - The scheduler's `collectStoredResourceRequests`, `effectiveFirst`, `storedResourceRequest`,
+    `serviceStoredRequests` and its key-suffix constants are removed.
+  - The agent's `lookupResourceWithFallback` doc comment points at the helper; the agent reads one key at a time.
+- [x] 3f.4 Scheduler nits: P-N1 do not copy placements or compute usage when no unplaced requester has priority > 0
+  (filter first, merge inside); P-N3 `findPreemptionVictim` only finds, one `reserve` method does all reservation
+  writes; P-N4 explicit preemption counter instead of `len(changes)`; P-N10 `slices.Sorted(maps.Keys(...))` instead
+  of `sortedStringMapKeys` (remove only the M243 copy).
+  - P-N1: `attemptPreemptions` first keeps only the unplaced requesters with priority > 0 and returns when there are
+    none. Only then does `newPreemptionReservations` merge this cycle's placement changes (`mergeThisCyclePlacements`
+    moved inside) and compute usage. Reconcile now passes `changes`.
+  - P-N3: `findPreemptionVictim(requester, inputs, reservations)` only finds. `preemptionReservations.reserve` makes
+    every reservation write: node capacity, `preemptedInstances` and `cyclePlacements`.
+  - P-N4: an explicit `preemptionCount`.
+  - P-N10: `slices.Sorted(maps.Keys(…))` in `buildInvalidResourceRequestChanges`. The M243 `sortedStringMapKeys`
+    is removed.
+  - All existing scheduler and integration preemption tests pass unmodified.
+- [x] 3f.5 Controller nits: P-N5 vertical sizes in int64 end to end, delete `convertQuantitiesToInt`; P-N6 one small
+  `firstOccurrence` / once-set used by both log-once caches, with a unit test of the dedup; P-N7 `HARunner` takes a
+  generic `func(ctx) error` run on becoming leader (wired in command_server.go) instead of knowing the migration;
+  P-N8 migration plans in two explicit passes (recommended set, then both layers), not a loop relying on array order;
+  P-N13 inline comments on `autoscalerResourceIntent` fields.
+  - P-N5: `extractCurrentResources` returns `map[ServiceResourceKey]int64`. The dimension's `currentValue`, the raw
+    recommendation and `clampToRange` are int64, and `convertQuantitiesToInt` is deleted.
+    - Not done: `applyVerticalStabilization` and its `timestampedRecommendation` history keep `int`. The existing
+      tests `TestVerticalStabilizationBlocks*` call it with `int` variables, and changing them would modify tests
+      beyond renames. `computeVerticalResourceChange` converts at that one call, which is exact on 64-bit.
+  - P-N6: `types.OccurrenceSet.IsFirstOccurrence(parts...)` (a sync.Map; parts joined with NUL). Both
+    `WarnUnreadableResourceOnce` and eviction's `warnCorruptNodeMemoryOnce` use it. New test:
+    `TestOccurrenceSetReportsOnlyTheFirstOccurrence` (first once, no joined-text collision, 32 concurrent callers see
+    one first occurrence).
+  - P-N7: the generic gate `runAfterPreconditionSucceeds(ctx, name, precondition, backoff, start)` is in the new
+    controllers/precondition_gate.go.
+    - The back-off moved there with it: `preconditionRetryBackoff`, the `precondition*RetryDelay` /
+      `preconditionRetryGrowthFactor` constants and `defaultPreconditionRetryBackoff`.
+    - `HARunner` has `SetLeadershipPrecondition(func(ctx) error)` and a `preconditionBackoff`, and runs the
+      precondition (a no-op when unset) through the gate on becoming leader. ha_runner.go does not import or name
+      the migration.
+    - cmd/cca/command_server.go wires it: `SetLeadershipPrecondition(controllers.ResourceMigrationPrecondition(factStore))`.
+      `RunControllersAfterResourceMigration` / `runControllersAfterResourceMigration` wrap the same gate.
+    - Test changes: renames (`resourceMigrationBackoff` → `preconditionRetryBackoff`, `migrationBackoff` →
+      `preconditionBackoff`), plus one line in each of the two leadership tests that wires the precondition as
+      cmd/cca does. The cancel-on-leadership-loss behaviour and both tests are unchanged and pass.
+  - P-N8: `planUnitlessResourceRewrites` makes two explicit passes. `collectRecommendedResources(intentFacts)` builds
+    the set (any intent key, as before), then `planLayerRewrites` plans the intent layer (all resources) and the
+    effective layer (recommended resources only). `scanMigrationLayer` keeps the old early return per scan.
+  - P-N13: obsolete, the struct was removed (3f.2).
+- [x] 3f.6 lang nits (P-N9): one enumerator of declared resource values (with kind) used by compiler and linter;
+  named constant for millicores per core; rename `DeprecationWarnings` to `ApplyTimeWarnings` (all callers).
+  - `declaredResourceValues(serviceDecl)` (compiler.go) enumerates field name, text and `types.ResourceKind`. Both
+    `validateServiceResourceValues` and the linter's `bareCPUValueWarnings` (CPU kind only, in the same order as
+    before) use it.
+  - `bareCPUWarningMillicores = 64 * types.MillicoresPerCore`; the types constant is now exported.
+  - `DeprecationWarnings` → `ApplyTimeWarnings`, with all callers: linter.go, cmd/cca/command_apply.go (and
+    `printDeprecationWarnings` → `printApplyTimeWarnings`), cmd/cca/configuration_api_client.go, and the two lang test
+    files.
+  - Not renamed: the test `TestDeprecationWarningsFlagBareCPUOfSixtyFourOrMore`. The spec names it, and the spec
+    must not be edited here.
+- [x] 3f.7 Graphs, Flow 10 and design references updated for renamed/moved functions; gofmt, golangci-lint,
+  `go test -count=1 ./...`, `-race` on scheduler, controllers, integration.
+  - CONTROLLER_DATA_FLOW_GRAPH:
+    - intent, autoscale (vertical spec table, struct keys, int64), migration (precondition gate, two passes) and
+      eviction trees;
+    - reverse index: 17 rows replaced or added;
+    - all line numbers re-read from the code.
+  - SCHEDULING_GRAPH:
+    - §1 request reading through `types.CollectEffectiveFirstResourceValues`;
+    - §5 rewritten (filter first, `newPreemptionReservations`, find-only, `reserve`, counter);
+    - the reverse index regenerated from the code (64 rows moved), plus rows for `newPreemptionReservations` and
+      `reserve`, with the removed helpers dropped;
+    - tables and constants.
+  - HA_GRAPH: `SetLeadershipPrecondition`, `startControllers` through `runAfterPreconditionSucceeds`, the server
+    wiring, the reverse index and ordering constraint 1. OBSERVABILITY_GRAPH and EXTENSIBILITY_GRAPH:
+    `HARunner.Run` and `Metrics` line numbers.
+  - Flow 10: names the shared rule and the kind table, and the leadership precondition.
+  - design.md: only renamed identifiers (`collectResourceQuantities`, the `precondition*` constants,
+    `lang.ApplyTimeWarnings`).
+  - Checks:
+    - `gofmt -l .` → empty; `go vet ./...` clean; `golangci-lint run ./...` → `0 issues.`
+    - `go test -count=1 ./...` → 20 packages `ok`.
+    - `go test -count=1 -race ./scheduler/ ./controllers/ ./types/` → `ok`.
+    - No changed or new non-test function is over 80 lines.
+  - `-race ./integration/`: one failure, `TestRollingControlPlaneUpgrade`, with `rolling upgrade caused 6
+    availability dips (>5 tolerated)`.
+    - It is a latency-injected timing tolerance test with no priorities, resource requests or HARunner, so the
+      refactor's code paths do not act in it.
+    - It passed 3/3 alone under `-race`. In three more full-package `-race` runs it failed once and passed twice.
+    - Recorded as a timing flake under `-race` load, not fixed.
+- Rejected or deferred (recorded, no task):
+  - P-N2 cache "no victim for service S" / min-scan instead of sort: optimization without a benchmark (CLAUDE.md:
+    benchmark before optimizing).
+  - P-N11 integer fast path in the parser: same; add `BenchmarkParseCPUMillicores` first, later.
+  - P-N12 unexport `MigrateUnitlessResourceRecommendations`: acceptable under the rule (production caller exists).
+  - P-N14 move preemption to `scheduler/preemption.go`: optional; fits M258, which reworks preemption.
+
+- [x] 3f.8 Review of 3f (same patterns reviewer, 2026-11-23): REQUEST CHANGES for one item; no behaviour change
+  found, every 3f finding fixed, departures judged sound. Main session verified R5-I1 (ha_runner.go:143-146). Fix:
+  - R5-I1 **fix**: the leadership precondition is a required argument of `NewHARunner` (no nil default, no silent
+    no-op); every caller passes one (tests pass an explicit no-op); command_server.go passes
+    `ResourceMigrationPrecondition`. A test fails if a nil precondition is passed. `SetLeadershipPrecondition` removed
+    if it has no remaining caller.
+  - R5-N1 **fix**: legacy `0` under a declared max becomes the max for CPU and memory in both branches (design D9);
+    test cases for `cpu { max 4 }` + `0` → `4000m` and `memory { max 2Gi }` + `0` → `2048Mi`.
+  - R5-N2 **fix**: drop `maximumToVerticalUnit` (and CPU-only placeholder fields); test
+    `boundsInVerticalUnit(bounds).maximum == 0`.
+  - R5-N3 **fix**: test that every `types.ResourceKindSpecs()` kind has a vertical spec.
+  - R5-N4 **fix**: `types.ResourceKindSpecs()` returns a copy.
+  - R5-N5 **fix**: the autoscaler builds the effective-first map once per cycle.
+  - R5-N6 **fix**: Flow 10 links to D9 for the migrated forms instead of restating `{n}Mi`.
+  - R5-N7 **fix**: the precondition carries a name used in its failure log ("resource unit migration").
+  - R5-N8 **rejected**: a third kind is hypothetical; the table test (N3) catches a missing spec.
+  - R5-N9 **rejected**: test-only forwarder kept so existing tests stay unchanged.
+  - Also correct the 3f.2 note: the (service, kind) order differs from the old string order for names with `-` or
+    `.` (e.g. `web-api`); the set of changes is the same.
+  - R5-I1 done: `NewHARunner(factStore, nodeID, metrics, leadershipPrecondition, controllers...)`.
+    - The precondition is a required `ControllerPrecondition{Name, Check}`. A nil `Check` panics at construction;
+      `LookupResourceKindSpec` uses the same panic-on-wiring-error style.
+    - `SetLeadershipPrecondition` and the silent no-op are removed.
+    - Callers:
+      - cmd/cca/command_server.go passes `controllers.ResourceMigrationPrecondition(factStore)`;
+      - the 5 non-migration HA tests pass the explicit `noOpLeadershipPrecondition()` (test helper);
+      - the 2 leadership-migration tests pass `ResourceMigrationPrecondition(store)`.
+    - New test: `TestNewHARunnerRefusesNilLeadershipPrecondition`, which recovers the panic.
+  - R5-N1 done:
+    - Red: `go test -count=1 ./controllers/ -run TestMigrationRaisesLegacyZeroToTheDeclaredMax` →
+      `…/web/resources/cpu = "0m" after the migration, want "4000m"`, `…/web/resources/memory = "0Mi"…, want
+      "2048Mi"`; `FAIL`.
+    - Fix: `formatLegacyQuantity` replaces a legacy 0 by a readable declared max before both branches. Without a
+      max, 0 stays `0m`.
+    - Green: the new test, plus the 3e.7/3e.8 tests unchanged.
+  - R5-N2 done:
+    - `maximumToVerticalUnit` and the CPU placeholder `formatExact` fields are removed.
+    - The exact branch keys on `boundsInVerticalUnit(bounds).maximum == 0` (only memory can reach it) and writes
+      `types.FormatMemoryBytesExactly`.
+    - Test: `TestBoundsInVerticalUnitMaximumBelowOneUnit` (512Ki → 0 MiB, 2Gi → 2048, CPU 1m → 1).
+  - R5-N3 done: `TestVerticalResourceSpecsCoverEveryKind`. One vertical spec per `types.ResourceKindSpecs()` kind,
+    carrying the kind's storage spec, with no unset function.
+  - R5-N4 done: `types.ResourceKindSpecs()` returns `slices.Clone` of the table.
+  - R5-N5 done: `extractCurrentResources` builds `types.CollectEffectiveFirstResourceValues` once per cycle. It parses
+    each kind with the new `parseChosenResourceQuantities`, which `collectResourceQuantities` now wraps for one-kind
+    readers such as eviction.
+  - R5-N6 done: Flow 10 links to design D9 for the migrated forms instead of restating `{n}Mi`. The link is relative
+    to the change folder, so it needs updating when the change is archived.
+  - R5-N7 done: `ControllerPrecondition.Name` ("resource unit migration") is used in the gate's failure log. The
+    separate `resourceMigrationName` / `leadershipPreconditionName` constants are removed.
+  - Docs:
+    - HA_GRAPH: constructor (required precondition and panic), `startControllers` through the named gate, server
+      wiring, reverse index.
+    - CONTROLLER_DATA_FLOW_GRAPH: migration tree (required argument, `ControllerPrecondition`, R5-N1/N2 rule) and
+      autoscale tree (map built once), reverse index, and line numbers re-read from the code.
+    - OBSERVABILITY_GRAPH and EXTENSIBILITY_GRAPH: `HARunner.Run` and `Metrics` lines.
+    - Flow 10.
+  - Checks:
+    - `gofmt -l .` → empty; `go vet ./...` clean; `golangci-lint run ./...` → `0 issues.`
+    - `go test -count=1 ./...` → 20 packages `ok`.
+    - `go test -count=1 -race ./controllers/ ./scheduler/ ./types/` → all `ok`.
+
 ## 4. Testbed, review, release (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:resource-capacity`, on the cluster a push run leaves). Record commands and
   output here:
   - **Refused apply:** apply `memory 512MB`; the apply is refused with field and value, and the store is unchanged.
   - **Request no node can meet:** apply a new service with `memory 64Gi`. The instance is unplaced, `cca describe
-    service` shows `insufficient_capacity`, and the cluster-scale controller writes a capacity request.
+    service` shows `insufficient_capacity`, and the cluster-scale controller writes a capacity request. No
+    lower-priority instance is preempted for it (D12).
   - **M241 4.1 capacity case:** roll a running service to a config that requests more memory than any node, with
     `progress_deadline 2m`. The rollout reason names `insufficient_capacity`; after 2 minutes `rollback_reason` names
     it too.
@@ -399,6 +948,44 @@ verified both.
   - **No vertical scaling:** confirm no deploy workload declares `scale vertical` (D8).
 - [ ] 4.2 Independent review: `code-reviewer` (Opus, effort high) reviews the milestone diff against this design and
   the spec. Record each finding as fixed or rejected, with one line of reasoning.
+  - Round 1 (2026-11-23, on 329e0fa): REQUEST CHANGES. Each finding verified in the code by the main session:
+
+    | # | Finding | Resolution |
+    |---|---|---|
+    | 1 | Vertical memory compares bytes but writes rounded-up MiB: same put every cycle, a write loop via the `intent/autoscaler/` watch; above a non-MiB max | **fix** 3d.1 (D7) |
+    | 2 | Eviction drops unreadable-request services from candidates, making them immune; D6's reasoning was backwards | **fix** 3d.4 (D6, user decision A: candidate with 0 MiB credit) |
+    | 3 | Migration only at process start; a new-version server that becomes leader later reads bare values an old leader wrote | **fix** 3d.2 (D9, migrate on becoming leader) |
+    | 4 | Preemption stops a victim without checking it makes room (pre-existing, now reachable): churn loop | **fix** 3d.5 (D12, user decision B: single victim that makes room; victim sets out of scope) |
+    | 5 | `cpu_limit`/`memory_limit` stored but never applied; "CPU forms" wording implied it | **deferred** to M254; spec wording fixed, requests-only QoS pinned (3d.7, user decision C) |
+    | N1 | Graph line numbers `splitServiceResourceKey`, `computeP95FromSamples` | **fix** 3d.8 |
+    | N2 | Corrupt node memory fact warned every cycle | **fix** 3d.7 |
+    | N3 | Migration logs only the last plan's count after a retry | **fix** 3d.3 |
+    | N4 | "no vertical recommendation" logged for services without a vertical policy | **fix** 3d.7 |
+    | N5 | `.5` refused though Kubernetes accepts it | **fix** 3d.6 (D2) |
+    | N6 | Migration rewrites an effective value copied from desired (`2` → `2m`) | **fix** 3d.3 (only with a recommendation) |
+  - Round 2 (2026-11-23, code-reviewer Opus high, on the uncommitted 3d tree): REQUEST CHANGES. Round-1 findings 1,
+    2, 3, 5 and N1–N6 confirmed fixed; 4 partly (I1). Verified by the main session:
+
+    | # | Finding | Resolution |
+    |---|---|---|
+    | I1 | Preemption ignores the requester's per-node mode: allowed nodes come from `filterByConstraints` only (scheduler.go:300), placement also drops nodes already hosting the service (:1090), so a victim on a node placement never uses is stopped (loop) | **fix** 3e.1 |
+    | I2 | `types.FormatMemoryMiB` has only test callers (dead code); D1/D7/D9 still name it | **fix** 3e.2 |
+    | P1 | Placement runs in service-name order (scheduler.go:1047), so a victim's replacement can take the freed room before the higher-priority requester (pre-existing) | **new milestone** M258 (placement order by priority); D12 goal holds only for the cannot-make-room case until then |
+    | P2 | Grouped requesters vs single-instance preemption check (pre-existing) | **folded into** M258 |
+    | P3 | `LeaderElection.release` never calls `onLost`, so shutdown does not cancel the controller ctx (pre-existing; the process exits) | **rejected for M243**: pre-existing, no effect beyond exit; noted for M180 HA correctness |
+    | N-a | Migration does not enforce a max below 1 MiB (rounds to 0 = unset) | **fix** 3e.3 |
+    | N-b | Error log on leadership loss when the cancelled ctx aborts the migration | **fix** 3e.3 |
+    | N-c | Placement-key parsing repeated in 3 places, each under 10 lines | **rejected**: below the duplication threshold |
+    | N-d | `preemptionInputs` carries mutable state; `victimCandidate` fields lack inline comments | **fix** 3e.4 (comments required by CLAUDE.md; rename/split if it stays small) |
+    | N-e | Log-once `sync.Map`s never pruned | **rejected**: bounded by distinct bad values written; acceptable |
+    | N-f | Startup migration gate now redundant with the leadership migration | **rejected**: kept on purpose (D9), costs one scan |
+  - Round 3 (2026-11-23, same reviewer, on the 3e tree): APPROVE. I1, I2, N-a, N-b, N-d confirmed fixed (probes
+    re-run: per-node requester, zero-request per-node, two per-node requesters, reservation); no regression in 3d;
+    graphs match. One nit, verified by the main session:
+
+    | # | Finding | Resolution |
+    |---|---|---|
+    | R3-N1 | With a declared `max 0` (CPU) or a max under 1 MiB, the migration writes `0m` / `0Mi`; both runtimes apply no limit for 0 (`runtime/container.go:287,290`, `runtime/containerd.go:564,568`), so the cap becomes unlimited | **fix** 3e.6 |
 - [ ] 4.3 Closing full Deploy Testbed run (job summary says `full run`); every default workload still places. Record
   the run ID.
 - [ ] 4.4 Update the milestones.md M243 row's changelog text to the final scope, with the BREAKING items (bare

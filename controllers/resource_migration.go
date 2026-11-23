@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
@@ -28,20 +26,6 @@ const resourceMigrationMaxAttempts = 5
 // revision compare and a put. etcdTransactionOperationLimit counts both (C1).
 const transactionItemsPerRewrite = 2
 
-// resourceMigrationScanPrefixes are the layers whose bare values are migrated;
-// desired/ is never rewritten (D9). A fixed-size array: it cannot grow.
-var resourceMigrationScanPrefixes = [...]string{types.ScanIntentAutoscalerServices, types.ScanEffectiveServices}
-
-// resourceKindSuffix pairs a migrated key suffix with its resource kind.
-type resourceKindSuffix struct {
-	keySuffix    string // keySuffix ends the key, e.g. "/resources/cpu"
-	resourceKind string // resourceKind is "cpu" or "memory"
-}
-
-// resourceKindSuffixes lists the migrated key suffixes in a fixed order (a
-// fixed-size array: it cannot grow, and iteration is deterministic).
-var resourceKindSuffixes = [...]resourceKindSuffix{{"/resources/cpu", "cpu"}, {"/resources/memory", "memory"}}
-
 // plannedResourceRewrite is one bare value to rewrite in unit form.
 type plannedResourceRewrite struct {
 	serviceName string // serviceName groups the rewrites of one service into one batch
@@ -51,86 +35,135 @@ type plannedResourceRewrite struct {
 }
 
 // MigrateUnitlessResourceRecommendations rewrites every bare (digits-only)
-// intent/autoscaler and effective CPU and memory value in unit form, clamped
-// to the service's vertical bounds, in CAS transactions. Run at server start
-// before controllers; idempotent. Returns how many values it rewrote.
+// autoscaler recommendation, and effective value of a resource that has one,
+// in unit form clamped to the vertical bounds, in CAS transactions; idempotent.
+// Returns the total rewritten over all batches and attempts (review N3).
 func MigrateUnitlessResourceRecommendations(ctx context.Context, factStore store.StateStore) (int, error) {
+	totalRewritten := 0
 	for attempt := 0; attempt < resourceMigrationMaxAttempts; attempt++ {
 		plannedRewrites, planError := planUnitlessResourceRewrites(ctx, factStore)
-		if planError != nil || len(plannedRewrites) == 0 {
-			return 0, planError
+		if planError != nil {
+			return totalRewritten, planError
 		}
-		committed, commitError := commitResourceRewrites(ctx, factStore, plannedRewrites)
+		committedCount, allCommitted, commitError := commitResourceRewrites(ctx, factStore, plannedRewrites)
+		totalRewritten += committedCount
 		if commitError != nil {
-			return 0, commitError
+			return totalRewritten, commitError
 		}
-		if committed {
-			logging.Default().Info("migrated resource recommendations stored without a unit", "values", strconv.Itoa(len(plannedRewrites)))
-			return len(plannedRewrites), nil
+		if allCommitted {
+			if totalRewritten > 0 {
+				logging.Default().Info("migrated resource recommendations stored without a unit", "values", strconv.Itoa(totalRewritten))
+			}
+			return totalRewritten, nil
 		}
 	}
-	return 0, fmt.Errorf("resource unit migration: keys kept changing over %d attempts", resourceMigrationMaxAttempts)
+	return totalRewritten, fmt.Errorf("resource unit migration: keys kept changing over %d attempts", resourceMigrationMaxAttempts)
 }
 
-// planUnitlessResourceRewrites scans the intent and effective layers and the
-// vertical bounds, and returns the bare values to rewrite, sorted by key.
+// planUnitlessResourceRewrites returns the bare values to rewrite, sorted by
+// key, in two explicit passes (P-N8): the set of resources with a
+// recommendation, then both layers. An effective value is planned only when
+// its resource has a recommendation: without one it was copied from desired
+// and already reads right (D9). desired/ is only read, for the bounds.
 func planUnitlessResourceRewrites(ctx context.Context, factStore store.StateStore) ([]plannedResourceRewrite, error) {
-	desiredFacts, scanError := factStore.Scan(ctx, types.ScanDesiredServices)
+	desiredFacts, scanError := scanMigrationLayer(ctx, factStore, types.ScanDesiredServices)
 	if scanError != nil {
-		return nil, fmt.Errorf("resource unit migration: scan %s: %w", types.ScanDesiredServices, scanError)
+		return nil, scanError
+	}
+	intentFacts, scanError := scanMigrationLayer(ctx, factStore, types.ScanIntentAutoscalerServices)
+	if scanError != nil {
+		return nil, scanError
+	}
+	effectiveFacts, scanError := scanMigrationLayer(ctx, factStore, types.ScanEffectiveServices)
+	if scanError != nil {
+		return nil, scanError
 	}
 	verticalBounds := extractVerticalBoundsByResource(desiredFacts)
-	var plannedRewrites []plannedResourceRewrite
-	for _, layerPrefix := range resourceMigrationScanPrefixes {
-		layerFacts, layerError := factStore.Scan(ctx, layerPrefix)
-		if layerError != nil {
-			return nil, fmt.Errorf("resource unit migration: scan %s: %w", layerPrefix, layerError)
-		}
-		for _, fact := range layerFacts {
-			serviceName, resourceKind := splitServiceResourceKey(fact.Key, layerPrefix)
-			if resourceKind == "" || !types.IsBareInteger(string(fact.Value)) {
-				continue
-			}
-			legacyQuantity, parseError := strconv.ParseInt(string(fact.Value), 10, 64)
-			if parseError != nil {
-				continue // beyond int64: left for the readers, which report it
-			}
-			unitValue := formatLegacyQuantity(resourceKind, verticalBounds[serviceName+"/"+resourceKind].clamp(legacyQuantity))
-			plannedRewrites = append(plannedRewrites, plannedResourceRewrite{
-				serviceName: serviceName, factKey: fact.Key, revision: fact.Revision, unitValue: unitValue,
-			})
-		}
-	}
+	recommendedResources := collectRecommendedResources(intentFacts)
+	plannedRewrites := planLayerRewrites(intentFacts, types.ScanIntentAutoscalerServices, verticalBounds, nil)
+	plannedRewrites = append(plannedRewrites,
+		planLayerRewrites(effectiveFacts, types.ScanEffectiveServices, verticalBounds, recommendedResources)...)
 	sort.Slice(plannedRewrites, func(i, j int) bool { return plannedRewrites[i].factKey < plannedRewrites[j].factKey })
 	return plannedRewrites, nil
 }
 
-// splitServiceResourceKey returns the service name and resource kind ("cpu"
-// or "memory") of a {prefix}{service}/resources/{kind} key, matching the
-// suffix so hierarchical names (team/web) work; kind is "" otherwise.
-func splitServiceResourceKey(factKey string, prefix string) (string, string) {
-	relativePath := strings.TrimPrefix(factKey, prefix)
-	for _, kindSuffix := range resourceKindSuffixes {
-		if serviceName, matched := strings.CutSuffix(relativePath, kindSuffix.keySuffix); matched && serviceName != "" {
-			return serviceName, kindSuffix.resourceKind
+// collectRecommendedResources returns the resources with an autoscaler
+// recommendation key, whatever its value (the first planning pass).
+func collectRecommendedResources(intentFacts []store.Fact) map[types.ServiceResourceKey]bool {
+	recommendedResources := make(map[types.ServiceResourceKey]bool)
+	for _, fact := range intentFacts {
+		if resourceKey, matched := types.SplitServiceResourceKey(fact.Key, types.ScanIntentAutoscalerServices); matched {
+			recommendedResources[resourceKey] = true
 		}
 	}
-	return "", ""
+	return recommendedResources
 }
 
-// formatLegacyQuantity writes a legacy quantity in unit form: CPU millicores
-// as "{n}m", memory bytes as whole MiB rounded up.
-func formatLegacyQuantity(resourceKind string, legacyQuantity int64) string {
-	if resourceKind == "cpu" {
-		return types.FormatCPUMillicores(legacyQuantity)
+// scanMigrationLayer scans one layer for the migration, naming the prefix in
+// the error.
+func scanMigrationLayer(ctx context.Context, factStore store.StateStore, layerPrefix string) ([]store.Fact, error) {
+	layerFacts, scanError := factStore.Scan(ctx, layerPrefix)
+	if scanError != nil {
+		return nil, fmt.Errorf("resource unit migration: scan %s: %w", layerPrefix, scanError)
 	}
-	return types.FormatMemoryMiB(legacyQuantity)
+	return layerFacts, nil
+}
+
+// planLayerRewrites plans the rewrite of every bare request value of one
+// layer. With requiredResources set (the effective layer), only resources in
+// it are planned; nil plans every resource (the intent layer).
+func planLayerRewrites(
+	layerFacts []store.Fact,
+	layerPrefix string,
+	verticalBounds map[types.ServiceResourceKey]verticalResourceBounds,
+	requiredResources map[types.ServiceResourceKey]bool,
+) []plannedResourceRewrite {
+	var plannedRewrites []plannedResourceRewrite
+	for _, fact := range layerFacts {
+		resourceKey, matched := types.SplitServiceResourceKey(fact.Key, layerPrefix)
+		if !matched || !types.IsBareInteger(string(fact.Value)) {
+			continue
+		}
+		if requiredResources != nil && !requiredResources[resourceKey] {
+			continue
+		}
+		legacyQuantity, parseError := strconv.ParseInt(string(fact.Value), 10, 64)
+		if parseError != nil {
+			continue // beyond int64: left for the readers, which report it
+		}
+		plannedRewrites = append(plannedRewrites, plannedResourceRewrite{
+			serviceName: resourceKey.ServiceName, factKey: fact.Key, revision: fact.Revision,
+			unitValue: formatLegacyQuantity(lookupVerticalResourceSpec(resourceKey.Kind), legacyQuantity, verticalBounds[resourceKey]),
+		})
+	}
+	return plannedRewrites
+}
+
+// formatLegacyQuantity writes a legacy quantity in unit form, clamped to the
+// bounds in the kind's sizing unit (B2, D7): "{n}m", or whole MiB rounded up.
+// A legacy 0 (no limit) under a declared max becomes the max (D9, R5-N1). A max
+// below one sizing unit (memory under 1 MiB) is clamped and written exactly.
+func formatLegacyQuantity(kindSpec verticalResourceSpec, legacyQuantity int64, bounds verticalResourceBounds) string {
+	hasDeclaredMaximum := !bounds.unreadable && bounds.maximum > 0
+	if hasDeclaredMaximum && legacyQuantity == 0 {
+		legacyQuantity = bounds.maximum // 0 meant no limit: the max is the closest bounded value
+	}
+	boundsInUnit := kindSpec.boundsInVerticalUnit(bounds)
+	if hasDeclaredMaximum && boundsInUnit.maximum == 0 {
+		return types.FormatMemoryBytesExactly(bounds.clamp(legacyQuantity)) // only memory: CPU's unit is its parsed unit
+	}
+	return kindSpec.formatVerticalUnit(boundsInUnit.clamp(kindSpec.toVerticalUnit(legacyQuantity)))
 }
 
 // commitResourceRewrites writes the rewrites in CAS transactions of whole
-// services, each within the etcd operation limit. Returns false when another
-// writer changed a guarded key, so the caller scans again.
-func commitResourceRewrites(ctx context.Context, factStore store.StateStore, plannedRewrites []plannedResourceRewrite) (bool, error) {
+// services, each within the etcd operation limit. Returns how many rewrites
+// committed, and false when another writer changed a guarded key, so the
+// caller scans again.
+func commitResourceRewrites(ctx context.Context, factStore store.StateStore, plannedRewrites []plannedResourceRewrite) (int, bool, error) {
+	committedCount := 0
+	if len(plannedRewrites) == 0 {
+		return 0, true, nil
+	}
 	for _, batch := range batchRewritesByService(plannedRewrites) {
 		var compares []store.Compare
 		var operations []store.Op
@@ -140,13 +173,14 @@ func commitResourceRewrites(ctx context.Context, factStore store.StateStore, pla
 		}
 		committed, transactionError := factStore.Transaction(ctx, compares, operations, nil)
 		if transactionError != nil {
-			return false, fmt.Errorf("resource unit migration: transaction: %w", transactionError)
+			return committedCount, false, fmt.Errorf("resource unit migration: transaction: %w", transactionError)
 		}
 		if !committed {
-			return false, nil
+			return committedCount, false, nil
 		}
+		committedCount += len(batch)
 	}
-	return true, nil
+	return committedCount, true, nil
 }
 
 // batchRewritesByService groups the rewrites into batches of whole services
@@ -170,33 +204,15 @@ func batchRewritesByService(plannedRewrites []plannedResourceRewrite) [][]planne
 	return append(batches, currentBatch)
 }
 
-const (
-	// resourceMigrationInitialRetryDelay is the wait after the first failed
-	// startup migration (C2).
-	resourceMigrationInitialRetryDelay = time.Second
-
-	// resourceMigrationMaximumRetryDelay caps the doubling retry delay.
-	resourceMigrationMaximumRetryDelay = time.Minute
-
-	// resourceMigrationRetryGrowthFactor multiplies the delay after each failure.
-	resourceMigrationRetryGrowthFactor = 2
-)
-
-// resourceMigrationBackoff is the bounded exponential back-off between
-// startup migration attempts.
-type resourceMigrationBackoff struct {
-	initialDelay time.Duration // initialDelay is the wait after the first failure
-	maximumDelay time.Duration // maximumDelay caps the wait
-}
-
-// delayAfterAttempt returns the wait after failed attempt number attempt
-// (1-based): the initial delay doubled per earlier failure, at most the maximum.
-func (backoff resourceMigrationBackoff) delayAfterAttempt(attempt int) time.Duration {
-	retryDelay := backoff.initialDelay
-	for failedAttempt := 1; failedAttempt < attempt && retryDelay < backoff.maximumDelay; failedAttempt++ {
-		retryDelay *= resourceMigrationRetryGrowthFactor
-	}
-	return min(retryDelay, backoff.maximumDelay)
+// ResourceMigrationPrecondition returns the resource unit migration as a
+// named precondition: an error until every legacy value is migrated (D9). The
+// server runs it before starting controllers, at start and on becoming leader
+// (passed to NewHARunner).
+func ResourceMigrationPrecondition(factStore store.StateStore) ControllerPrecondition {
+	return ControllerPrecondition{Name: "resource unit migration", Check: func(ctx context.Context) error {
+		_, migrationError := MigrateUnitlessResourceRecommendations(ctx, factStore)
+		return migrationError
+	}}
 }
 
 // RunControllersAfterResourceMigration runs the startup migration until it
@@ -204,29 +220,11 @@ func (backoff resourceMigrationBackoff) delayAfterAttempt(attempt int) time.Dura
 // startControllers (D9, C2). Blocks; returns false if ctx ends first, in which
 // case the controllers never start. Callers run it in a goroutine.
 func RunControllersAfterResourceMigration(ctx context.Context, factStore store.StateStore, startControllers func()) bool {
-	return runControllersAfterResourceMigration(ctx, factStore, resourceMigrationBackoff{
-		initialDelay: resourceMigrationInitialRetryDelay, maximumDelay: resourceMigrationMaximumRetryDelay,
-	}, startControllers)
+	return runControllersAfterResourceMigration(ctx, factStore, defaultPreconditionRetryBackoff(), startControllers)
 }
 
 // runControllersAfterResourceMigration is RunControllersAfterResourceMigration
 // with the back-off as a parameter, so tests can use short delays.
-func runControllersAfterResourceMigration(ctx context.Context, factStore store.StateStore, backoff resourceMigrationBackoff, startControllers func()) bool {
-	for attempt := 1; ; attempt++ {
-		_, migrationError := MigrateUnitlessResourceRecommendations(ctx, factStore)
-		if migrationError == nil {
-			startControllers()
-			return true
-		}
-		retryDelay := backoff.delayAfterAttempt(attempt)
-		logging.Default().Error("resource unit migration failed; controllers wait for it",
-			"attempt", strconv.Itoa(attempt), "next_retry_in", retryDelay.String(), "error", migrationError.Error())
-		retryTimer := time.NewTimer(retryDelay)
-		select {
-		case <-ctx.Done():
-			retryTimer.Stop()
-			return false
-		case <-retryTimer.C:
-		}
-	}
+func runControllersAfterResourceMigration(ctx context.Context, factStore store.StateStore, backoff preconditionRetryBackoff, startControllers func()) bool {
+	return runAfterPreconditionSucceeds(ctx, ResourceMigrationPrecondition(factStore), backoff, startControllers)
 }

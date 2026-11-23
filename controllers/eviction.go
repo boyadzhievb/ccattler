@@ -82,8 +82,8 @@ func (evictionController *EvictionController) Reconcile(ctx context.Context, fac
 	nodeCapacity := extractNodeMemoryCapacity(facts)
 	nodeAvailable := extractNodeMemoryAvailable(facts)
 	instanceNodes := extractInstanceNodeMapping(facts)
-	serviceMemoryRequests, unreadableServices := extractServiceMemoryRequests(facts)
-	instanceServices := excludeUnreadableServiceInstances(extractInstanceServiceMapping(facts), unreadableServices)
+	serviceMemoryRequests := extractServiceMemoryRequests(facts)
+	instanceServices := extractInstanceServiceMapping(facts)
 	instanceStates := extractInstanceStates(facts)
 	serviceQoSClasses := extractServiceQoSClasses(facts)
 	servicePriorities := extractServicePrioritiesFromFacts(facts)
@@ -273,12 +273,25 @@ func extractNodeMemoryMiB(facts []store.Fact, suffix string) map[string]int {
 		}
 		memoryMiB, parseError := strconv.Atoi(string(fact.Value))
 		if parseError != nil {
-			logging.Default().Warn("eviction: corrupt node memory fact, node skipped", "key", fact.Key, "value", string(fact.Value))
+			warnCorruptNodeMemoryOnce(fact.Key, string(fact.Value))
 			continue
 		}
 		memoryByNode[nodeID] = memoryMiB
 	}
 	return memoryByNode
+}
+
+// corruptNodeMemoryWarnings remembers the node memory key/value pairs already
+// logged by warnCorruptNodeMemoryOnce.
+var corruptNodeMemoryWarnings types.OccurrenceSet
+
+// warnCorruptNodeMemoryOnce logs a node memory fact that is not a plain MiB
+// integer once per key and value, not on every cycle (review N2).
+func warnCorruptNodeMemoryOnce(factKey string, factValue string) {
+	if !corruptNodeMemoryWarnings.IsFirstOccurrence(factKey, factValue) {
+		return
+	}
+	logging.Default().Warn("eviction: corrupt node memory fact, node skipped", "key", factKey, "value", factValue)
 }
 
 // extractInstanceNodeMapping reads observed/instance/{id}/node facts and
@@ -363,35 +376,20 @@ func extractServiceQoSClasses(facts []store.Fact) map[string]string {
 }
 
 // evictionUnreadableRequestConsequence is logged with an unreadable memory request.
-const evictionUnreadableRequestConsequence = "its instances are not ranked for eviction"
+const evictionUnreadableRequestConsequence = "its instances stay eviction candidates in normal order, credited 0 MiB freed"
 
 // extractServiceMemoryRequests returns each service's memory request in whole
-// MiB (rounded up, the unit of node facts), effective-first, and separately
-// the services whose request cannot be parsed (M243 D6).
-func extractServiceMemoryRequests(facts []store.Fact) (map[string]int, map[string]bool) {
-	memoryBytesByService, unreadableServices := collectMemoryBytesBySuffix(
-		facts, "resources/memory", "eviction", evictionUnreadableRequestConsequence)
+// MiB (rounded up, the unit of node facts), effective-first. A service whose
+// request cannot be parsed is left out, so its instances stay candidates
+// credited 0 MiB, never immune (M243 D6, decision A); logged once.
+func extractServiceMemoryRequests(facts []store.Fact) map[string]int {
+	memoryBytesByService := collectResourceQuantities(facts, types.ResourceKindMemory,
+		resourceQuantityReader{readerName: "eviction", consequence: evictionUnreadableRequestConsequence})
 	requests := make(map[string]int, len(memoryBytesByService))
 	for serviceName, memoryBytes := range memoryBytesByService {
 		requests[serviceName] = int(types.MemoryBytesToMiBRoundedUp(memoryBytes))
 	}
-	return requests, unreadableServices
-}
-
-// excludeUnreadableServiceInstances drops the instances of services whose
-// request cannot be read, so they are skipped when ranking eviction
-// candidates instead of counting as using 0 (which would protect them).
-func excludeUnreadableServiceInstances(instanceServices map[string]string, unreadableServices map[string]bool) map[string]string {
-	if len(unreadableServices) == 0 {
-		return instanceServices
-	}
-	evictableServices := make(map[string]string, len(instanceServices))
-	for instanceID, serviceName := range instanceServices {
-		if !unreadableServices[serviceName] {
-			evictableServices[instanceID] = serviceName
-		}
-	}
-	return evictableServices
+	return requests
 }
 
 // extractExistingNodePressure reads derived/node/{id}/pressure facts and

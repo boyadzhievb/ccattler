@@ -6,6 +6,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/boyadzhievb/ccattler/lang"
 )
 
 // TestConvertDeploymentWithEnvAndSecrets verifies that a Deployment with env
@@ -273,6 +275,48 @@ spec:
 	}
 	if serviceDecl.Resources.Memory != "256Mi" {
 		t.Errorf("expected Memory 256Mi, got %q", serviceDecl.Resources.Memory)
+	}
+}
+
+// TestConvertWritesLeadingDotQuantitiesWithZero: spec resource-requests,
+// "Converted Kubernetes manifest" (D2, 3d.10). The DSL lexer refuses a value
+// starting with ".", so quoted ".5" / ".5Gi" requests and limits are written
+// "0.5" / "0.5Gi", and the output parses and compiles.
+func TestConvertWritesLeadingDotQuantitiesWithZero(t *testing.T) {
+	t.Parallel()
+	for _, resourcesSection := range []string{"requests", "limits"} {
+		yamlInput := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fractional
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1
+          resources:
+            ` + resourcesSection + `:
+              cpu: ".5"
+              memory: ".5Gi"
+`
+		dslFile, convertError := convertKubernetesYAMLToDSL([]byte(yamlInput))
+		if convertError != nil {
+			t.Fatalf("%s: conversion failed: %v", resourcesSection, convertError)
+		}
+		dslOutput := lang.Format(dslFile)
+		if !strings.Contains(dslOutput, "cpu 0.5\n") || !strings.Contains(dslOutput, "memory 0.5Gi\n") {
+			t.Errorf("%s: output does not declare cpu 0.5 and memory 0.5Gi:\n%s", resourcesSection, dslOutput)
+		}
+		parsedFile, parseError := lang.Parse(dslOutput)
+		if parseError != nil {
+			t.Fatalf("%s: converted output does not parse: %v\n%s", resourcesSection, parseError, dslOutput)
+		}
+		if _, compileError := lang.Compile(parsedFile); compileError != nil {
+			t.Errorf("%s: converted output does not compile: %v", resourcesSection, compileError)
+		}
 	}
 }
 

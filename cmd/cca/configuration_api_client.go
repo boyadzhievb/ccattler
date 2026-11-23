@@ -56,7 +56,7 @@ func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedD
 	gateKeyWriter := newAPIGateKeyWriter()
 	for _, rendered := range renderedFiles {
 		fmt.Printf("Applying %s...\n", rendered.filePath)
-		printDeprecationWarnings(rendered)
+		printApplyTimeWarnings(rendered)
 		referenced, readError := lang.ReadClientReferencedFiles(rendered.content, filepath.Dir(rendered.filePath))
 		if readError != nil {
 			exitWithFileError(readError, rendered.filePath)

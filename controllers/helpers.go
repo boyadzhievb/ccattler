@@ -99,54 +99,44 @@ func collectIntValuesBySuffix(facts []store.Fact, prefix string, matchSuffix str
 	return collectedValues
 }
 
-// collectCPUMillicoresBySuffix reads each service's CPU value under
-// matchSuffix (e.g. "resources/cpu") in millicores, effective-first. Services
-// whose value cannot be parsed are left out, returned separately and logged
-// once under readerName (M243 D6).
-func collectCPUMillicoresBySuffix(facts []store.Fact, matchSuffix string, readerName string, consequence string) (map[string]int64, map[string]bool) {
-	return collectResourceQuantitiesEffectiveFirst(facts, matchSuffix, types.ParseCPUMillicores, readerName, consequence)
+// resourceQuantityReader names who reads a resource value, for the
+// once-per-value warning, and which services it reads.
+type resourceQuantityReader struct {
+	readerName     string                        // readerName is logged with an unreadable value, e.g. "eviction"
+	consequence    string                        // consequence is what the reader does about an unreadable value
+	includeService func(serviceName string) bool // includeService selects the services read; nil reads all
 }
 
-// collectMemoryBytesBySuffix reads each service's memory value under
-// matchSuffix (e.g. "resources/memory") in bytes, effective-first. Services
-// whose value cannot be parsed are left out, returned separately and logged
-// once under readerName (M243 D6).
-func collectMemoryBytesBySuffix(facts []store.Fact, matchSuffix string, readerName string, consequence string) (map[string]int64, map[string]bool) {
-	return collectResourceQuantitiesEffectiveFirst(facts, matchSuffix, types.ParseMemoryBytes, readerName, consequence)
+// collectResourceQuantities parses each selected service's request of kind,
+// effective-first (types.CollectEffectiveFirstResourceValues: an unreadable
+// effective value does not fall back to desired). Unreadable values are left
+// out and logged once (M243 D6). The kind picks suffix and parser together.
+func collectResourceQuantities(facts []store.Fact, kind types.ResourceKind, reader resourceQuantityReader) map[string]int64 {
+	return parseChosenResourceQuantities(types.CollectEffectiveFirstResourceValues(facts), kind, reader)
 }
 
-// collectResourceQuantitiesEffectiveFirst parses each service's value under
-// matchSuffix from effective/service/, or desired/service/ when no effective
-// value exists. An unreadable effective value does not fall back to desired.
-func collectResourceQuantitiesEffectiveFirst(
-	facts []store.Fact,
-	matchSuffix string,
-	parseQuantity func(string) (int64, error),
-	readerName string,
-	consequence string,
-) (map[string]int64, map[string]bool) {
-	chosenFacts := make(map[string]store.Fact)
-	for _, servicePrefix := range []string{types.ScanDesiredServices, types.ScanEffectiveServices} {
-		for _, fact := range store.FactsWithPrefix(facts, servicePrefix) {
-			// Match the key's suffix, not its first segment, so team/web works (B5).
-			serviceName, matched := strings.CutSuffix(strings.TrimPrefix(fact.Key, servicePrefix), "/"+matchSuffix)
-			if matched && serviceName != "" && len(fact.Value) > 0 {
-				chosenFacts[serviceName] = fact
-			}
-		}
-	}
-	parsedQuantities := make(map[string]int64, len(chosenFacts))
-	unreadableServices := make(map[string]bool)
-	for serviceName, fact := range chosenFacts {
-		parsedQuantity, parseError := parseQuantity(string(fact.Value))
-		if parseError != nil {
-			types.WarnUnreadableResourceOnce(readerName, fact.Key, string(fact.Value), parseError, consequence)
-			unreadableServices[serviceName] = true
+// parseChosenResourceQuantities is collectResourceQuantities on an
+// already-built effective-first map, so a reader of several kinds builds it
+// once per cycle (R5-N5).
+func parseChosenResourceQuantities(
+	chosenValues map[types.ServiceResourceKey]types.StoredResourceValue,
+	kind types.ResourceKind,
+	reader resourceQuantityReader,
+) map[string]int64 {
+	kindSpec := types.LookupResourceKindSpec(kind)
+	parsedQuantities := make(map[string]int64)
+	for resourceKey, storedValue := range chosenValues {
+		if resourceKey.Kind != kind || (reader.includeService != nil && !reader.includeService(resourceKey.ServiceName)) {
 			continue
 		}
-		parsedQuantities[serviceName] = parsedQuantity
+		parsedQuantity, parseError := kindSpec.Parse(storedValue.FactValue)
+		if parseError != nil {
+			types.WarnUnreadableResourceOnce(reader.readerName, storedValue.FactKey, storedValue.FactValue, parseError, reader.consequence)
+			continue
+		}
+		parsedQuantities[resourceKey.ServiceName] = parsedQuantity
 	}
-	return parsedQuantities, unreadableServices
+	return parsedQuantities
 }
 
 // parseInstanceFieldsFromFacts scans observed and derived instance facts and

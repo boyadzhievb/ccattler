@@ -41,11 +41,13 @@ so `max 8Gi` is 0, and it writes bare integers that the agent then misreads.
   - It reads and watches the effective request first and falls back to the desired one, as the agent does.
   - A request no node can meet writes `insufficient_capacity`, which cluster scaling, the M241 rollout reason and the
     deadline rollback then use.
+  - Preemption stops a lower-priority victim only when stopping it lets the requester fit, so a request no node can
+    meet no longer stops other work in a loop (added 2026-11-23, review).
 - **Stored values that cannot be read are never read as 0 for new work:**
   - The scheduler leaves that service's unplaced instances unplaced with a new reason, `invalid_resource_request`, and
     does not preempt or rebalance for it. Cluster scaling ignores the reason.
   - Its already-running instances are left alone, but their size is unknown, so they count as 0 in node capacity. This
-    is a stated exception, and the service is shown in `cca status`.
+    is a stated exception, and the service is shown in `cca status`. They can still be evicted under memory pressure.
 - **Effective values follow the autoscaler:**
   - At server start, a one-time migration rewrites recommendations and effective values stored without a unit
     (2026-11-20, D-a). The autoscaler deletes a resource's recommendation when the service has no vertical policy for
@@ -74,6 +76,8 @@ None. The service-rollout requirement "A rollout without progress is rolled back
 - `cca describe node` and `cca status` showing allocated requests per node. Today they show the agent's detected
   capacity, which never changes. This is a follow-up milestone.
 - Refusing a request larger than its limit, defaults for requests, and limit ranges.
+- Applying a declared `cpu_limit`/`memory_limit` to the container: the agent uses the request as the limit (M254).
+- Preempting several victims together for one requester (single victim only; design D12).
 - Tenant quota CPU. It is an integer in millicores (`lang/ast.go`, `types/keys.go`) and is unchanged; how quota is
   compared with usage belongs to M179.
 - Volume `size` parsing.

@@ -101,9 +101,10 @@ func readValue(factStore store.StateStore, key string) string {
 }
 
 // TestMigrateUnitlessResourceRecommendations: spec resource-requests, "Legacy
-// recommendation without a unit" and "Legacy value outside the bounds" (D9).
-// Bare recommendations and effective values get units (cpu millicores, memory
-// bytes), clamped to the bounds; desired/ is untouched; a second run is a no-op.
+// recommendation without a unit", "Legacy value outside the bounds" and
+// "Effective value without a recommendation" (D9). Bare recommendations, and
+// effective values of a resource that has one, get units, clamped to the
+// bounds; desired/ is untouched; a second run is a no-op.
 func TestMigrateUnitlessResourceRecommendations(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer func() { _ = factStore.Close() }()
@@ -120,6 +121,14 @@ func TestMigrateUnitlessResourceRecommendations(t *testing.T) {
 		types.KeyIntentAutoscalerServiceResourcesCPU("team/api"):    "4",
 		types.KeyEffectiveServiceResourcesCPU("team/api"):           "4",
 		types.KeyIntentAutoscalerServiceResourcesMemory("team/api"): "512Mi",
+		// "Effective value without a recommendation": copied from desired by an
+		// older intent resolver, so it already means 2 cores and is left alone.
+		types.KeyDesiredServiceResourcesCPU("batch"):   "2",
+		types.KeyEffectiveServiceResourcesCPU("batch"): "2",
+		// solo has a CPU recommendation but none for memory: the check is per
+		// resource, so its bare effective memory is left alone too.
+		types.KeyIntentAutoscalerServiceResourcesCPU("solo"): "500m",
+		types.KeyEffectiveServiceResourcesMemory("solo"):     "2048",
 	})
 
 	rewrittenCount, migrationError := MigrateUnitlessResourceRecommendations(context.Background(), factStore)
@@ -135,6 +144,8 @@ func TestMigrateUnitlessResourceRecommendations(t *testing.T) {
 		types.KeyEffectiveServiceResourcesCPU("team/api"):           "250m",
 		types.KeyIntentAutoscalerServiceResourcesMemory("team/api"): "512Mi",
 		types.KeyDesiredServiceResourcesCPU("web"):                  "750",
+		types.KeyEffectiveServiceResourcesCPU("batch"):              "2",
+		types.KeyEffectiveServiceResourcesMemory("solo"):            "2048",
 	}
 	for factKey, wantValue := range wantValues {
 		if gotValue := readValue(factStore, factKey); gotValue != wantValue {
@@ -175,6 +186,66 @@ func TestVerticalAutoscalerSkipsResourceWithUnreadableBound(t *testing.T) {
 	}
 	if memoryIntent := string(changedValues[types.KeyIntentAutoscalerServiceResourcesMemory("web")]); memoryIntent != "768Mi" {
 		t.Errorf("memory recommendation = %q, want 768Mi", memoryIntent)
+	}
+}
+
+// buildVerticalMemoryFacts returns web's facts for a memory-only vertical
+// policy with the given bounds, desired request, utilization and extra facts.
+func buildVerticalMemoryFacts(minimum string, maximum string, request string, memoryPercent string, extraFacts ...store.Fact) []store.Fact {
+	facts := []store.Fact{
+		{Key: types.KeyDesiredService("web"), Value: []byte("")},
+		{Key: types.KeyDesiredServiceResourcesMemory("web"), Value: []byte(request)},
+		{Key: types.KeyDesiredServiceScaleVerticalMemoryMin("web"), Value: []byte(minimum)},
+		{Key: types.KeyDesiredServiceScaleVerticalMemoryMax("web"), Value: []byte(maximum)},
+		{Key: types.KeyObservedMetric("web", "memory"), Value: []byte(memoryPercent)},
+	}
+	facts = append(facts, extraFacts...)
+	store.SortFacts(facts)
+	return facts
+}
+
+// reconcileVerticalMemoryIntent runs one autoscaler reconcile at atTime and
+// returns the proposed memory intent value and whether one was proposed.
+func reconcileVerticalMemoryIntent(t *testing.T, autoscaleController *AutoscaleController, atTime time.Time, facts []store.Fact) (string, bool) {
+	t.Helper()
+	autoscaleController.SetTimeNow(func() time.Time { return atTime })
+	changes, reconcileError := autoscaleController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	memoryIntent, proposed := changeValueByKey(changes)[types.KeyIntentAutoscalerServiceResourcesMemory("web")]
+	return string(memoryIntent), proposed
+}
+
+// TestVerticalMemoryRecommendationSettlesOnWholeMiB: spec resource-requests,
+// "Memory bounds that are not whole MiB" (D7, review finding 1). min 100M is
+// 96Mi rounded up and written once; the next reconcile, reading 96Mi back,
+// writes nothing. max 1G caps at 953Mi (rounded down). A small request whose
+// recommendation stays in the same MiB is not written either.
+func TestVerticalMemoryRecommendationSettlesOnWholeMiB(t *testing.T) {
+	lowUsageController := NewAutoscaleController()
+	firstIntent, _ := reconcileVerticalMemoryIntent(t, lowUsageController, verticalTestBaseTime,
+		buildVerticalMemoryFacts("100M", "1G", "128Mi", "10"))
+	if firstIntent != "96Mi" {
+		t.Fatalf("first low-usage recommendation = %q, want 96Mi", firstIntent)
+	}
+	settledFacts := buildVerticalMemoryFacts("100M", "1G", "128Mi", "10",
+		store.Fact{Key: types.KeyIntentAutoscalerServiceResourcesMemory("web"), Value: []byte("96Mi")},
+		store.Fact{Key: types.KeyEffectiveServiceResourcesMemory("web"), Value: []byte("96Mi")})
+	if secondIntent, proposed := reconcileVerticalMemoryIntent(t, lowUsageController,
+		verticalTestBaseTime.Add(time.Minute), settledFacts); proposed {
+		t.Errorf("second reconcile proposed memory %q again, want no write", secondIntent)
+	}
+
+	highUsageIntent, _ := reconcileVerticalMemoryIntent(t, NewAutoscaleController(), verticalTestBaseTime,
+		buildVerticalMemoryFacts("100M", "1G", "900Mi", "200"))
+	if highUsageIntent != "953Mi" {
+		t.Errorf("high-usage recommendation = %q, want 953Mi (1G rounded down)", highUsageIntent)
+	}
+
+	if smallIntent, proposed := reconcileVerticalMemoryIntent(t, NewAutoscaleController(), verticalTestBaseTime,
+		buildVerticalMemoryFacts("512Ki", "1G", "1Mi", "60")); proposed {
+		t.Errorf("1Mi request at 60%% proposed %q, want no write (the recommendation is still 1Mi)", smallIntent)
 	}
 }
 
@@ -260,7 +331,7 @@ func evictedInstances(changes []Change) map[string]bool {
 
 // TestEvictionReadsResourceRequestsWithUnits checks D6 for eviction (T5):
 // the effective request wins over the desired one, a request is credited in
-// MiB against MiB node facts, and an unreadable request is skipped.
+// MiB against MiB node facts, and an unreadable request is credited 0 MiB.
 func TestEvictionReadsResourceRequestsWithUnits(t *testing.T) {
 	testCases := []struct {
 		description  string                  // description names the case
@@ -273,9 +344,11 @@ func TestEvictionReadsResourceRequestsWithUnits(t *testing.T) {
 		{description: "100Mi each is credited as 100 MiB, so both go", requestFacts: []struct{ k, v string }{
 			kv(types.KeyDesiredServiceResourcesMemory("alpha"), "100Mi"), kv(types.KeyDesiredServiceResourcesMemory("beta"), "100Mi")},
 			wantEvicted: map[string]bool{"inst-a": true, "inst-b": true}},
-		{description: "alpha's unreadable request is skipped", requestFacts: []struct{ k, v string }{
+		// Spec "Still evictable" (D6, decision A): alpha stays a candidate in normal
+		// order with 0 MiB credit, so beta is evicted too in the same cycle.
+		{description: "alpha's unreadable request is evicted with 0 MiB credit, then beta", requestFacts: []struct{ k, v string }{
 			kv(types.KeyDesiredServiceResourcesMemory("alpha"), "512MB"), kv(types.KeyDesiredServiceResourcesMemory("beta"), "512Mi")},
-			wantEvicted: map[string]bool{"inst-b": true}},
+			wantEvicted: map[string]bool{"inst-a": true, "inst-b": true}},
 	}
 	for _, testCase := range testCases {
 		changes, reconcileError := NewEvictionController().Reconcile(context.Background(), evictionTestFacts(testCase.requestFacts...))
@@ -320,5 +393,41 @@ func TestVerticalAutoscalerDeletesRecommendationWithoutPolicy(t *testing.T) {
 	}
 	if deletedValue, changed := changeValueByKey(intentChanges)[types.KeyEffectiveServiceResourcesMemory("web")]; !changed || deletedValue != nil {
 		t.Errorf("effective memory change = %q (changed %v), want a delete", deletedValue, changed)
+	}
+}
+
+// TestVerticalResourceSpecsCoverEveryKind: review R5-N3. Every kind in
+// types.ResourceKindSpecs has exactly one vertical spec, with its own key
+// builders, so a new kind cannot be sized without one.
+func TestVerticalResourceSpecsCoverEveryKind(t *testing.T) {
+	if len(verticalResourceSpecs) != len(types.ResourceKindSpecs()) {
+		t.Errorf("%d vertical specs for %d resource kinds", len(verticalResourceSpecs), len(types.ResourceKindSpecs()))
+	}
+	for _, kindSpec := range types.ResourceKindSpecs() {
+		verticalSpec := lookupVerticalResourceSpec(kindSpec.Kind)
+		if verticalSpec.Kind != kindSpec.Kind || verticalSpec.IntentKey("web") != kindSpec.IntentKey("web") {
+			t.Errorf("vertical spec for %s does not carry the kind's storage spec", kindSpec.Kind)
+		}
+		if verticalSpec.toVerticalUnit == nil || verticalSpec.boundsInVerticalUnit == nil || verticalSpec.formatVerticalUnit == nil {
+			t.Errorf("vertical spec for %s has an unset function", kindSpec.Kind)
+		}
+	}
+}
+
+// TestBoundsInVerticalUnitMaximumBelowOneUnit: review R5-N2. The exact branch
+// of the migration keys on boundsInVerticalUnit(bounds).maximum == 0: true for
+// a memory max under 1 MiB, never for a positive CPU max (millicores are the
+// parsed unit).
+func TestBoundsInVerticalUnitMaximumBelowOneUnit(t *testing.T) {
+	memorySpec := lookupVerticalResourceSpec(types.ResourceKindMemory)
+	if maximumInUnit := memorySpec.boundsInVerticalUnit(verticalResourceBounds{maximum: 512 << 10}).maximum; maximumInUnit != 0 {
+		t.Errorf("memory max 512Ki in MiB = %d, want 0 (below one sizing unit)", maximumInUnit)
+	}
+	if maximumInUnit := memorySpec.boundsInVerticalUnit(verticalResourceBounds{maximum: 2 << 30}).maximum; maximumInUnit != 2048 {
+		t.Errorf("memory max 2Gi in MiB = %d, want 2048", maximumInUnit)
+	}
+	cpuSpec := lookupVerticalResourceSpec(types.ResourceKindCPU)
+	if maximumInUnit := cpuSpec.boundsInVerticalUnit(verticalResourceBounds{maximum: 1}).maximum; maximumInUnit != 1 {
+		t.Errorf("cpu max 1m in millicores = %d, want 1", maximumInUnit)
 	}
 }

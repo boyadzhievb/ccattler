@@ -532,7 +532,7 @@ executeReconciliationCycle(ctx, controller, deltaEvents)
 
 ### HARunner → leader-election wrapper
 ```
-HARunner.Run(ctx)                                    (controllers/ha_runner.go:78)
+HARunner.Run(ctx)                                    (controllers/ha_runner.go:96)
 └── haRunner.election.Run(ctx)
     ├── OnAcquired → startControllers               (:101)
     │   └── NewRunner(factStore, controllers...)

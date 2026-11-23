@@ -130,7 +130,7 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 	scheduleRules := extractScheduleRules(facts)
 	stabilizationWindows := extractStabilizationWindows(facts)
 	verticalBounds := extractVerticalBoundsByResource(facts)
-	currentCPU, currentMemory := extractCurrentResources(facts)
+	currentRequests := extractCurrentResources(facts, verticalBounds)
 	activationStates := extractActivationStates(facts)
 
 	currentTime := autoscaleController.timeNow()
@@ -141,8 +141,8 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 		activationStates, currentTime,
 	)
 	verticalChanges := autoscaleController.buildVerticalScalingChanges(
-		verticalBounds, currentCPU, currentMemory, observedMetrics,
-		extractAutoscalerResourceIntents(facts), currentTime,
+		verticalBounds, currentRequests, observedMetrics,
+		extractAutoscalerRecommendations(facts), currentTime,
 	)
 
 	return append(horizontalChanges, verticalChanges...), nil
@@ -258,29 +258,62 @@ func computeRawHorizontalRecommendation(
 	return recommendation
 }
 
-// verticalResourceKinds are the resources the vertical autoscaler sizes, in order.
-var verticalResourceKinds = []string{"cpu", "memory"}
+// verticalResourceSpec is how the vertical autoscaler sizes one resource
+// kind: its storage spec plus the unit recommendations are computed in
+// (millicores; whole MiB for memory, D7). One table entry per kind (Strategy).
+type verticalResourceSpec struct {
+	types.ResourceKindSpec                                                     // ResourceKindSpec is the kind's suffix, parser and keys
+	toVerticalUnit         func(int64) int64                                   // toVerticalUnit converts a parsed value to the sizing unit, rounded up
+	boundsInVerticalUnit   func(verticalResourceBounds) verticalResourceBounds // boundsInVerticalUnit converts both bounds (max rounded down)
+	formatVerticalUnit     func(int64) string                                  // formatVerticalUnit writes a sizing-unit value ("750m", "768Mi")
+}
+
+// verticalResourceSpecs lists the sized kinds in the order of
+// types.ResourceKindSpecs (CPU first). A fixed-size array: it cannot grow.
+var verticalResourceSpecs = [...]verticalResourceSpec{
+	{ResourceKindSpec: types.LookupResourceKindSpec(types.ResourceKindCPU), toVerticalUnit: keepQuantity,
+		boundsInVerticalUnit: keepBounds, formatVerticalUnit: types.FormatCPUMillicores},
+	{ResourceKindSpec: types.LookupResourceKindSpec(types.ResourceKindMemory), toVerticalUnit: types.MemoryBytesToMiBRoundedUp,
+		boundsInVerticalUnit: verticalResourceBounds.inWholeMebibytes, formatVerticalUnit: types.FormatMebibytes},
+}
+
+// lookupVerticalResourceSpec returns the vertical spec of kind, one of the
+// types.ResourceKind constants.
+func lookupVerticalResourceSpec(kind types.ResourceKind) verticalResourceSpec {
+	for _, spec := range verticalResourceSpecs {
+		if spec.Kind == kind {
+			return spec
+		}
+	}
+	panic("controllers: unknown resource kind " + string(kind))
+}
+
+// keepQuantity returns quantity unchanged: CPU is sized in millicores, its
+// parsed unit.
+func keepQuantity(quantity int64) int64 { return quantity }
+
+// keepBounds returns bounds unchanged: CPU bounds are already in millicores.
+func keepBounds(bounds verticalResourceBounds) verticalResourceBounds { return bounds }
 
 // verticalResourceDimension is one resource (cpu or memory) of one service the
 // vertical autoscaler sizes, with its bounds, current value and unit.
 type verticalResourceDimension struct {
-	resourceType   string                 // resourceType is "cpu" or "memory": the metric name and history key
-	intentKey      string                 // intentKey is intent/autoscaler/service/{svc}/resources/{type}
-	currentValue   int                    // currentValue is the current request (millicores or bytes), 0 when unknown
-	bounds         verticalResourceBounds // bounds are the parsed scale/vertical/{type} bounds
-	formatQuantity func(int64) string     // formatQuantity writes the unit form (FormatCPUMillicores, FormatMemoryMiB)
+	kind           types.ResourceKind     // kind is the resource; its name is the metric name and history key
+	intentKey      string                 // intentKey is intent/autoscaler/service/{svc}/resources/{kind}
+	currentValue   int64                  // currentValue is the current request (millicores or whole MiB), 0 when unknown
+	bounds         verticalResourceBounds // bounds are the scale/vertical/{kind} bounds, in the unit of currentValue
+	formatQuantity func(int64) string     // formatQuantity writes the unit form (FormatCPUMillicores, FormatMebibytes)
 }
 
 // buildVerticalScalingChanges recommends, per declared vertical resource
-// (sorted "{svc}/{kind}" keys), a CPU or memory level in unit form, using P95
-// of the metric window and asymmetric stabilization; then deletes the
+// (sorted by service, then kind), a CPU or memory level in unit form, using
+// P95 of the metric window and asymmetric stabilization; then deletes the
 // recommendations of resources that no longer declare vertical scaling (B3).
 func (autoscaleController *AutoscaleController) buildVerticalScalingChanges(
-	boundsByResource map[string]verticalResourceBounds,
-	currentCPU map[string]int,
-	currentMemory map[string]int,
+	boundsByResource map[types.ServiceResourceKey]verticalResourceBounds,
+	currentRequests map[types.ServiceResourceKey]int64,
 	observedMetrics map[string]int,
-	autoscalerResourceIntents map[string]autoscalerResourceIntent,
+	autoscalerRecommendations map[types.ServiceResourceKey]string,
 	currentTime time.Time,
 ) []Change {
 	autoscaleController.recommendationHistoryMutex.Lock()
@@ -289,21 +322,20 @@ func (autoscaleController *AutoscaleController) buildVerticalScalingChanges(
 	autoscaleController.recordVerticalMetricSamples(observedMetrics, currentTime)
 
 	var changes []Change
-	for _, resourceKey := range sortedMapKeys(boundsByResource) {
-		lastSlash := strings.LastIndex(resourceKey, "/")
-		serviceName, resourceKind := resourceKey[:lastSlash], resourceKey[lastSlash+1:]
-		dimension := verticalResourceDimension{resourceType: resourceKind, bounds: boundsByResource[resourceKey],
-			intentKey: types.KeyIntentAutoscalerServiceResourcesCPU(serviceName), currentValue: currentCPU[serviceName],
-			formatQuantity: types.FormatCPUMillicores}
-		if resourceKind == "memory" {
-			dimension.intentKey, dimension.currentValue = types.KeyIntentAutoscalerServiceResourcesMemory(serviceName), currentMemory[serviceName]
-			dimension.formatQuantity = types.FormatMemoryMiB
+	for _, resourceKey := range types.SortedServiceResourceKeys(boundsByResource) {
+		kindSpec := lookupVerticalResourceSpec(resourceKey.Kind) // whole MiB for memory: the written value is what the next cycle compares (D7)
+		dimension := verticalResourceDimension{
+			kind:           resourceKey.Kind,
+			intentKey:      kindSpec.IntentKey(resourceKey.ServiceName),
+			currentValue:   kindSpec.toVerticalUnit(currentRequests[resourceKey]),
+			bounds:         kindSpec.boundsInVerticalUnit(boundsByResource[resourceKey]),
+			formatQuantity: kindSpec.formatVerticalUnit,
 		}
-		if dimensionChange := autoscaleController.computeVerticalResourceChange(serviceName, dimension, currentTime); dimensionChange != nil {
+		if dimensionChange := autoscaleController.computeVerticalResourceChange(resourceKey.ServiceName, dimension, currentTime); dimensionChange != nil {
 			changes = append(changes, *dimensionChange)
 		}
 	}
-	return append(changes, buildRemovedVerticalPolicyDeletions(boundsByResource, autoscalerResourceIntents)...)
+	return append(changes, buildRemovedVerticalPolicyDeletions(boundsByResource, autoscalerRecommendations)...)
 }
 
 // buildRemovedVerticalPolicyDeletions deletes, per resource, the
@@ -311,23 +343,15 @@ func (autoscaleController *AutoscaleController) buildVerticalScalingChanges(
 // fact, so the intent resolver drops that effective value and the desired
 // request applies (D7, B3). Removing only cpu {} keeps the memory one.
 func buildRemovedVerticalPolicyDeletions(
-	boundsByResource map[string]verticalResourceBounds,
-	autoscalerResourceIntents map[string]autoscalerResourceIntent,
+	boundsByResource map[types.ServiceResourceKey]verticalResourceBounds,
+	autoscalerRecommendations map[types.ServiceResourceKey]string,
 ) []Change {
 	var deletions []Change
-	for _, serviceName := range sortedMapKeys(autoscalerResourceIntents) {
-		storedIntents := autoscalerResourceIntents[serviceName]
-		for _, resourceKind := range verticalResourceKinds {
-			if _, declared := boundsByResource[serviceName+"/"+resourceKind]; declared {
-				continue
-			}
-			if resourceKind == "cpu" && storedIntents.cpu != "" {
-				deletions = append(deletions, DeleteChange(types.KeyIntentAutoscalerServiceResourcesCPU(serviceName)))
-			}
-			if resourceKind == "memory" && storedIntents.memory != "" {
-				deletions = append(deletions, DeleteChange(types.KeyIntentAutoscalerServiceResourcesMemory(serviceName)))
-			}
+	for _, resourceKey := range types.SortedServiceResourceKeys(autoscalerRecommendations) {
+		if _, declared := boundsByResource[resourceKey]; declared || autoscalerRecommendations[resourceKey] == "" {
+			continue
 		}
+		deletions = append(deletions, DeleteChange(types.LookupResourceKindSpec(resourceKey.Kind).IntentKey(resourceKey.ServiceName)))
 	}
 	return deletions
 }
@@ -364,20 +388,22 @@ func (autoscaleController *AutoscaleController) computeVerticalResourceChange(
 		return nil // unknown size, an unreadable bound (S4) or no max: no recommendation
 	}
 
-	metricKey := serviceName + "/" + dimension.resourceType
+	metricKey := serviceName + "/" + string(dimension.kind)
 	p95Usage := computeP95FromSamples(autoscaleController.verticalMetricHistory[metricKey])
 	if p95Usage <= 0 {
 		return nil
 	}
 
-	rawRecommendation := int(math.Ceil(
+	rawRecommendation := int64(math.Ceil(
 		float64(currentResourceValue) * float64(p95Usage) / float64(verticalTargetUtilizationPercent),
 	))
-	rawRecommendation = clampToRange(rawRecommendation, int(dimension.bounds.minimum), int(dimension.bounds.maximum))
+	rawRecommendation = clampToRange(rawRecommendation, dimension.bounds.minimum, dimension.bounds.maximum)
 
-	stabilizedRecommendation := autoscaleController.applyVerticalStabilization(
-		metricKey, rawRecommendation, currentResourceValue, currentTime,
-	)
+	// The stabilization history (shared with its tests) keeps int; 64-bit on
+	// every release platform, so the conversion is exact.
+	stabilizedRecommendation := int64(autoscaleController.applyVerticalStabilization(
+		metricKey, int(rawRecommendation), int(currentResourceValue), currentTime,
+	))
 
 	if stabilizedRecommendation == currentResourceValue {
 		return nil
@@ -386,7 +412,7 @@ func (autoscaleController *AutoscaleController) computeVerticalResourceChange(
 	return &Change{
 		Type:  store.OpPut,
 		Key:   dimension.intentKey,
-		Value: []byte(dimension.formatQuantity(int64(stabilizedRecommendation))),
+		Value: []byte(dimension.formatQuantity(stabilizedRecommendation)),
 	}
 }
 
@@ -482,8 +508,9 @@ func pruneRecommendations(history []timestampedRecommendation, cutoff time.Time)
 	return history[pruneStart:]
 }
 
-// clampToRange constrains a value to lie within [minimum, maximum].
-func clampToRange(value int, minimum int, maximum int) int {
+// clampToRange constrains a value to lie within [minimum, maximum] (the
+// minimum is checked first, so it wins when minimum > maximum).
+func clampToRange(value int64, minimum int64, maximum int64) int64 {
 	if value < minimum {
 		return minimum
 	}
@@ -767,15 +794,18 @@ func isWithinScheduleWindow(currentTime time.Time, schedule *extractedScheduleRu
 }
 
 // verticalResourceBounds holds one resource's (cpu or memory) vertical
-// autoscaling bounds of one service, in millicores or bytes.
+// autoscaling bounds of one service, in millicores or bytes (whole MiB after
+// inWholeMebibytes).
 type verticalResourceBounds struct {
 	minimum    int64 // minimum is the lower bound, 0 when unset
-	maximum    int64 // maximum is the upper bound, 0 when unset (then no recommendation)
+	maximum    int64 // maximum is the upper bound, 0 when unset or declared 0 (then no recommendation)
 	unreadable bool  // unreadable is set when a bound cannot be parsed: no recommendation at all (S4)
 }
 
 // clamp limits a quantity to the readable bounds; with an unreadable bound
-// the quantity is returned unchanged (used by the startup migration, D9).
+// the quantity is returned unchanged. A max of 0 is no max, as for the
+// autoscaler, so 0 (no limit to a runtime) is never forced (D9). Used by the
+// startup migration.
 func (bounds verticalResourceBounds) clamp(quantity int64) int64 {
 	if bounds.unreadable {
 		return quantity
@@ -789,29 +819,38 @@ func (bounds verticalResourceBounds) clamp(quantity int64) int64 {
 	return quantity
 }
 
+// inWholeMebibytes converts memory bounds in bytes to whole MiB rounded
+// inward: the minimum up, the maximum down (and never above it), so a
+// recommendation in MiB stays within the declared bytes (D7).
+func (bounds verticalResourceBounds) inWholeMebibytes() verticalResourceBounds {
+	minimumMebibytes := types.MemoryBytesToMiBRoundedUp(bounds.minimum)
+	maximumMebibytes := types.MemoryBytesToMiBRoundedDown(bounds.maximum)
+	if maximumMebibytes > 0 && minimumMebibytes > maximumMebibytes {
+		minimumMebibytes = maximumMebibytes // both bounds inside one MiB: the maximum wins
+	}
+	return verticalResourceBounds{minimum: minimumMebibytes, maximum: maximumMebibytes, unreadable: bounds.unreadable}
+}
+
 // verticalBoundKeySegment is the path between a service name and its vertical
 // bounds: desired/service/{svc}/scale/vertical/{cpu|memory}/{min|max}.
 const verticalBoundKeySegment = "/scale/vertical/"
 
 // extractVerticalBoundsByResource returns the vertical bounds of every
-// declared resource, keyed "{svc}/{cpu|memory}". The name is found by the
+// declared resource, keyed by service and kind. The name is found by the
 // /scale/vertical/ segment, so hierarchical names (team/web) work (B5).
-func extractVerticalBoundsByResource(facts []store.Fact) map[string]verticalResourceBounds {
-	boundsByResource := make(map[string]verticalResourceBounds)
+func extractVerticalBoundsByResource(facts []store.Fact) map[types.ServiceResourceKey]verticalResourceBounds {
+	boundsByResource := make(map[types.ServiceResourceKey]verticalResourceBounds)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		serviceName, boundPath, isVerticalBound := strings.Cut(relativePath, verticalBoundKeySegment)
-		resourceKind, boundName, hasBoundName := strings.Cut(boundPath, "/")
-		if !isVerticalBound || !hasBoundName || (resourceKind != "cpu" && resourceKind != "memory") {
+		kindName, boundName, hasBoundName := strings.Cut(boundPath, "/")
+		resourceKind, knownKind := types.ParseResourceKind(kindName)
+		if !isVerticalBound || !hasBoundName || !knownKind {
 			continue
 		}
-		parseBound := types.ParseMemoryBytes
-		if resourceKind == "cpu" {
-			parseBound = types.ParseCPUMillicores
-		}
-		resourceKey := serviceName + "/" + resourceKind
+		resourceKey := types.ServiceResourceKey{ServiceName: serviceName, Kind: resourceKind}
 		bounds := boundsByResource[resourceKey]
-		parsedBound, parseError := parseBound(string(fact.Value))
+		parsedBound, parseError := types.LookupResourceKindSpec(resourceKind).Parse(string(fact.Value))
 		switch {
 		case parseError != nil:
 			types.WarnUnreadableResourceOnce("autoscale", fact.Key, string(fact.Value), parseError, verticalUnreadableValueConsequence)
@@ -830,24 +869,25 @@ func extractVerticalBoundsByResource(facts []store.Fact) map[string]verticalReso
 // current request the autoscaler cannot parse.
 const verticalUnreadableValueConsequence = "no vertical recommendation for this resource"
 
-// extractCurrentResources returns each service's current CPU request in
-// millicores and memory request in bytes, effective-first, each read with its
-// own parser (M243 D6). A service whose value cannot be parsed is left out,
-// so it gets no recommendation.
-func extractCurrentResources(facts []store.Fact) (map[string]int, map[string]int) {
-	cpuMillicores, _ := collectCPUMillicoresBySuffix(facts, "resources/cpu", "autoscale", verticalUnreadableValueConsequence)
-	memoryBytes, _ := collectMemoryBytesBySuffix(facts, "resources/memory", "autoscale", verticalUnreadableValueConsequence)
-	return convertQuantitiesToInt(cpuMillicores), convertQuantitiesToInt(memoryBytes)
-}
-
-// convertQuantitiesToInt converts parsed quantities to the int values the
-// recommendation arithmetic uses (64-bit on every release platform).
-func convertQuantitiesToInt(quantitiesByService map[string]int64) map[string]int {
-	converted := make(map[string]int, len(quantitiesByService))
-	for serviceName, quantity := range quantitiesByService {
-		converted[serviceName] = int(quantity)
+// extractCurrentResources returns the current request (CPU in millicores,
+// memory in bytes, int64 throughout, P-N5), effective-first, of each resource
+// with a vertical policy; only those log an unreadable value (review N4).
+// Unreadable: left out, so no recommendation.
+func extractCurrentResources(facts []store.Fact, boundsByResource map[types.ServiceResourceKey]verticalResourceBounds) map[types.ServiceResourceKey]int64 {
+	currentRequests := make(map[types.ServiceResourceKey]int64)
+	chosenValues := types.CollectEffectiveFirstResourceValues(facts) // once per cycle for both kinds (R5-N5)
+	for _, kindSpec := range types.ResourceKindSpecs() {
+		resourceKind := kindSpec.Kind
+		reader := resourceQuantityReader{readerName: "autoscale", consequence: verticalUnreadableValueConsequence,
+			includeService: func(serviceName string) bool {
+				_, declaresVertical := boundsByResource[types.ServiceResourceKey{ServiceName: serviceName, Kind: resourceKind}]
+				return declaresVertical
+			}}
+		for serviceName, quantity := range parseChosenResourceQuantities(chosenValues, resourceKind, reader) {
+			currentRequests[types.ServiceResourceKey{ServiceName: serviceName, Kind: resourceKind}] = quantity
+		}
 	}
-	return converted
+	return currentRequests
 }
 
 // extractObservedMetrics scans observed metric facts and returns a map of

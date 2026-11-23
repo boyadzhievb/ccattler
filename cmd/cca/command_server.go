@@ -372,8 +372,10 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		}
 	}
 
+	// Each time this server becomes leader it migrates again before its
+	// controllers start: an older leader may have written bare values (D9).
 	haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
-		controllerList...)
+		controllers.ResourceMigrationPrecondition(factStore), controllerList...)
 	haControllerRunner.SetEventLog(eventLog)
 
 	// The runner starts only after the startup migration gave legacy bare

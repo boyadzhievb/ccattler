@@ -5,11 +5,13 @@ package controllers
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 func TestHARunnerStartsControllersOnLeadership(t *testing.T) {
@@ -24,7 +26,7 @@ func TestHARunnerStartsControllersOnLeadership(t *testing.T) {
 	metrics := NewMetricsCollector()
 
 	instanceController := NewInstanceController()
-	haRunner := NewHARunner(memoryStore, "cp-1", metrics, instanceController)
+	haRunner := NewHARunner(memoryStore, "cp-1", metrics, noOpLeadershipPrecondition(), instanceController)
 
 	go haRunner.Run(ctx)
 
@@ -123,7 +125,7 @@ func TestHARunnerPreservesPostCommitController(t *testing.T) {
 	memoryStore.Put(ctx, "test/input", []byte("value"))
 
 	probeController := &postCommitProbeController{}
-	haRunner := NewHARunner(memoryStore, "cp-1", NewMetricsCollector(), probeController)
+	haRunner := NewHARunner(memoryStore, "cp-1", NewMetricsCollector(), noOpLeadershipPrecondition(), probeController)
 
 	go haRunner.Run(ctx)
 
@@ -150,7 +152,7 @@ func TestHARunnerAwaitsShutdown(t *testing.T) {
 
 	metrics := NewMetricsCollector()
 	instanceController := NewInstanceController()
-	haRunner := NewHARunner(memoryStore, "cp-1", metrics, instanceController)
+	haRunner := NewHARunner(memoryStore, "cp-1", metrics, noOpLeadershipPrecondition(), instanceController)
 
 	go haRunner.Run(ctx)
 	time.Sleep(300 * time.Millisecond)
@@ -195,8 +197,8 @@ func TestHARunnerFailoverTransfersControllers(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
 
-	haRunner1 := NewHARunner(memoryStore, "cp-1", metrics1, NewInstanceController())
-	haRunner2 := NewHARunner(memoryStore, "cp-2", metrics2, NewInstanceController())
+	haRunner1 := NewHARunner(memoryStore, "cp-1", metrics1, noOpLeadershipPrecondition(), NewInstanceController())
+	haRunner2 := NewHARunner(memoryStore, "cp-2", metrics2, noOpLeadershipPrecondition(), NewInstanceController())
 
 	// Override lease durations for fast failover.
 	haRunner1.election.leaseDuration = 300 * time.Millisecond
@@ -232,5 +234,111 @@ func TestHARunnerFailoverTransfersControllers(t *testing.T) {
 	}
 	if instanceMetrics.TotalCycles.Load() < 1 {
 		t.Errorf("cp-2 expected at least 1 cycle, got %d", instanceMetrics.TotalCycles.Load())
+	}
+}
+
+// noOpLeadershipPrecondition is the explicit "nothing to wait for"
+// precondition of HA tests that do not exercise the migration (R5-I1).
+func noOpLeadershipPrecondition() ControllerPrecondition {
+	return ControllerPrecondition{Name: "no-op test precondition", Check: func(context.Context) error { return nil }}
+}
+
+// TestNewHARunnerRefusesNilLeadershipPrecondition: review R5-I1. The
+// leadership precondition is required; a missing one is a wiring error and
+// panics at construction, so a runner can never skip the migration silently.
+func TestNewHARunnerRefusesNilLeadershipPrecondition(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer func() { _ = memoryStore.Close() }()
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Errorf("NewHARunner accepted a precondition with a nil Check, want a panic")
+		}
+	}()
+	NewHARunner(memoryStore, "cp-1", NewMetricsCollector(), ControllerPrecondition{Name: "missing"})
+}
+
+// firstReconcileValueRecorder returns a controller watching the autoscaler
+// intents that sends, on its first reconcile only, the value of key it sees.
+func firstReconcileValueRecorder(factKey string, firstValue chan<- string) Controller {
+	var recordOnce sync.Once
+	return NewCustomController("first-value-recorder", []string{types.ScanIntentAutoscalerServices},
+		func(_ context.Context, facts *FactMap) ([]Change, error) {
+			recordOnce.Do(func() {
+				seenValue := "<absent>"
+				for _, fact := range facts.Raw() {
+					if fact.Key == factKey {
+						seenValue = string(fact.Value)
+					}
+				}
+				firstValue <- seenValue
+			})
+			return nil, nil
+		})
+}
+
+// TestHARunnerMigratesOnLeadershipAcquisition: spec resource-requests,
+// "Leader change in a rolling upgrade" (D9, review finding 3). A bare value an
+// old leader wrote after this server started is migrated when this server
+// becomes leader, before its first controller reconcile.
+func TestHARunnerMigratesOnLeadershipAcquisition(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer func() { _ = memoryStore.Close() }()
+	intentKey := types.KeyIntentAutoscalerServiceResourcesCPU("web")
+	putFacts(t, memoryStore, map[string]string{intentKey: "750"}) // written by the old leader
+
+	firstValue := make(chan string, 1)
+	haRunner := NewHARunner(memoryStore, "cp-new", NewMetricsCollector(), ResourceMigrationPrecondition(memoryStore), // as cmd/cca wires it
+		firstReconcileValueRecorder(intentKey, firstValue))
+	haRunner.startControllers() // the OnAcquired callback
+	defer haRunner.stopControllers()
+
+	select {
+	case seenValue := <-firstValue:
+		if seenValue != "750m" {
+			t.Errorf("first reconcile saw %s = %q, want 750m (migrated before the controllers run)", intentKey, seenValue)
+		}
+	case <-time.After(migrationTestTimeout):
+		t.Fatal("controllers never reconciled after acquiring leadership")
+	}
+}
+
+// TestHARunnerLeadershipLossCancelsMigrationRetry: design D9. While the
+// migration keeps failing the controllers do not start, and losing
+// leadership ends the retry promptly instead of blocking the election.
+func TestHARunnerLeadershipLossCancelsMigrationRetry(t *testing.T) {
+	limitedStore := &limitedTransactionStore{StateStore: store.NewMemoryStore(), failingTransactions: 1 << 30}
+	defer func() { _ = limitedStore.Close() }()
+	putLegacyServices(t, limitedStore, 1)
+
+	firstValue := make(chan string, 1)
+	haRunner := NewHARunner(limitedStore, "cp-new", NewMetricsCollector(), ResourceMigrationPrecondition(limitedStore), // as cmd/cca wires it
+		firstReconcileValueRecorder(types.KeyIntentAutoscalerServiceResourcesCPU("svc00"), firstValue))
+	haRunner.preconditionBackoff = preconditionRetryBackoff{initialDelay: time.Millisecond, maximumDelay: 2 * time.Millisecond}
+
+	startReturned := make(chan struct{})
+	go func() {
+		haRunner.startControllers()
+		close(startReturned)
+	}()
+	select {
+	case <-startReturned:
+	case <-time.After(migrationTestTimeout):
+		t.Fatal("startControllers blocked on the failing migration; it must not block the election loop")
+	}
+
+	stopReturned := make(chan struct{})
+	go func() {
+		haRunner.stopControllers()
+		close(stopReturned)
+	}()
+	select {
+	case <-stopReturned:
+	case <-time.After(stopControllersTimeout / 2):
+		t.Fatal("stopControllers did not cancel the migration retry promptly")
+	}
+	select {
+	case seenValue := <-firstValue:
+		t.Errorf("controllers ran (saw %q) although the migration never succeeded", seenValue)
+	default:
 	}
 }
