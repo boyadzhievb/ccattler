@@ -219,6 +219,30 @@ Round-1 findings B1–B3, D1, S1–S3 confirmed fixed; new tests verified red on
   passes after. Graphs (INSTANCE_LIFECYCLE, CALL, OBSERVABILITY line numbers), Flow 35, D4 updated. Checks:
   `gofmt -l` empty, golangci-lint 0 issues, `go test ./...` 20 ok / 2 without tests, `-race` scheduler/agent/
   controllers ok (1.4 s, 29.9 s, 6.7 s), `openspec validate` valid.
+  - Decision (main session): allocating the IP before the transaction is accepted — `AllocateIP` already ran on every
+    publish, and a lost transaction means stopped or moved, whose cleanup releases the IP on both paths.
+
+## 3d. Review round 3 (2026-11-23, on 0754484; code-reviewer Opus high + Codex: APPROVE, no bugs in the diff)
+
+R2-1..R2-4 and 3c.4 confirmed; new tests red on 7e7c3c0. Remaining notes, verified by the main session; all taken
+so the same race class is closed in one place (the stop-time checks keep flagging it):
+
+| # | Finding | Resolution |
+|---|---|---|
+| R3-S1 | Probe readiness writes (`agent/probes.go` ~230–351) are plain Puts: an in-flight source probe can write `ready` after the move, so the target gets traffic before its own probe passes | **fix** 3d.1 |
+| R3-S2 | After a failed guarded publish, callers still write `status_reason`, `last_exit` and the secret-wait status | **fix** 3d.2 |
+| R3-T1 | Doc comments of `publishInstanceStateUnlessStopped` / `publishInstanceStateToStore` are 6 lines and omit the placement guard | **fix** 3d.3 |
+| R3-T2 | Budget constant comment arithmetic unclear; name says "unplaced" though it covers cooldown deletes | **fix** 3d.3 (comment "3 + 8 = 11"; rename `maxSchedulerBookkeepingChangesPerCycle`, docs updated) |
+| R3-T3 | Worst-case test copies the runner cap (60) and does not assert the bookkeeping budget is used up | **fix** 3d.3 |
+| R3-T4 | One test sub-case publishes the target with revision 0 (no guard) | **rejected**: the hook runs inside a store wrapper on purpose; documented in the test |
+
+- [ ] 3d.1 Probe result writes (readiness, liveness/startup progress) compare the probe pass's placement revision like
+  the state publish; red test: in-flight source probe after a move does not set `ready`.
+- [ ] 3d.2 `publishInstanceStateToStore` returns whether it committed; `publishStatusReason`, `publishInstanceLastExit`
+  and the secret-wait status are written only when it did; test.
+- [ ] 3d.3 R3-T1..T3: doc comments ≤ 4 lines naming the guard; constant comment and rename (graphs/flows updated);
+  worst-case test asserts the bookkeeping budget is fully used and checks the cap against one shared source.
+- [ ] 3d.4 Checks as in 3.1.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
