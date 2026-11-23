@@ -168,32 +168,33 @@ func (probeScheduler *ProbeScheduler) executeProbesForInstance(ctx context.Conte
 		probeScheduler.executeReadinessProbe(ctx, instanceInfo, instanceIP, readinessConfig, probeState.readiness, now)
 	}
 
-	probeScheduler.publishProbeProgress(ctx, instanceInfo.id, startupConfig, livenessConfig, readinessConfig, probeState)
-	probeScheduler.updateSummaryHealthFromProbes(ctx, instanceInfo.id, startupComplete)
+	probeScheduler.publishProbeProgress(ctx, instanceInfo, startupConfig, livenessConfig, readinessConfig, probeState)
+	probeScheduler.updateSummaryHealthFromProbes(ctx, instanceInfo, startupComplete)
 }
 
 // updateSummaryHealthFromProbes derives the legacy health fact from probe
 // results so that status displays show a meaningful health value when probes
 // are configured instead of the legacy health check.
-func (probeScheduler *ProbeScheduler) updateSummaryHealthFromProbes(ctx context.Context, instanceID string, startupComplete bool) {
+func (probeScheduler *ProbeScheduler) updateSummaryHealthFromProbes(ctx context.Context, instanceInfo placedInstanceInfo, startupComplete bool) {
 	if !startupComplete {
 		return
 	}
+	instanceID := instanceInfo.id
 
 	livenessState := probeScheduler.readProbeState(ctx, instanceID, types.ProbeLiveness)
 	if livenessState == string(types.LivenessProbeUnhealthy) {
-		_, _ = probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceID), []byte(string(types.HealthUnhealthy)))
+		probeScheduler.writeInstanceFact(ctx, instanceInfo, types.KeyObservedInstanceHealth(instanceID), string(types.HealthUnhealthy))
 		return
 	}
 
 	readinessState := probeScheduler.readProbeState(ctx, instanceID, types.ProbeReadiness)
 	if readinessState == string(types.ReadinessProbeNotReady) {
-		_, _ = probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceID), []byte(string(types.HealthUnhealthy)))
+		probeScheduler.writeInstanceFact(ctx, instanceInfo, types.KeyObservedInstanceHealth(instanceID), string(types.HealthUnhealthy))
 		return
 	}
 
 	if livenessState == string(types.LivenessProbeHealthy) || readinessState == string(types.ReadinessProbeReady) {
-		_, _ = probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceID), []byte(string(types.HealthHealthy)))
+		probeScheduler.writeInstanceFact(ctx, instanceInfo, types.KeyObservedInstanceHealth(instanceID), string(types.HealthHealthy))
 	}
 }
 
@@ -227,9 +228,7 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 		tracker.consecutiveFailures = 0
 		tracker.lastError = ""
 		if tracker.consecutiveSuccesses >= config.successThreshold {
-			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeStartup), []byte(string(types.StartupProbeSucceeded))); putError != nil {
-				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-			}
+			probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeStartup, string(types.StartupProbeSucceeded))
 			logging.Default().Info("startup probe succeeded", "agent", probeScheduler.nodeID, "instance", instanceInfo.id)
 			return true
 		}
@@ -244,9 +243,7 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold),
 			"reason", probeError)
 		if tracker.consecutiveFailures >= config.failureThreshold {
-			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeStartup), []byte(string(types.StartupProbeFailed))); putError != nil {
-				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-			}
+			probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeStartup, string(types.StartupProbeFailed))
 			logging.Default().Error("startup probe threshold exceeded, instance will be replaced",
 				"agent", probeScheduler.nodeID,
 				"instance", instanceInfo.id,
@@ -257,9 +254,7 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 	}
 
 	if currentState != string(types.StartupProbePending) {
-		if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeStartup), []byte(string(types.StartupProbePending))); putError != nil {
-			logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-		}
+		probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeStartup, string(types.StartupProbePending))
 	}
 	return false
 }
@@ -285,9 +280,7 @@ func (probeScheduler *ProbeScheduler) executeLivenessProbe(ctx context.Context, 
 		tracker.consecutiveFailures = 0
 		tracker.lastError = ""
 		if tracker.consecutiveSuccesses >= config.successThreshold {
-			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeLiveness), []byte(string(types.LivenessProbeHealthy))); putError != nil {
-				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-			}
+			probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeLiveness, string(types.LivenessProbeHealthy))
 		}
 	} else {
 		tracker.consecutiveFailures++
@@ -300,9 +293,7 @@ func (probeScheduler *ProbeScheduler) executeLivenessProbe(ctx context.Context, 
 			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold),
 			"reason", probeError)
 		if tracker.consecutiveFailures >= config.failureThreshold {
-			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeLiveness), []byte(string(types.LivenessProbeUnhealthy))); putError != nil {
-				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-			}
+			probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeLiveness, string(types.LivenessProbeUnhealthy))
 			logging.Default().Error("liveness probe threshold exceeded, instance will be drained",
 				"agent", probeScheduler.nodeID,
 				"instance", instanceInfo.id,
@@ -333,9 +324,7 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 		tracker.consecutiveFailures = 0
 		tracker.lastError = ""
 		if tracker.consecutiveSuccesses >= config.successThreshold {
-			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness), []byte(string(types.ReadinessProbeReady))); putError != nil {
-				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-			}
+			probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeReadiness, string(types.ReadinessProbeReady))
 		}
 	} else {
 		tracker.consecutiveFailures++
@@ -348,9 +337,7 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold),
 			"reason", probeError)
 		if tracker.consecutiveFailures >= config.failureThreshold {
-			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness), []byte(string(types.ReadinessProbeNotReady))); putError != nil {
-				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-			}
+			probeScheduler.writeProbeState(ctx, instanceInfo, types.ProbeReadiness, string(types.ReadinessProbeNotReady))
 			logging.Default().Warn("readiness probe threshold exceeded, instance removed from endpoints",
 				"agent", probeScheduler.nodeID,
 				"instance", instanceInfo.id,
@@ -568,9 +555,7 @@ func (probeScheduler *ProbeScheduler) performHealthCheckAndReportResult(ctx cont
 	if healthy {
 		status = types.HealthHealthy
 	}
-	if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status))); putError != nil {
-		logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
-	}
+	probeScheduler.writeInstanceFact(ctx, instanceInfo, types.KeyObservedInstanceHealth(instanceInfo.id), string(status))
 	probeScheduler.lastHealthCheck[instanceInfo.id] = time.Now()
 }
 
@@ -632,7 +617,7 @@ func (probeScheduler *ProbeScheduler) buildHealthProbeFromServiceConfig(ctx cont
 
 // publishProbeProgress writes a JSON probe progress summary to the store so
 // the CLI and API can show probe convergence without parsing agent logs.
-func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, instanceID string, startupConfig *probeConfig, livenessConfig *probeConfig, readinessConfig *probeConfig, probeState *instanceProbeState) {
+func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, instanceInfo placedInstanceInfo, startupConfig *probeConfig, livenessConfig *probeConfig, readinessConfig *probeConfig, probeState *instanceProbeState) {
 	progress := types.ProbeProgress{}
 	hasProgress := false
 
@@ -656,7 +641,7 @@ func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, 
 	}
 
 	if !hasProgress {
-		_ = probeScheduler.factStore.Delete(ctx, types.KeyObservedInstanceProbeProgress(instanceID))
+		_ = probeScheduler.factStore.Delete(ctx, types.KeyObservedInstanceProbeProgress(instanceInfo.id))
 		return
 	}
 
@@ -664,9 +649,20 @@ func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, 
 	if marshalError != nil {
 		return
 	}
-	if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeProgress(instanceID), progressJSON); putError != nil {
-		logging.Default().Error("failed to write probe progress", "instance", instanceID, "error", putError.Error())
-	}
+	probeScheduler.writeInstanceFact(ctx, instanceInfo, types.KeyObservedInstanceProbeProgress(instanceInfo.id), string(progressJSON))
+}
+
+// writeProbeState writes observed/instance/{id}/probe/{type} through
+// writeInstanceFact: never after the instance moved off this node (R3-S1).
+func (probeScheduler *ProbeScheduler) writeProbeState(ctx context.Context, instanceInfo placedInstanceInfo, probeType types.ProbeType, value string) {
+	probeScheduler.writeInstanceFact(ctx, instanceInfo, types.KeyObservedInstanceProbeState(instanceInfo.id, probeType), value)
+}
+
+// writeInstanceFact writes one probe or health fact of the instance unless it
+// is unchanged or the instance moved off this node since the probe pass read
+// its placement (putGuardedInstanceFact, M267 R3-S1).
+func (probeScheduler *ProbeScheduler) writeInstanceFact(ctx context.Context, instanceInfo placedInstanceInfo, key string, value string) {
+	putGuardedInstanceFact(ctx, probeScheduler.factStore, probeScheduler.nodeID, instanceInfo, key, []byte(value))
 }
 
 // lookupExposedPorts reads all exposed port declarations for the given service

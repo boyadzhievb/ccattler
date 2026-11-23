@@ -158,7 +158,9 @@ func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo pla
 	logging.Default().Warn("container exited, restarting after back-off",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "service", instanceInfo.service,
 		"attempt", strconv.Itoa(backoffEntry.attempts), "wait", waitDelay.String(), "exit", backoffEntry.lastExitReason)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceCrashLoopBackoff, "")
+	if !nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceCrashLoopBackoff, "") {
+		return // stopped or moved meanwhile: the status would describe another container (M267 R3-S2)
+	}
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, fmt.Sprintf("%s; restarting in %s", backoffEntry.lastExitReason, waitDelay))
 	nodeAgent.publishInstanceLastExit(ctx, instanceInfo.id, backoffEntry.lastExitReason)
 }

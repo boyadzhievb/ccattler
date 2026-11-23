@@ -243,7 +243,7 @@ func TestEachReconciliationCycleGetsUniqueTraceID(t *testing.T) {
 	}
 }
 
-// oversizedController returns more changes than maxTransactionChanges.
+// oversizedController returns more changes than MaxTransactionChanges.
 type oversizedController struct {
 	changeCount int
 }
@@ -285,10 +285,10 @@ func TestRunnerCapsOversizedChangeSets(t *testing.T) {
 		t.Fatal("expected no conflict, got conflict")
 	}
 
-	// Verify exactly maxTransactionChanges facts were committed (capped, not rejected).
+	// Verify exactly MaxTransactionChanges facts were committed (capped, not rejected).
 	allFacts, _ := factStore.Scan(ctx, "test/")
-	if len(allFacts) != maxTransactionChanges {
-		t.Fatalf("expected %d facts committed (capped), got %d", maxTransactionChanges, len(allFacts))
+	if len(allFacts) != MaxTransactionChanges {
+		t.Fatalf("expected %d facts committed (capped), got %d", MaxTransactionChanges, len(allFacts))
 	}
 }
 
@@ -298,7 +298,7 @@ func TestRunnerCommitsWithinBudgetChangeSets(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
-	controller := &oversizedController{changeCount: maxTransactionChanges}
+	controller := &oversizedController{changeCount: MaxTransactionChanges}
 	runner := NewRunner(factStore, controller)
 
 	ctx := context.Background()
@@ -314,8 +314,8 @@ func TestRunnerCommitsWithinBudgetChangeSets(t *testing.T) {
 	}
 
 	allFacts, _ := factStore.Scan(ctx, "test/key/")
-	if len(allFacts) != maxTransactionChanges {
-		t.Fatalf("expected %d facts committed, got %d", maxTransactionChanges, len(allFacts))
+	if len(allFacts) != MaxTransactionChanges {
+		t.Fatalf("expected %d facts committed, got %d", MaxTransactionChanges, len(allFacts))
 	}
 }
 

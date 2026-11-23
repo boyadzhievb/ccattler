@@ -515,7 +515,7 @@ executeReconciliationCycle(ctx, controller, deltaEvents)
         │   │   └── controller.Reconcile(ctx, allFacts) → changes[]
         │   └── metricsCollector.RecordReconciliation(...) [if collector set]
         ├── validateAndCapChanges(name, changes)     (:558)
-        │   └── cap to maxTransactionChanges (60)
+        │   └── cap to MaxTransactionChanges (60)
         ├── buildReconciliationTransaction           (:620)
         │   ├── Compare: input key revisions [guard]
         │   ├── Then: put/delete change keys
@@ -550,7 +550,7 @@ HARunner.Run(ctx)                                    (controllers/ha_runner.go:9
 | `reconcileRetryBaseDelayMs` | `10` | `:34` |
 | `reconcileRetryMaxDelayMs` | `500` | `:38` |
 | `etcdTransactionOperationLimit` | `128` | `:42` |
-| `maxTransactionChanges` | `60` | `:55` |
+| `MaxTransactionChanges` | `60` | `:55` |
 
 ---
 

@@ -102,14 +102,11 @@ func TestRebalanceCooldownFactDeletedWithInstance(t *testing.T) {
 	}
 }
 
-// schedulerTestRunnerChangeCap is the controller runner's cap on one commit
-// (controllers.maxTransactionChanges); a larger output is truncated.
-const schedulerTestRunnerChangeCap = 60
-
 // TestSchedulerWorstCaseOutputStaysWithinRunnerCap: review round 2 R2-2. One
 // cycle with every bounded non-placement output at its maximum (unplaced facts,
-// 3 preemptions, 2 rebalance moves, gone instances' cooldown facts) stays within
-// the runner's cap and leaves room for at least one placement.
+// 3 preemptions, 2 rebalance moves, gone instances' cooldown facts) uses the
+// bookkeeping budget exactly (unplaced facts first, cooldown deletes the rest),
+// stays within the runner's cap and leaves room for at least one placement.
 func TestSchedulerWorstCaseOutputStaysWithinRunnerCap(t *testing.T) {
 	entries := []struct{ k, v string }{
 		kv(types.KeyDesiredServiceResourcesCPU("web"), "1000m"),
@@ -139,28 +136,36 @@ func TestSchedulerWorstCaseOutputStaysWithinRunnerCap(t *testing.T) {
 	}
 	addInstances("web", 8, "running", "node-1") // node-1 full by CPU; victims and movable instances
 	addInstances("vip", 3, "pending", "")       // fit only node-1 (require zone=a): 3 preemptions
-	addInstances("huge", 30, "pending", "")     // fit nowhere: the unplaced budget is used up
+	addInstances("huge", 15, "pending", "")     // fit nowhere: 18 waiting × 2 = 36 unplaced puts, 4 left for deletes
 	movedAt := rebalanceCooldownTestNow.Add(-time.Minute).Format(time.RFC3339)
 	for goneIndex := 0; goneIndex < 30; goneIndex++ {
 		entries = append(entries, kv(types.KeyDerivedSchedulerRebalanced(fmt.Sprintf("gone-%02d", goneIndex)), movedAt))
 	}
 
 	changes := reconcileAtCooldownTestTime(t, buildFacts(entries...))
-	preemptionCount, moveCount := 0, 0
+	preemptionCount, moveCount, unplacedFactChanges, cooldownDeletes := 0, 0, 0, 0
 	for _, change := range changes {
-		if strings.HasSuffix(change.Key, "/controller_stopped") {
+		switch {
+		case strings.HasSuffix(change.Key, "/controller_stopped"):
 			preemptionCount++
-		}
-		if strings.HasPrefix(change.Key, types.ScanDerivedSchedulerRebalanced) && change.Type == store.OpPut {
+		case strings.HasPrefix(change.Key, types.ScanDerivedSchedulerRebalanced) && change.Type == store.OpPut:
 			moveCount++
+		case strings.HasPrefix(change.Key, types.ScanDerivedSchedulerRebalanced):
+			cooldownDeletes++
+		case strings.HasPrefix(change.Key, types.ScanDerivedSchedulerUnplaced):
+			unplacedFactChanges++
 		}
 	}
 	if preemptionCount != maxPreemptionsPerCycle || moveCount != maxRebalanceMovesPerCycle {
 		t.Fatalf("%d preemptions and %d moves, want %d and %d; the setup is not the worst case",
 			preemptionCount, moveCount, maxPreemptionsPerCycle, maxRebalanceMovesPerCycle)
 	}
-	if roomForPlacements := schedulerTestRunnerChangeCap - len(changes); roomForPlacements < unplacedFactsPerInstance {
+	if bookkeeping := unplacedFactChanges + cooldownDeletes; bookkeeping != maxSchedulerBookkeepingChangesPerCycle || cooldownDeletes == 0 {
+		t.Errorf("%d unplaced changes + %d cooldown deletes, want both sharing exactly the budget %d",
+			unplacedFactChanges, cooldownDeletes, maxSchedulerBookkeepingChangesPerCycle)
+	}
+	if roomForPlacements := controllers.MaxTransactionChanges - len(changes); roomForPlacements < unplacedFactsPerInstance {
 		t.Errorf("worst-case cycle has %d changes, runner cap %d: room for placements %d, want at least one placement (%d)",
-			len(changes), schedulerTestRunnerChangeCap, roomForPlacements, unplacedFactsPerInstance)
+			len(changes), controllers.MaxTransactionChanges, roomForPlacements, unplacedFactsPerInstance)
 	}
 }

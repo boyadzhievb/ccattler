@@ -19,7 +19,7 @@ import (
 )
 
 // keyringRewrapBatchSize caps the envelopes re-wrapped per cycle; with the
-// status put it stays well under maxTransactionChanges.
+// status put it stays well under MaxTransactionChanges.
 const keyringRewrapBatchSize = 40
 
 // DefaultKeyringRetireGrace is how long a retiring KEK version is kept before

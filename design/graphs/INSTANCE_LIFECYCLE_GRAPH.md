@@ -387,39 +387,43 @@ executeReconciliationCycle                                   :539
 ProbeScheduler.Run(ctx, findInstances)                       [probes.go:99]
 ├── ExecuteProbePass(ctx, findInstances)                     [probes.go:115]
 │   └── FOR EACH instance:
-│       ├── performHealthCheckAndReportResult(ctx, info)     [probes.go:517]
-│       │   └── PUT observed/instance/{id}/health = "healthy"|"unhealthy"
+│       ├── performHealthCheckAndReportResult(ctx, info)     [probes.go:534]
+│       │   └── writeInstanceFact observed/instance/{id}/health = "healthy"|"unhealthy"
 │       │
+│       │   EVERY probe/health/progress PUT below goes through writeInstanceFact [probes.go:664]
+│       │   → putGuardedInstanceFact [placement_guard.go]: unchanged → no write; else TXN
+│       │     comparing the pass's placement/node/{self}/{id} revision (placementGuard), so
+│       │     an in-flight source probe never writes ready/healthy after a move (M267 R3-S1)
 │       └── executeProbesForInstance(ctx, info)              [probes.go:131]
-│           ├── loadProbeConfig(ctx, service, type)          [probes.go:406]
-│           ├── getOrCreateProbeState(instanceID)            [probes.go:483]
+│           ├── loadProbeConfig(ctx, service, type)          [probes.go:423]
+│           ├── getOrCreateProbeState(instanceID)            [probes.go:500]
 │           │
-│           ├── executeStartupProbe(ctx, ...)                [probes.go:202]
-│           │   ├── runProbeCheck(ctx, config, id, ip)       [probes.go:366]
+│           ├── executeStartupProbe(ctx, ...)                [probes.go:203]
+│           │   ├── runProbeCheck(ctx, config, id, ip)       [probes.go:353]
 │           │   ├── pass ≥ successThreshold → "succeeded"
 │           │   └── fail ≥ failureThreshold → "failed"
 │           │       → FailureController replaces
 │           │
 │           ├── IF startup succeeded:
-│           │   ├── executeLivenessProbe(ctx, ...)           [probes.go:268]
+│           │   ├── executeLivenessProbe(ctx, ...)           [probes.go:263]
 │           │   │   ├── runProbeCheck(ctx, config, id, ip)
 │           │   │   ├── pass → "healthy"
 │           │   │   └── fail ≥ failureThreshold → "unhealthy"
 │           │   │       → FailureController drain+replace
 │           │   │
-│           │   └── executeReadinessProbe(ctx, ...)          [probes.go:316]
+│           │   └── executeReadinessProbe(ctx, ...)          [probes.go:307]
 │           │       ├── runProbeCheck(ctx, config, id, ip)
 │           │       ├── pass → "ready" (included in endpoints)
 │           │       └── fail ≥ failureThreshold → "not-ready"
 │           │           → removed from endpoints (NOT restarted)
 │           │
-│           ├── updateSummaryHealthFromProbes(ctx, id, ...)  [probes.go:178]
+│           ├── updateSummaryHealthFromProbes(ctx, info, ...)  [probes.go:178]
 │           │   ├── startup NOT complete → no update
 │           │   ├── liveness unhealthy   → health = unhealthy
 │           │   ├── readiness not-ready  → health = unhealthy
 │           │   └── else                 → health = healthy
 │           │
-│           └── publishProbeProgress(ctx, id, ...)           [probes.go:605]
+│           └── publishProbeProgress(ctx, info, ...)         [probes.go:620]
 │               ├── IF any consecutiveFailures > 0:
 │               │   └── PUT observed/instance/{id}/probe-progress = {JSON}
 │               └── ELSE:
@@ -685,7 +689,7 @@ ELSE                            → observed/instance/{id}/state value
 
 ---
 
-## 12. Image Pull Failure Backoff (agent/agent.go:51-57)
+## 12. Image Pull Failure Backoff (agent/agent.go:50-57)
 
 | Parameter | Value |
 |---|---|
@@ -758,25 +762,25 @@ cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance im
 
 | Location | Trigger | Source |
 |---|---|---|
-| Init failure | Before BAIL | agent.go:731 |
-| Volume attach failure | Before BAIL | agent.go:744 |
+| Init failure | Before BAIL | agent.go:730 |
+| Volume attach failure | Before BAIL | agent.go:743 |
 | Start failure | In handleInstanceStartError (both outcomes) | agent.go |
-| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1110 |
+| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1109 |
 
 Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
 
 ### Agent cleanup of a container that left the node (M267 D2, D4)
 ```
 executeReconciliationCycle: container not in this node's desired set
-├── running → cleanupUndesiredInstance(id)                  agent.go:1296
+├── running → cleanupUndesiredInstance(id)                  agent.go:1295
 │             removeContainer = pre_stop hook + stopInstanceWithGracePeriod
-└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1097
+└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1096
               removeContainer = runtime.Stop (no hook, container already dead)
-    both: teardownStaleInstance(id, removeContainer)        agent.go:1110
+    both: teardownStaleInstance(id, removeContainer)        agent.go:1109
     ├── FIRST, before anything is removed:
-    │   isInstanceMovedToAnotherNode(id)                    agent.go:1217
+    │   isInstanceMovedToAnotherNode(id)                    agent.go:1216
     │   ├── GET placement/instance/{id}: not found → false; error → error; this node → false
-    │   └── isControllerStopped(id)                         agent.go:1238
+    │   └── isControllerStopped(id)                         agent.go:1237
     │       GET derived/instance/{id}/controller_stopped: not found → false; error → error;
     │       value "true" → true (controller stop → not a move); else moved
     ├── read error → RETURN: container, local state and store untouched, WARN "cannot read
@@ -785,8 +789,8 @@ executeReconciliationCycle: container not in this node's desired set
     ├── drop local resource/backoff tracking; not moved → clearPullStatusFromStore
     │   (DELETE observed/instance/{id}/pull-status; kept after a move: keyed by ID only, M267 B2)
     ├── revoke token, detach volumes, removeContainer(), removeInstanceDataIfSupported
-    ├── publishRemovedInstanceState(id, moved)              agent.go:1157
-    │   ├── moved     → markMovedInstancePending(id)        agent.go:1171
+    ├── publishRemovedInstanceState(id, moved)              agent.go:1156
+    │   ├── moved     → markMovedInstancePending(id)        agent.go:1170
     │   │   GET observed/instance/{id}/node: missing or another node → nothing (the target
     │   │     published); GET state: stopped → nothing (final)
     │   │   TXN compare node revision + state revision → PUT state = pending,
@@ -796,7 +800,7 @@ executeReconciliationCycle: container not in this node's desired set
     │   └── not moved → PUT observed/instance/{id}/state = stopped (scale-down, controller
     │                   stop, no placement)
     ├── probe cleanup
-    └── releaseStaleInstanceNetwork(id, moved)              agent.go:1138
+    └── releaseStaleInstanceNetwork(id, moved)              agent.go:1137
         ReleaseIP (node-local); not moved → DeleteNetworkAllocation (network/allocation/{id},
         kept after a move: keyed by ID only, M267 B2)
 ```
@@ -839,7 +843,7 @@ executeReconciliationCycle: container not in this node's desired set
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |
-| `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState |
+| `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState, handleInstanceStartError, beginCrashLoopWait, recordSecretDeliveryWait (returns committed; status writes follow only then, M267 R3-S2) |
 
 ---
 

@@ -248,7 +248,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `network/allocation/{id}` | publishInstanceStateToStore (with a network provider; in the guarded state transaction when changed, M267 3c.6); DELETE by releaseStaleInstanceNetwork (not after a move) |
 | `observed/instance/{id}/image` | publishInstanceImage (startInstanceAndPublishState, handleInstanceStartError) |
 | `observed/instance/{id}/started_at` | publishInstanceStartedAt (startInstanceAndPublishState, every start; read by the rollout controller, M241 D10) |
-| `observed/instance/{id}/probe/readiness` | DELETE by resetInstanceReadiness at every start (M241 B4) and by markMovedInstancePending (M267 D4); PUT by the probe scheduler |
+| `observed/instance/{id}/probe/readiness` | DELETE by resetInstanceReadiness at every start (M241 B4) and by markMovedInstancePending (M267 D4); PUT by the probe scheduler through writeInstanceFact (placement-guarded, M267 R3-S1) |
 | `observed/instance/{id}/last_exit` | publishInstanceLastExit (beginCrashLoopWait; read by the rollout controller's rollback reason, M241) |
 | `observed/instance/{id}/exit-reason` | publishExitReason (recordInstanceExit via publishExitReasonFromStatus, recordInstanceStartFailure); deleted by deleteExitReason |
 | `observed/instance/{id}/status_reason` | publishStatusReason |
@@ -276,10 +276,12 @@ executeReconciliationCycle(controller, deltaEvents)
 | `runInitCommand` | `executeInitStep` (if exec type) |
 | `buildRuntimeSpecForInstance` | `reconcileDesiredInstance` |
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
-| `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
+| `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState`, `handleInstanceStartError`, `beginCrashLoopWait`, `recordSecretDeliveryWait`, pull paths; returns true when committed, and the status reason, last exit and secret-wait status follow only then (M267 R3-S2) |
 | `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state and on the scanned `placement/node/{self}/{id}` revision, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4, R2-1) |
 | `resolvePublishedContainerIP` | `publishInstanceStateToStore` (before any write, M267 3c.6) |
-| `dropUnchangedPuts` | `publishInstanceStateToStore` (M267 3c.6) |
+| `placementGuard` | `publishInstanceStateUnlessStopped`, `putGuardedInstanceFact` (placement_guard.go; M267 R2-1, R3-S1) |
+| `putGuardedInstanceFact` | `ProbeScheduler.writeInstanceFact` (probe states, health, probe progress; M267 R3-S1) |
+| `dropUnchangedPuts` | `publishInstanceStateToStore` (M267 3c.6), `putGuardedInstanceFact` (placement_guard.go) |
 | `deleteExitReason` | `executeReconciliationCycle` (if running) |
 | `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |

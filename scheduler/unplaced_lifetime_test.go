@@ -282,7 +282,7 @@ func marshalWebRequirementsJSON(t *testing.T) string {
 
 // TestSchedulerBudgetsUnplacedFactChanges: M262 3a.1 (D4), spec requirement
 // "Unplaced-fact changes are budgeted per scheduler cycle". Puts and deletes
-// share maxUnplacedFactChangesPerCycle, puts first, whole instances in ID
+// share maxSchedulerBookkeepingChangesPerCycle, puts first, whole instances in ID
 // order; a following cycle (first cycle's changes applied) does the next part.
 func TestSchedulerBudgetsUnplacedFactChanges(t *testing.T) {
 	testCases := []struct {

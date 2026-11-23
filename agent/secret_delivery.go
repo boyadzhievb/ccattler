@@ -233,7 +233,9 @@ func (nodeAgent *Agent) recordSecretDeliveryWait(ctx context.Context, instanceIn
 	waitEntry.requirementsVersion = requirements.requirementsVersion
 	waitEntry.retryAfter = time.Now().Add(secretDeliveryRetryDelay(deliveryFailure.Reason, waitEntry.attempts))
 
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "")
+	if !nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "") {
+		return // stopped or moved meanwhile: no wait status for an instance this node no longer runs (M267 R3-S2)
+	}
 	statusJSON, _ := json.Marshal(secretWaitStatus{Reason: string(waitEntry.reason), Secrets: waitEntry.secretNames, NextRetry: waitEntry.retryAfter.Format(time.RFC3339)})
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceSecretWait(instanceInfo.id), statusJSON); putError != nil {
 		logging.Default().Error("failed to write secret wait status", "instance", instanceInfo.id, "error", putError.Error())

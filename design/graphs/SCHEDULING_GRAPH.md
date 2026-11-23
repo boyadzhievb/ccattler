@@ -57,10 +57,10 @@ Scheduler.Reconcile(ctx, facts)                                  :123
 │   computed once, input of both unplaced-fact steps below, M262 D1)
 │
 ├── emitUnplacedDemandFacts(waiting, nodes, ..., invalid, extractStoredUnplacedValues(facts),
-│       maxUnplacedFactChangesPerCycle) :164/:1022 → unplacedChanges (puts first in the shared budget, M262 D4)
+│       maxSchedulerBookkeepingChangesPerCycle) :164/:1022 → unplacedChanges (puts first in the shared budget, M262 D4)
 │   [full tree in §6]
 │
-├── cleanupStaleUnplacedFacts(facts, waiting, maxUnplacedFactChangesPerCycle − len(unplacedChanges)) :170/:1207
+├── cleanupStaleUnplacedFacts(facts, waiting, maxSchedulerBookkeepingChangesPerCycle − len(unplacedChanges)) :170/:1207
 │   → unplacedCleanupChanges
 │
 ├── rebalanceMoveTimes = extractRebalanceMoveTimes(facts)        :174/:586  (M267 D4)
@@ -72,7 +72,7 @@ Scheduler.Reconcile(ctx, facts)                                  :123
 │    thisCycleChanges = changes, preemptions (M267 B1)]
 ├── cleanupGoneInstanceRebalanceFacts(moveTimes, instances, budget) :186/:611  (M267 D4, R2-2)
 │   └── DELETE derived/scheduler/rebalanced/{id} of instances no longer known, sorted,
-│       within budget = maxUnplacedFactChangesPerCycle − unplaced puts − unplaced deletes (the
+│       within budget = maxSchedulerBookkeepingChangesPerCycle − unplaced puts − unplaced deletes (the
 │       shared bookkeeping budget, so a cycle without placements stays ≤ 51); a live instance's fact stays
 │
 └── detectAndLogNodePressure(nodes, placements, instances, ...)  :189/:919
@@ -368,7 +368,7 @@ attemptPreemptions(unplaced, placed, nodes, thisCycleChanges, inputs) :278
 ### emitUnplacedDemandFacts → signal autoscaler
 ```
 emitUnplacedDemandFacts(waiting, nodes, instances, ..., invalid, stored, changeBudget) :1022
-│   changeBudget = maxUnplacedFactChangesPerCycle (40, scheduler.go:50), shared with cleanup (M262 D4)
+│   changeBudget = maxSchedulerBookkeepingChangesPerCycle (40, scheduler.go:50), shared with cleanup (M262 D4)
 │   waiting = selectInstancesWaitingForPlacement(unplaced, placedInThisCycle) :1008
 │   stored = extractStoredUnplacedValues(facts) :1055  (derived/scheduler/unplaced/ is a watched prefix,
 │   so the scheduler's own last writes are in its input)
@@ -397,7 +397,7 @@ emitUnplacedDemandFacts(waiting, nodes, instances, ..., invalid, stored, changeB
 ### cleanupStaleUnplacedFacts
 ```
 cleanupStaleUnplacedFacts(facts, waiting, changeBudget)         :1207
-│   changeBudget = what emitUnplacedDemandFacts left of maxUnplacedFactChangesPerCycle (D4)
+│   changeBudget = what emitUnplacedDemandFacts left of maxSchedulerBookkeepingChangesPerCycle (D4)
 ├── waiting → set (O(1) membership)
 ├── extractExistingUnplacedInstanceIDs(facts)                    :1230 (sorted)
 └── FOR EACH existing unplaced ID not in waiting (placed, stored or this cycle; stopped, controller_stopped
@@ -651,7 +651,7 @@ RemoveNode(nodeID)                                               [cache.go:94]
 | `rebalanceLoadImbalanceThreshold` | 2 | scheduler.go:36 | rebalancePlacedInstances |
 | `rebalanceMoveCooldown` | 10m | scheduler.go:40 | findInstancesInRebalanceCooldown (M267 D4) |
 | `nodeAllocationPressurePercent` | 80 | scheduler.go:43 | detectAndLogNodePressure |
-| `maxUnplacedFactChangesPerCycle` | 40 | scheduler.go:50 | Reconcile → emitUnplacedDemandFacts, cleanupStaleUnplacedFacts (M262 D4), cleanupGoneInstanceRebalanceFacts (M267 R2-2) |
+| `maxSchedulerBookkeepingChangesPerCycle` | 40 | scheduler.go:50 | Reconcile → emitUnplacedDemandFacts, cleanupStaleUnplacedFacts (M262 D4), cleanupGoneInstanceRebalanceFacts (M267 R2-2) |
 | `unplacedFactsPerInstance` | 2 | scheduler.go:54 | cleanupStaleUnplacedFacts |
 | `maxPreemptionsPerCycle` | 3 | scheduler.go:229 | attemptPreemptions |
 | `types.ResourceKindSpec.RequestKeySuffix` | `/resources/cpu`, `/resources/memory` | types/resource_kind.go:37 | types.SplitServiceResourceKey |

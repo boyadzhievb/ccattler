@@ -236,13 +236,30 @@ so the same race class is closed in one place (the stop-time checks keep flaggin
 | R3-T3 | Worst-case test copies the runner cap (60) and does not assert the bookkeeping budget is used up | **fix** 3d.3 |
 | R3-T4 | One test sub-case publishes the target with revision 0 (no guard) | **rejected**: the hook runs inside a store wrapper on purpose; documented in the test |
 
-- [ ] 3d.1 Probe result writes (readiness, liveness/startup progress) compare the probe pass's placement revision like
+- [x] 3d.1 Probe result writes (readiness, liveness/startup progress) compare the probe pass's placement revision like
   the state publish; red test: in-flight source probe after a move does not set `ready`.
-- [ ] 3d.2 `publishInstanceStateToStore` returns whether it committed; `publishStatusReason`, `publishInstanceLastExit`
+  Result: new `agent/placement_guard.go` (`placementGuard`, `dropUnchangedPuts`, `putGuardedInstanceFact`), shared
+  with the state publish; all 7 probe-state Puts, the 4 health Puts and the progress Put go through
+  `ProbeScheduler.writeInstanceFact` (unchanged → no write; else a transaction with the guard). The progress Delete
+  stays plain. Red: `TestSourceProbeAfterMoveDoesNotSetReadiness` `node-1 wrote readiness = "ready" …`, `liveness =
+  "healthy"`, `health = "healthy"` for web-1 after it moved; passes after.
+- [x] 3d.2 `publishInstanceStateToStore` returns whether it committed; `publishStatusReason`, `publishInstanceLastExit`
   and the secret-wait status are written only when it did; test.
-- [ ] 3d.3 R3-T1..T3: doc comments ≤ 4 lines naming the guard; constant comment and rename (graphs/flows updated);
+  Result: gated in `startInstanceAndPublishState` ("running"), `handleInstanceStartError`, `beginCrashLoopWait`,
+  `recordSecretDeliveryWait`. Red: `TestStatusWrittenOnlyAfterCommittedPublish` (start failure, crash loop, secret
+  wait) wrote `status-reason`, `last_exit` and `secret-wait` after the moved instance's publish failed; passes after.
+  Trade-off: a publish lost to a concurrent state change also skips that exit's status (next exit writes it).
+- [x] 3d.3 R3-T1..T3: doc comments ≤ 4 lines naming the guard; constant comment and rename (graphs/flows updated);
   worst-case test asserts the bookkeeping budget is fully used and checks the cap against one shared source.
-- [ ] 3d.4 Checks as in 3.1.
+  Result: both doc comments 4 lines naming the placement guard; `maxUnplacedFactChangesPerCycle` →
+  `maxSchedulerBookkeepingChangesPerCycle` (code, tests, SCHEDULING_GRAPH, unplaced-facts-cleanup design/tasks;
+  history files and this file's earlier records unchanged), comment "3 + 8 = 11"; the runner cap is exported as
+  `controllers.MaxTransactionChanges` (runner, tests, 3 graphs, M262 design) and the worst-case test uses it; it
+  now asserts 36 unplaced changes + 4 cooldown deletes == the budget (40).
+- [x] 3d.4 Checks as in 3.1.
+  Result: `gofmt -l` empty; golangci-lint 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests; `-race`
+  scheduler/agent/controllers ok (1.5 s, 29.9 s, 6.9 s); `openspec validate` rebalance-respects-fit and
+  unplaced-facts-cleanup valid; SCHEDULING_GRAPH checker 0 mismatches.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing

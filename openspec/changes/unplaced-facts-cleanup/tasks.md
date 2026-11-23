@@ -83,7 +83,7 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 ## 3a. Rework from review round 1
 
 - [x] 3a.1 D4 (revised after the stop-time Codex check: capping only the deletes leaves the uncapped puts able to fill
-  the budget): named constant `maxUnplacedFactChangesPerCycle = 40` shared by the unplaced puts
+  the budget): named constant `maxSchedulerBookkeepingChangesPerCycle = 40` shared by the unplaced puts
   (`emitUnplacedDemandFacts`) and deletes (`cleanupStaleUnplacedFacts`); puts first, then deletes, each in sorted
   instance-ID order, whole instances only (2 changes each; an unchanged put that is skipped costs nothing). Red first:
   `TestSchedulerBudgetsUnplacedFactChanges` with the three spec sub-cases (`deletes only`, `puts first`,

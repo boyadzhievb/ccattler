@@ -4,7 +4,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1007,8 +1006,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	// A container that has already exited is observed as starting and left to
 	// the next cycle, which records the exit and backs off in place (Flow 33, M238).
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP)
-	if observedState == types.InstanceRunning {
+	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP) && observedState == types.InstanceRunning {
 		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "running")
 	}
 	nodeAgent.publishInstanceImage(ctx, instanceInfo.id, image)
@@ -1038,8 +1036,9 @@ func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceIn
 		nodeAgent.recordInstanceStartFailure(ctx, instanceInfo, processError)
 		return true
 	}
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceFailed, "")
-	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
+	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceFailed, "") {
+		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
+	}
 	return false
 }
 
@@ -2196,12 +2195,10 @@ func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID str
 	return types.InstanceStarting
 }
 
-// publishInstanceStateUnlessStopped writes the instance's observed state by
-// compare-and-swap on the revision read just before, and never over stopped:
-// a stop is final for the agent (findInstancesPlacedOnThisNode skips it), and
-// the instance leaves the desired set next cycle (M241 2i.1). observed node and
-// instanceFacts go in the same transaction (M267 D4, 3c.6), which also compares
-// the scanned placement/node/{self}/{id} revision when known (R2-1).
+// publishInstanceStateUnlessStopped writes state, node and instanceFacts in one
+// transaction comparing the state revision read (never over stopped, M241
+// 2i.1) and the placement guard, the scanned placement/node/{self}/{id}
+// revision (placementGuard, M267 R2-1). Returns true when committed.
 func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, instanceFacts []store.Op) bool {
 	instanceID := instanceInfo.id
 	stateKey := types.KeyObservedInstanceState(instanceID)
@@ -2218,13 +2215,7 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 		logging.Default().Error("failed to read instance state, publishing next cycle", "instance", instanceID, "error", getError.Error())
 		return false
 	}
-	compares := []store.Compare{{Key: stateKey, Revision: expectedRevision}}
-	if instanceInfo.placementRevision > 0 {
-		// A move deletes this key: a source still in the cycle that scanned before it never publishes (M267 R2-1).
-		compares = append(compares, store.Compare{
-			Key: types.KeyPlacementNodeInstance(nodeAgent.nodeID, instanceID), Revision: instanceInfo.placementRevision,
-		})
-	}
+	compares := append([]store.Compare{{Key: stateKey, Revision: expectedRevision}}, placementGuard(nodeAgent.nodeID, instanceInfo)...)
 	stateAndNode := []store.Op{
 		{Type: store.OpPut, Key: stateKey, Value: []byte(string(state))},
 		{Type: store.OpPut, Key: types.KeyObservedInstanceNode(instanceID), Value: []byte(nodeAgent.nodeID)},
@@ -2241,12 +2232,11 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 	return true
 }
 
-// publishInstanceStateToStore writes a complete set of observed-state facts for
-// the given instance (marker, service, state, node, IP, network allocation) in
-// the one guarded transaction of publishInstanceStateUnlessStopped, so a move
-// can never land between the state and the IP (M267 3c.6). Nothing is written
-// over a stop (M241 2i.1); created-at stays create-only.
-func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string) {
+// publishInstanceStateToStore writes marker, service, state, node, IP and
+// network allocation in one transaction guarded by the stop and the scanned
+// placement (publishInstanceStateUnlessStopped, M267 R2-1, 3c.6); created-at
+// is create-only. Returns true when committed (callers write status only then).
+func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string) bool {
 	instanceID, service := instanceInfo.id, instanceInfo.service
 	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceID, runtimeIP)
 	instanceFacts := []store.Op{
@@ -2259,8 +2249,8 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	if ipFromNetworkProvider {
 		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyNetworkAllocation(instanceID), Value: []byte(publishedContainerIP)})
 	}
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, nodeAgent.dropUnchangedPuts(ctx, instanceFacts)) {
-		return
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, dropUnchangedPuts(ctx, nodeAgent.store, instanceFacts)) {
+		return false
 	}
 
 	createdAtKey := types.KeyObservedInstanceCreatedAt(instanceID)
@@ -2272,6 +2262,7 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 		logging.Default().Error("failed to set created_at", "instance", instanceID, "error", txnError.Error())
 	}
 	nodeAgent.registerEndpointIdentityIfSupported(ctx, publishedContainerIP, service)
+	return true
 }
 
 // resolvePublishedContainerIP returns the IP to publish before anything is
@@ -2291,20 +2282,6 @@ func (nodeAgent *Agent) resolvePublishedContainerIP(ctx context.Context, instanc
 		return "", false
 	}
 	return runtimeIP, false
-}
-
-// dropUnchangedPuts returns the puts whose stored value differs (or cannot be
-// read), so moving them into one transaction writes no more keys than the
-// separate idempotent Puts did (etcd transactions write unchanged values, M266).
-func (nodeAgent *Agent) dropUnchangedPuts(ctx context.Context, puts []store.Op) []store.Op {
-	changedPuts := make([]store.Op, 0, len(puts))
-	for _, put := range puts {
-		if storedFact, getError := nodeAgent.store.Get(ctx, put.Key); getError == nil && bytes.Equal(storedFact.Value, put.Value) {
-			continue
-		}
-		changedPuts = append(changedPuts, put)
-	}
-	return changedPuts
 }
 
 // reconcileResourceChanges compares the effective resource allocation for an

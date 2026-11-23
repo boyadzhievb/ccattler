@@ -565,7 +565,7 @@ func TestProbeProgressClearedWhenNoFailures(t *testing.T) {
 		startup: &probeTracker{consecutiveFailures: 0, consecutiveSuccesses: 1},
 	}
 	startupConfig := &probeConfig{failureThreshold: 5}
-	nodeAgent.probeScheduler.publishProbeProgress(ctx, instanceID, startupConfig, nil, nil, probeState)
+	nodeAgent.probeScheduler.publishProbeProgress(ctx, placedInstanceInfo{id: instanceID}, startupConfig, nil, nil, probeState)
 
 	_, progressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instanceID))
 	if progressErr == nil {

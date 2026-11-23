@@ -1932,7 +1932,10 @@ every agent's state publish also compares the revision of placement/node/{self}/
   init) that scanned before the move cannot publish running + node = source over the target;
   the IP is resolved first and the marker, service, ip and network/allocation/{id} go into that
   same guarded transaction (only the changed ones), so a move can never land between the
-  state and the IP (3c.6); created-at stays a separate create-only write
+  state and the IP (3c.6); created-at stays a separate create-only write; the status reason,
+  last exit and secret-wait status follow only a committed publish, and the probe pass's
+  probe, health and progress writes carry the same placement guard, so an in-flight source
+  probe never writes ready after a move (R3-S1, R3-S2)
   pull failure → image_pull_backoff, start failure → failed (failure controller replaces it),
   target agent dead → stays pending, placement on the dead node → node-failure marks it
 ```

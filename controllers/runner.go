@@ -41,18 +41,18 @@ const (
 	// (compares + success ops + failure ops) in a single etcd transaction.
 	etcdTransactionOperationLimit = 128
 
-	// maxTransactionChanges is the maximum number of fact changes the runner
+	// MaxTransactionChanges is the maximum number of fact changes the runner
 	// will commit in a single transaction. Each change produces roughly two
 	// transaction items (one compare + one operation), so 60 changes yields
 	// ~120 items — safely under the 128-op etcd limit. Oversized change sets
 	// are truncated (capped) to this limit and committed; remaining changes
 	// converge on subsequent cycles via watch re-trigger.
 	//
-	// CONTRACT: Every built-in controller MUST produce ≤ maxTransactionChanges
+	// CONTRACT: Every built-in controller MUST produce ≤ MaxTransactionChanges
 	// per Reconcile call. Controllers with variable output must cap internally
 	// (e.g. FailureController.MaxReplacementsPerCycle, NodeFailureController
 	// .MaxTotalChangesPerCycle). The runner logs a warning for any violation.
-	maxTransactionChanges = 60
+	MaxTransactionChanges = 60
 )
 
 // controllerRestartBackoffDelays is the sequence of delays used when a
@@ -563,10 +563,10 @@ func (controllerRunner *Runner) validateAndCapChanges(controllerName string, cha
 			controllerName, duplicateKey)
 	}
 
-	if len(changes) > maxTransactionChanges {
+	if len(changes) > MaxTransactionChanges {
 		var deferredChangeCount int
 		var groupError error
-		changes, deferredChangeCount, groupError = takeWholeGroups(changes, maxTransactionChanges)
+		changes, deferredChangeCount, groupError = takeWholeGroups(changes, MaxTransactionChanges)
 		if groupError != nil {
 			return nil, fmt.Errorf("controller %s: %w", controllerName, groupError)
 		}

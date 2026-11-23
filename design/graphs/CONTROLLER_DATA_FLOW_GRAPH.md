@@ -78,7 +78,7 @@ executeReconciliationCycle(ctx, controller, deltaEvents)     :419
 | `defaultControllerResyncInterval` | 30s | runner.go:30 |
 | `reconcileRetryBaseDelayMs` | 10 | runner.go:34 |
 | `reconcileRetryMaxDelayMs` | 500 | runner.go:38 |
-| `maxTransactionChanges` | 60 | runner.go:55 |
+| `MaxTransactionChanges` | 60 | runner.go:55 |
 | `defaultMaxReconciliationAttempts` | 5 | runner.go:412 |
 
 ---

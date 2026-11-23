@@ -482,7 +482,7 @@ release() CAS-deletes leader/controlplane + holder
 | `reconcileRetryBaseDelayMs` | 10ms | controllers/runner.go:34 | CAS retry base backoff |
 | `reconcileRetryMaxDelayMs` | 500ms | controllers/runner.go:38 | CAS retry max backoff |
 | `defaultMaxReconciliationAttempts` | 5 | controllers/runner.go:412 | Max CAS retries per cycle |
-| `maxTransactionChanges` | 60 | controllers/runner.go:55 | Max changes per etcd transaction |
+| `MaxTransactionChanges` | 60 | controllers/runner.go:55 | Max changes per etcd transaction |
 | `etcdTransactionOperationLimit` | 128 | controllers/runner.go:42 | etcd hard limit |
 | `defaultNodeFailureLeaseTimeout` | 30s | controllers/nodefailure.go:22 | Heartbeat expiry for node failure |
 | `defaultMaxTotalChangesPerCycle` | 58 | controllers/nodefailure.go:29 | NodeFailure change budget |

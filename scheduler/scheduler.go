@@ -42,12 +42,12 @@ const (
 	// nodeAllocationPressurePercent triggers a warning when allocation exceeds this ratio.
 	nodeAllocationPressurePercent = 80
 
-	// maxUnplacedFactChangesPerCycle caps the scheduler's bookkeeping facts of
+	// maxSchedulerBookkeepingChangesPerCycle caps the scheduler's own facts of
 	// one cycle together: unplaced-demand puts and deletes (whole instances, 2
 	// changes each), then deletes of gone instances' move times (M267 R2-2).
-	// The runner commits at most 60 changes; with 3 preemptions and 2 moves
-	// (8 changes) at most, 9 stay for placements. The rest wait (M262 D4).
-	maxUnplacedFactChangesPerCycle = 40
+	// Of the runner's 60 (controllers.MaxTransactionChanges), preemptions and
+	// moves take at most 3 + 8 = 11 changes, so 9 stay for placements (M262 D4).
+	maxSchedulerBookkeepingChangesPerCycle = 40
 
 	// unplacedFactsPerInstance is the reason and requirements fact of one
 	// unplaced instance: the cost of deleting its facts.
@@ -164,11 +164,11 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	unplacedChanges := emitUnplacedDemandFacts(
 		waitingInstanceIDs, nodes, instances,
 		serviceResources, placementConstraints, invalidResourceRequests,
-		extractStoredUnplacedValues(facts), maxUnplacedFactChangesPerCycle,
+		extractStoredUnplacedValues(facts), maxSchedulerBookkeepingChangesPerCycle,
 	)
 	changes = append(changes, unplacedChanges...)
 	unplacedCleanupChanges := cleanupStaleUnplacedFacts(
-		facts, waitingInstanceIDs, maxUnplacedFactChangesPerCycle-len(unplacedChanges))
+		facts, waitingInstanceIDs, maxSchedulerBookkeepingChangesPerCycle-len(unplacedChanges))
 	changes = append(changes, unplacedCleanupChanges...)
 
 	rebalanceMoveTimes := extractRebalanceMoveTimes(facts)
@@ -184,7 +184,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	})
 	changes = append(changes, rebalanceChanges...)
 	changes = append(changes, cleanupGoneInstanceRebalanceFacts(rebalanceMoveTimes, instances,
-		maxUnplacedFactChangesPerCycle-len(unplacedChanges)-len(unplacedCleanupChanges))...)
+		maxSchedulerBookkeepingChangesPerCycle-len(unplacedChanges)-len(unplacedCleanupChanges))...)
 
 	detectAndLogNodePressure(nodes, placements, instances, serviceResources)
 

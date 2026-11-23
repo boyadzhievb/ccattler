@@ -19,7 +19,7 @@ Current state, verified in the code:
 - `ClusterAutoscaleController.Reconcile` → `emitScaleUpRequests` → `extractUnplacedDemand(facts)` reads every fact
   under the prefix; `filterInsufficientCapacityDemand` keeps `insufficient_capacity` and `no_nodes`. It already
   watches `observed/instance/`, `derived/instance/` and `placement/`, so it has the facts for an instance check.
-- The runner does not split change sets: it commits at most `maxTransactionChanges = 60` per cycle (under etcd's
+- The runner does not split change sets: it commits at most `MaxTransactionChanges = 60` per cycle (under etcd's
   128-operation limit), sorted by (Group, Key), and defers the rest; ungrouped changes such as these deletes sort
   ahead of the grouped `placement/instance/` puts. Its contract (`controllers/runner.go:44-55`) is that each
   controller caps its own output. (Corrected after review 3.3; the first version of this design said the runner
@@ -82,7 +82,7 @@ every placement of that cycle is deferred, cycle after cycle, with a "deferred a
 time. The writes for newly unplaced instances have the same shape (2 ungrouped puts each, uncapped before this
 change), so capping only the deletes would not keep room either: a burst of new pending instances plus the deletes
 can still fill the budget. Following the runner's contract, all unplaced-fact changes of a cycle (puts and deletes)
-share one budget, `maxUnplacedFactChangesPerCycle = 40`, so they never take more than 40 of the runner's 60 and the
+share one budget, `maxSchedulerBookkeepingChangesPerCycle = 40`, so they never take more than 40 of the runner's 60 and the
 other 20 stay for placements, preemption and rebalance. Puts go first, in sorted instance-ID order (current demand
 matters more than stale facts, which cluster scaling already ignores, D2); deletes take what is left, also in sorted
 order. Both sides are counted per instance (2 changes), so an instance's reason and requirements are never split
@@ -106,7 +106,7 @@ change does not silently change cluster-scaling demand.
 | Scheduler not running (no leader, restart) | Leftovers stay; cluster scaling ignores them (D2); the next leader's first cycle deletes them (D1). |
 | Delete transaction fails (CAS conflict, etcd unavailable) | The runner retries with back-off; the next cycle recomputes the same deletes (idempotent). |
 | Instance goes pending → stopped → pending (in-place restart keeps the ID) | Facts deleted, then written again on the cycle that sees it pending and unplaced; two writes, no loop. |
-| Many instances stop waiting at once, or thousands of leftovers after an upgrade | Unplaced-fact puts and deletes together take at most `maxUnplacedFactChangesPerCycle` (40) changes per cycle, puts first, lowest IDs first, so they never fill the runner's 60-change budget (D4). Each commit wakes the scheduler, so the rest go over the following cycles; cluster scaling ignores leftovers meanwhile (D2). |
+| Many instances stop waiting at once, or thousands of leftovers after an upgrade | Unplaced-fact puts and deletes together take at most `maxSchedulerBookkeepingChangesPerCycle` (40) changes per cycle, puts first, lowest IDs first, so they never fill the runner's 60-change budget (D4). Each commit wakes the scheduler, so the rest go over the following cycles; cluster scaling ignores leftovers meanwhile (D2). |
 | Many new instances become unplaced at once (scale up with no capacity) | Their facts are written 20 instances per cycle (D4); the instances still waiting for theirs are not yet visible to cluster scaling or rollout reasons for those few cycles. |
 | More than 20 waiting instances' reasons change at once (for example a request becomes unreadable) | Updates go 20 instances per cycle; the rest keep their old reason (for example `insufficient_capacity`) for a cycle or two, and cluster scaling may count them meanwhile. Not a regression: before D4 the runner's 60-change cap cut the same sorted list. |
 | Instance stops after cluster scaling read it as pending in the same snapshot | One capacity request may still be written (pre-existing race); the next cycle ignores the instance. Cancelling such requests is the M260 follow-up. |

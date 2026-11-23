@@ -324,7 +324,7 @@ CheckHealth(ctx, probe, host)
 
 ### heartbeatLoop → independent goroutine
 ```
-Agent.Run(ctx)                                      (agent/agent.go:292)
+Agent.Run(ctx)                                      (agent/agent.go:291)
 ├── nodeReporter.RegisterNode(ctx)                   (telemetry.go:111)
 │   └── PUT observed/node/{id} = ""                  [marker]
 ├── nodeReporter.PublishAliveState(ctx)               (telemetry.go:60)
@@ -337,7 +337,7 @@ Agent.Run(ctx)                                      (agent/agent.go:292)
 ├── nodeReporter.PublishAdvertiseAddress(ctx)          (telemetry.go:101)
 │   └── PUT observed/node/{id}/address = advertiseAddress
 │
-└── go heartbeatLoop(ctx)                             (agent/agent.go:486) [goroutine]
+└── go heartbeatLoop(ctx)                             (agent/agent.go:485) [goroutine]
     └── ticker at 5s (heartbeatInterval)
         └── nodeReporter.WriteHeartbeat(ctx)
             └── PUT lease/node/{id} = Unix-millis timestamp
@@ -347,7 +347,7 @@ Agent.Run(ctx)                                      (agent/agent.go:292)
 
 | Constant | Value | File:Line |
 |---|---|---|
-| `heartbeatInterval` | `5s` | `agent/agent.go:43` |
+| `heartbeatInterval` | `5s` | `agent/agent.go:42` |
 | `defaultNodeFailureLeaseTimeout` | `30s` | `controllers/nodefailure.go:22` |
 
 Failure window: 30s / 5s = 6 missed heartbeats → unreachable.
@@ -612,17 +612,17 @@ CREATE / ROTATE
 
 STOP — directory KEPT (removeContainerResources :863 forgets tracking only)
 ├── Stop / StopWithGracePeriod                      :771 / :807
-│   callers: Start (restart in place, Flow 33), detectConfigChange agent.go:1586,
+│   callers: Start (restart in place, Flow 33), detectConfigChange agent.go:1585,
 │   resize restart, cleanup paths below
 └── StopAll                                         :1423
     callers: cca agent shutdown (command_agent.go:562), cca run-container (command_run.go:220)
 
 REMOVE — directory DELETED (RemoveInstanceData :874 → removeInstanceLogDirectory container_log.go:82)
-├── agent cleanupUndesiredInstance                  agent.go:1296  (placed elsewhere / removed, running)
-├── agent cleanupStoppedStaleInstance               agent.go:1097  (same, container exited)
-│   both → teardownStaleInstance                    agent.go:1110
-│          → removeInstanceDataIfSupported          agent.go:1252
-└── agent sweepInstanceData, every reconcile cycle  agent.go:1266 (called :624)
+├── agent cleanupUndesiredInstance                  agent.go:1295  (placed elsewhere / removed, running)
+├── agent cleanupStoppedStaleInstance               agent.go:1096  (same, container exited)
+│   both → teardownStaleInstance                    agent.go:1109
+│          → removeInstanceDataIfSupported          agent.go:1251
+└── agent sweepInstanceData, every reconcile cycle  agent.go:1265 (called :623)
     ListInstanceDataIDs :880 → listInstanceLogDirectories container_log.go:92
     (skips cca-init-* dirs of running init steps); removes every ID neither
     desired on the node nor known to runtime.List (exited included)
@@ -786,9 +786,9 @@ A lookup outside every loaded prefix panics (`requireCoveredKey`): add the prefi
 
 | Constant | Value | File:Line | Description |
 |---|---|---|---|
-| `defaultAgentReconcileInterval` | `1s` | `agent/agent.go:33` | Main reconciliation ticker |
-| `heartbeatInterval` | `5s` | `agent/agent.go:43` | Independent heartbeat writes |
-| `dataPlaneReconcileInterval` | `1s` | `agent/agent.go:49` | Data plane reconciliation |
+| `defaultAgentReconcileInterval` | `1s` | `agent/agent.go:32` | Main reconciliation ticker |
+| `heartbeatInterval` | `5s` | `agent/agent.go:42` | Independent heartbeat writes |
+| `dataPlaneReconcileInterval` | `1s` | `agent/agent.go:48` | Data plane reconciliation |
 | `defaultProbeInterval` | `10s` | `agent/probes.go:23` | Default health probe interval |
 | `defaultNodeFailureLeaseTimeout` | `30s` | `controllers/nodefailure.go:22` | Lease expiry threshold |
 | `defaultControllerDebounceInterval` | `50ms` | `controllers/runner.go:26` | Watch debounce |
