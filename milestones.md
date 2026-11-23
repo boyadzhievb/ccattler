@@ -737,7 +737,7 @@ Found in the M241 testbed check (task 4.1, 2026-11-18), verified in the code, pr
 - other readers (controllers/intent.go, autoscale) keep the raw strings, so units are interpreted differently across components
 Wanted: one quantity parser (CPU in millicores, memory in bytes or MiB — whatever node capacity uses) shared by compiler validation, scheduler and controllers; a value that cannot be parsed is refused at apply, never read as 0; tests with unit-suffixed values. M241's capacity case (task 4.1) is checked after this fix.
 
-OpenSpec change: [`resource-request-units`](openspec/changes/resource-request-units/) (checklist in its `tasks.md`). Proposed 2026-11-19 and revised after three code reviews: bare numbers follow Kubernetes (BREAKING), stored unreadable values block new work with `invalid_resource_request`, effective requests follow the vertical autoscaler, and per-node allocation display is a follow-up.
+OpenSpec change: [`resource-request-units`](openspec/changes/archive/2026-11-23-resource-request-units/) (archived; spec [resource-requests](openspec/specs/resource-requests/spec.md)). Proposed 2026-11-19 and revised after three code reviews: bare numbers follow Kubernetes (BREAKING), stored unreadable values block new work with `invalid_resource_request`, effective requests follow the vertical autoscaler, and per-node allocation display is a follow-up.
 
 ### Phase 242 — Names the DSL Accepts Are Refused Elsewhere (M242, bug)
 
