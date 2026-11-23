@@ -313,6 +313,9 @@ cleanup() {
         log "Test FAILED — keeping VMs running for investigation"
         DESTROY_ON_EXIT=none
     fi
+    if [[ -n "${WHOAMI_SEEN_IDS_FILE:-}" ]]; then
+        rm -f "$WHOAMI_SEEN_IDS_FILE"
+    fi
     if [[ "$BAREMETAL" == "true" ]]; then
         log "Bare-metal cluster — no VM lifecycle to manage"
     elif [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
@@ -642,6 +645,20 @@ while [[ $SECONDS -lt $deadline ]]; do
 done
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" > /dev/null || fail "cca server /status unreachable after 60s"
 
+# WHOAMI_SEEN_IDS_FILE collects every whoami instance ID a status read saw,
+# one per line; a file, since most reads run in a $(...) subshell (M267 D3).
+WHOAMI_SEEN_IDS_FILE=$(mktemp "${TMPDIR:-/tmp}/cca-e2e-whoami-ids.XXXXXX")
+
+# fetch_cluster_status prints the /api/status JSON (fails when the server does
+# not answer) and records the whoami instance IDs in it for the whoami-churn
+# check in Step 6. Used by every status read from Step 4 on.
+fetch_cluster_status() {
+    local status_json
+    status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || return 1
+    echo "$status_json" | jq -r '.instances[]? | select(.service == "whoami") | .id' >> "$WHOAMI_SEEN_IDS_FILE" 2>/dev/null || true
+    echo "$status_json"
+}
+
 count_alive_nodes() {
     local status_json
     status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || { echo 0; return; }
@@ -823,6 +840,22 @@ done
 
 log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINERS containers"
 
+# whoami-churn accounting (M267 D3): WHOAMI_EXPECTED_INSTANCE_IDS counts the
+# whoami instances the test's own steps create: the deployed count here, then
+# one per scale-up back to 2 (Steps 5.10, 5.13) and one replacement per whoami
+# instance on the node whose agent Step 5.11 stops. Step 6 fails when status
+# reads saw more distinct IDs than that plus WHOAMI_CHURN_MARGIN.
+WHOAMI_EXPECTED_INSTANCE_IDS=0
+# WHOAMI_CHURN_MARGIN allows a one-off replacement the steps do not explain;
+# the M267 rebalance loop created about ten per minute (run 45211387656).
+WHOAMI_CHURN_MARGIN=2
+if [[ " ${WORKLOAD_NAMES[*]} " == *" whoami "* ]]; then
+    WHOAMI_EXPECTED_INSTANCE_IDS=$(fetch_cluster_status | jq '[.services[] | select(.name == "whoami") | .desired][0] // 0')
+    [[ "$WHOAMI_EXPECTED_INSTANCE_IDS" =~ ^[0-9]+$ && "$WHOAMI_EXPECTED_INSTANCE_IDS" -gt 0 ]] \
+        || fail "whoami-churn: cannot read whoami's desired instance count from /api/status (got '$WHOAMI_EXPECTED_INSTANCE_IDS')"
+    log "whoami-churn: $WHOAMI_EXPECTED_INSTANCE_IDS whoami instance IDs expected after deploy"
+fi
+
 # ---- Step 4.5: Install Caddy sync daemon on testbed host ----
 # Only for the deploy environment (long-lived cluster). The test environment is
 # ephemeral and halted after tests — no point exposing it.
@@ -920,7 +953,7 @@ echo "$IMAGES_JSON" | grep -q '"images"' || fail "debug/images missing images fi
 log "GET /debug/images OK"
 
 log "Testing POST /debug/exec on worker-1..."
-STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+STATUS_JSON=$(fetch_cluster_status)
 INSTANCE_ID=$(echo "$STATUS_JSON" | jq -r '.instances[0].id // empty')
 if [[ -n "$INSTANCE_ID" ]]; then
     # Exec runs /whoami -h, so the target must be a worker-1 instance of a
@@ -1062,7 +1095,7 @@ log "Validating VIP data plane (nftables/iptables DNAT rules)..."
 ENDPOINT_DEADLINE=$((SECONDS + 60))
 ENDPOINT_COUNT=0
 while [[ $SECONDS -lt $ENDPOINT_DEADLINE ]]; do
-    NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+    NET_JSON=$(fetch_cluster_status)
     ENDPOINT_COUNT=$(echo "$NET_JSON" | jq '[.instances[] | select(.state == "running" and .ip != null and .ip != "")] | length' 2>/dev/null || echo "0")
     if [[ "$ENDPOINT_COUNT" -gt 0 ]]; then
         break
@@ -1181,7 +1214,7 @@ for vm in "${VM_NAMES[@]}"; do
     ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|cca|10\\.4|172\\.17'" 2>/dev/null || true
 done
 
-NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+NET_JSON=$(fetch_cluster_status)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port) \(.dns)"' 2>/dev/null || echo "")
 
 if [[ -n "$VIP_SERVICES" ]]; then
@@ -1261,7 +1294,7 @@ log "Validating HTTP traffic through VIPs..."
 HTTP_PORTS_REGEX="^(80|443|8080|8443|8000|3000|9090)$"
 FAST_START_SERVICES="whoami"
 
-NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+NET_JSON=$(fetch_cluster_status)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' 2>/dev/null || echo "")
 
 if [[ -n "$VIP_SERVICES" ]]; then
@@ -1407,10 +1440,11 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
         -H "Content-Type: application/json" \
         -d '{"service":"whoami","instances":2}' > /dev/null || fail "Scale whoami back to 2 failed"
     log "  Restored whoami to 2 instances"
+    WHOAMI_EXPECTED_INSTANCE_IDS=$((WHOAMI_EXPECTED_INSTANCE_IDS + 1)) # scale 1→2 creates one instance
 
     RESTORE_DEADLINE=$((SECONDS + 30))
     while [[ $SECONDS -lt $RESTORE_DEADLINE ]]; do
-        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
+        RUNNING_COUNT=$(fetch_cluster_status \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
         if [[ "$RUNNING_COUNT" -ge 2 ]]; then
             break
@@ -1442,7 +1476,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]] &
     PREFLIGHT_DEADLINE=$((SECONDS + 60))
     HAS_OTHER_NODE=false
     while [[ $SECONDS -lt $PREFLIGHT_DEADLINE ]]; do
-        OTHER_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
+        OTHER_COUNT=$(fetch_cluster_status \
             | jq --arg w "$WORKER1_NODE" '[.instances[] | select(.service == "whoami" and .state == "running" and .node != $w)] | length' 2>/dev/null || echo "0")
         if [[ "$OTHER_COUNT" -ge 1 ]]; then
             HAS_OTHER_NODE=true
@@ -1455,6 +1489,10 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]] &
         log "  WARNING: No whoami instance on a node other than $WORKER1_NODE — skipping node-failure test"
     else
 
+    # Each whoami instance on worker-1 may be replaced once while its agent is down.
+    WORKER1_WHOAMI_INSTANCES=$(fetch_cluster_status \
+        | jq --arg w "$WORKER1_NODE" '[.instances[] | select(.service == "whoami" and .node == $w and .state != "stopped")] | length')
+    WHOAMI_EXPECTED_INSTANCE_IDS=$((WHOAMI_EXPECTED_INSTANCE_IDS + WORKER1_WHOAMI_INSTANCES))
     ssh_vm "$WORKER1_NODE" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
     FAILOVER_START=$SECONDS
     log "  Stopped cca-agent on worker-1"
@@ -1500,7 +1538,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]] &
     RECOVER_STREAK=0
     WORKER1_RECOVERED=false
     while [[ $SECONDS -lt $RECOVER_DEADLINE ]]; do
-        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
+        RUNNING_COUNT=$(fetch_cluster_status \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
         if [[ "$RUNNING_COUNT" -ge 2 ]] && ssh_vm "$WORKER1_NODE" "curl -sf -o /dev/null --connect-timeout 2 --max-time 4 http://${WHOAMI_VIP}:${WHOAMI_PORT}/" 2>/dev/null; then
             RECOVER_STREAK=$((RECOVER_STREAK + 1))
@@ -1601,6 +1639,7 @@ if [[ "$EXTENDED_TESTS" == "true" && "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI
         curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
             -H "Content-Type: application/json" \
             -d '{"service":"whoami","instances":2}' > /dev/null || log "WARNING: scale to 2 failed"
+        WHOAMI_EXPECTED_INSTANCE_IDS=$((WHOAMI_EXPECTED_INSTANCE_IDS + 1)) # scale 1→2 creates one instance
         sleep 3
 
         DNS_AFTER=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
@@ -1642,7 +1681,7 @@ done
 if [[ "$MULTIPORT_DEPLOYED" == "true" ]] && ! check_skipped multiport; then
     log "Validating multi-port VIP data plane (whoami-multiport: ports 80, 8081)..."
 
-    MULTIPORT_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+    MULTIPORT_STATUS=$(fetch_cluster_status)
     MULTIPORT_VIPS=$(echo "$MULTIPORT_STATUS" | jq -r '.networking[] | select(.service == "whoami-multiport") | "\(.vip) \(.port)"' 2>/dev/null || echo "")
 
     MULTIPORT_VIP_COUNT=$(echo "$MULTIPORT_VIPS" | grep -c '[0-9]' || echo "0")
@@ -1752,7 +1791,7 @@ fi
 if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]] && ! check_skipped multiport; then
     log "Validating multi-port cross-node traffic (whoami-multiport port 80)..."
 
-    MULTIPORT_STATUS_FRESH=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+    MULTIPORT_STATUS_FRESH=$(fetch_cluster_status)
     MULTIPORT_INSTANCE_NODES=$(echo "$MULTIPORT_STATUS_FRESH" | jq -r '[.instances[] | select(.service == "whoami-multiport" and .state == "running")] | .[].node' 2>/dev/null || echo "")
 
     log "  whoami-multiport backends on: $(echo $MULTIPORT_INSTANCE_NODES | tr '\n' ' ')"
@@ -1815,7 +1854,7 @@ done
 if [[ "$WARMZERO_DEPLOYED" == "true" ]] && ! check_skipped warmzero; then
     log "Validating warm-zero lifecycle (nginx-warmzero)..."
 
-    WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+    WARMZERO_STATUS=$(fetch_cluster_status)
     WARMZERO_VIP=$(echo "$WARMZERO_STATUS" | jq -r '.networking[] | select(.service == "nginx-warmzero") | .vip' 2>/dev/null || echo "")
 
     if [[ -n "$WARMZERO_VIP" ]]; then
@@ -1828,7 +1867,7 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]] && ! check_skipped warmzero; then
             log "  Service at zero, sending activation request..."
             ssh_vm "$CTRL_NODE" "curl -sf --max-time $WARMZERO_ACTIVATION_TIMEOUT http://${WARMZERO_VIP}:80/ >/dev/null 2>&1" || true
             sleep 10
-            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+            WARMZERO_STATUS=$(fetch_cluster_status)
             warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
         fi
         if [[ "$warmzero_running" -ge 1 ]]; then
@@ -1854,7 +1893,7 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]] && ! check_skipped warmzero; then
         warmzero_deadline=$((SECONDS + 30))
         warmzero_running=1
         while [[ "$warmzero_running" -gt 0 && "$SECONDS" -lt "$warmzero_deadline" ]]; do
-            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+            WARMZERO_STATUS=$(fetch_cluster_status)
             warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
             [[ "$warmzero_running" -gt 0 ]] && sleep 5
         done
@@ -1882,7 +1921,7 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]] && ! check_skipped warmzero; then
             warmzero_deadline=$((SECONDS + 30))
             warmzero_running=1
             while [[ "$warmzero_running" -gt 0 && "$SECONDS" -lt "$warmzero_deadline" ]]; do
-                WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+                WARMZERO_STATUS=$(fetch_cluster_status)
                 warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
                 [[ "$warmzero_running" -gt 0 ]] && sleep 5
             done
@@ -1956,12 +1995,26 @@ fi
 # ---- Step 6: Final status ----
 log "$(skipped_check_groups_report)"
 log "Final cluster status:"
-FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
+FINAL_STATUS=$(fetch_cluster_status)
 echo "$FINAL_STATUS" | jq . || true
 
 log "Instances per node (from API):"
 echo "$FINAL_STATUS" | jq -r '.nodes[] | "--- \(.id) (\(.state), \(.instances) instances) ---"' || true
 echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t\(.node)"' || true
+
+# whoami-churn (M267 D3): a replacement loop can end in a healthy-looking final
+# state, so count every whoami instance ID the status reads saw during the run.
+if [[ "$WHOAMI_EXPECTED_INSTANCE_IDS" -gt 0 ]]; then
+    whoami_seen_ids=$(awk 'NF' "$WHOAMI_SEEN_IDS_FILE" | sort -u)
+    whoami_seen_count=$(echo "$whoami_seen_ids" | awk 'NF' | wc -l | tr -d ' ')
+    whoami_churn_bound=$((WHOAMI_EXPECTED_INSTANCE_IDS + WHOAMI_CHURN_MARGIN))
+    log "whoami-churn: $whoami_seen_count distinct whoami instance IDs seen, bound $whoami_churn_bound" \
+        "($WHOAMI_EXPECTED_INSTANCE_IDS from the test's steps + margin $WHOAMI_CHURN_MARGIN)"
+    if [[ "$whoami_seen_count" -gt "$whoami_churn_bound" ]]; then
+        log "  whoami instance IDs seen: $(echo "$whoami_seen_ids" | tr '\n' ' ')"
+        fail "whoami-churn FAILED — $whoami_seen_count whoami instance IDs during the run, the test's steps explain at most $whoami_churn_bound (instances replaced in a loop?)"
+    fi
+fi
 
 log "Verifying all instances are still running after test steps..."
 # FINAL_NOT_RUNNING_FILTER selects instances that count as regressed.
@@ -1986,7 +2039,7 @@ if [[ "$final_not_running" -gt 0 ]] && \
     recovery_deadline=$((SECONDS + FINAL_RECOVERY_TIMEOUT))
     while [[ "$final_not_running" -gt 0 && $SECONDS -lt $recovery_deadline ]]; do
         sleep "$FINAL_RECOVERY_POLL_SECONDS"
-        FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null || echo '{"instances":[]}')
+        FINAL_STATUS=$(fetch_cluster_status || echo '{"instances":[]}')
         final_not_running=$(echo "$FINAL_STATUS" | jq "$FINAL_NOT_RUNNING_FILTER | length")
     done
     if [[ "$final_not_running" -eq 0 ]]; then

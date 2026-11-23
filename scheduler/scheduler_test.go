@@ -990,9 +990,10 @@ func TestControllerInterface(t *testing.T) {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
 	// derived/instance/ for controller_stopped (M241 2i.2); effective/service/ and
-	// the invalid-request facts (M243 D4, D5).
-	if len(placementScheduler.Watch()) != 10 {
-		t.Fatalf("expected 10 watch prefixes, got %d", len(placementScheduler.Watch()))
+	// the invalid-request facts (M243 D4, D5); derived/node/ for the pressure
+	// marker (M267 D1).
+	if len(placementScheduler.Watch()) != 11 {
+		t.Fatalf("expected 11 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }
 

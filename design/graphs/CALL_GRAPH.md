@@ -55,8 +55,16 @@ executeReconciliationCycle
 │       ├── publishInstanceStateToStore
 │       └── deleteExitReason
 │
-├── cleanup: stop running instances not in desired set
-│   └── cleanupUndesiredInstance
+├── cleanup: remove containers not in desired set
+│   ├── running → cleanupUndesiredInstance       [pre_stop hook, graceful stop]
+│   ├── exited  → cleanupStoppedStaleInstance    [no hook, container already dead]
+│   └── both, M267 D2:
+│       ├── FIRST checkStaleInstanceMove → isInstanceMovedToAnotherNode
+│       │   read error → return untouched (WARN); the next cycle retries the whole cleanup
+│       ├── then remove (hook/stop, token, volumes, instance data)
+│       └── publishRemovedInstanceState: no stopped write when placement/instance/{id}
+│           names another node and no controller_stopped = true (a rebalance move:
+│           stopped is final and would block the target agent); otherwise stopped
 │
 ├── sweepSecretMaterial                          [M174: remove tmpfs material of instances neither placed nor running]
 │
@@ -276,6 +284,10 @@ executeReconciliationCycle(controller, deltaEvents)
 | `detectConfigChange` | `executeReconciliationCycle` (if running) |
 | `hasConfigChangedSinceStart` | `detectConfigChange`, `isExitedInstanceDueForRestart` (M233) |
 | `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |
+| `cleanupStoppedStaleInstance` | `executeReconciliationCycle` (stale exited containers) |
+| `checkStaleInstanceMove` | `cleanupUndesiredInstance`, `cleanupStoppedStaleInstance` (first, before any removal; M267 D2) |
+| `publishRemovedInstanceState` | `cleanupUndesiredInstance`, `cleanupStoppedStaleInstance` (after the removal; M267 D2) |
+| `isInstanceMovedToAnotherNode` | `checkStaleInstanceMove` (reads `placement/instance/{id}`, `derived/instance/{id}/controller_stopped`) |
 | `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs) |
 | `prepareInstanceSecretMaterial` | `reconcileDesiredInstance` (before image pull) |
 | `buildInstanceSecretMounts` | `reconcileDesiredInstance`, `materializeInitConfigFiles` |

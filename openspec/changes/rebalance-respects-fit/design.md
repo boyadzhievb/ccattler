@@ -52,8 +52,8 @@ for every cluster; recorded as a follow-up question.
 
 ### D2. The source agent does not stop a moved instance
 
-Before writing `stopped` in `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance`, the agent reads
-`placement/instance/{id}`. If it names another node and no `derived/instance/{id}/controller_stopped = true` exists,
+At the start of `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance`, before it removes anything, the agent
+reads `placement/instance/{id}` (on a read error it does nothing this cycle and retries next cycle). If it names another node and no `derived/instance/{id}/controller_stopped = true` exists,
 the agent removes its container, releases its local IP and local state as today, and skips the `stopped` write. In
 every other case (no placement, placement on this node, controller stop) it writes `stopped` as today.
 
@@ -75,7 +75,7 @@ IDs, so a loop fails the run even if the final state is healthy. The bound is a 
 |---|---|
 | No node has room for any movable instance | No move; the imbalance stays and is logged as today (warning once per cycle). |
 | Target gains pressure after the move | Eviction may evict there as for any instance; the next rebalance skips that target (D1). |
-| Source agent cannot read the placement (store error) | It does not write `stopped` (fail-safe against killing a moved instance), logs the error and retries next cycle; a really undesired instance is caught next cycle. |
+| Source agent cannot read the placement (store error) | It decides before it removes anything: on a read error it leaves the container and the store as they are, logs, and retries the whole cleanup next cycle (the container is still in its stale set). Corrected after implementation: the first version removed the container first and then skipped the `stopped` write, which left a really undesired instance `running` with no container and nothing to retry. |
 | Placement moves back to the source before its agent reconciles | The instance is in the source's desired set again; nothing is removed. |
 | Instance is moved, then scaled away before the target starts it | The controller stop marker exists, so whichever agent removes it writes `stopped` (D2). |
 | Target agent is down after the move | The instance is not started there; node-failure handling replaces it as for any instance on a dead node. |

@@ -67,11 +67,9 @@ func buildNodeHeap(candidates []candidateNode, loadPerNode map[string]int, servi
 	heapData := make(nodeSelectionHeap, 0, len(candidates))
 	lookupMap := make(map[string]*nodeHeapEntry, len(candidates))
 
+	requested := serviceResourceRequirements{cpu: requiredCPU, memory: requiredMemory}
 	for candidateIndex, candidate := range candidates {
-		if requiredCPU > 0 && candidate.availCPU < requiredCPU {
-			continue
-		}
-		if requiredMemory > 0 && candidate.availMemory < requiredMemory {
+		if !candidateFitsRequests(candidate, requested) {
 			continue
 		}
 		entry := &nodeHeapEntry{
@@ -86,6 +84,16 @@ func buildNodeHeap(candidates []candidateNode, loadPerNode map[string]int, servi
 
 	heap.Init(&heapData)
 	return heapData, lookupMap
+}
+
+// candidateFitsRequests reports whether the candidate's remaining CPU and
+// memory cover the requested amounts; a zero request always fits. Placement,
+// preemption and rebalancing all check fit with it so they cannot drift (M267 D1).
+func candidateFitsRequests(candidate candidateNode, requested serviceResourceRequirements) bool {
+	if requested.cpu > 0 && candidate.availCPU < requested.cpu {
+		return false
+	}
+	return requested.memory <= 0 || candidate.availMemory >= requested.memory
 }
 
 // selectFromHeap returns the node ID with the lowest load score, or empty

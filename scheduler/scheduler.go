@@ -86,6 +86,7 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanDerivedInstances,                        // controller_stopped: a surplus or replaced instance is stopped (M241 2i.2)
 		types.ScanEffectiveServices,                       // effective resources from the vertical autoscaler win over desired (M243 D4)
 		types.ScanDerivedSchedulerInvalidResourceRequests, // own invalid-request facts, deleted once fixed (M243 D5)
+		types.ScanDerivedNodes,                            // eviction's pressure marker: no rebalance move onto such a node (M267 D1)
 	}
 }
 
@@ -150,11 +151,13 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	changes = append(changes, cleanupStaleUnplacedFacts(
 		facts, waitingInstanceIDs, maxUnplacedFactChangesPerCycle-len(unplacedChanges))...)
 
-	rebalanceChanges := rebalancePlacedInstances(
-		nodes, instances, placements, serviceResources,
-		placementConstraints, serviceToGroup, placedInThisCycle,
-		extractRebalancePinnedServices(facts, statefulServices, invalidResourceRequests),
-	)
+	rebalanceChanges := rebalancePlacedInstances(nodes, rebalanceInputs{
+		placements: placements, instances: instances, serviceResources: serviceResources,
+		placementConstraints: placementConstraints, serviceToGroup: serviceToGroup,
+		placedInThisCycle:  placedInThisCycle,
+		pinnedServices:     extractRebalancePinnedServices(facts, statefulServices, invalidResourceRequests),
+		nodesUnderPressure: extractNodesUnderPressure(facts, nodes),
+	})
 	changes = append(changes, rebalanceChanges...)
 
 	detectAndLogNodePressure(nodes, placements, instances, serviceResources)
@@ -402,12 +405,12 @@ func isPreemptibleService(victimService string, inputs preemptionInputs) bool {
 
 // stopMakesRoom reports whether the node's remaining capacity plus the
 // victim's freed requests cover the requested CPU and memory, checked as
-// placement checks them (a zero request always fits, node_heap.go).
+// placement checks them (candidateFitsRequests).
 func stopMakesRoom(node *candidateNode, freed serviceResourceRequirements, requested serviceResourceRequirements) bool {
-	if requested.cpu > 0 && node.availCPU+freed.cpu < requested.cpu {
-		return false
-	}
-	return requested.memory <= 0 || node.availMemory+freed.memory >= requested.memory
+	nodeWithFreedRoom := *node
+	nodeWithFreedRoom.availCPU += freed.cpu
+	nodeWithFreedRoom.availMemory += freed.memory
+	return candidateFitsRequests(nodeWithFreedRoom, requested)
 }
 
 // mergeThisCyclePlacements returns the stored placements plus the placement
@@ -527,24 +530,45 @@ func extractSharedVolumeNames(facts []store.Fact) map[string]bool {
 	return sharedVolumeNames
 }
 
+// rebalanceInputs carries the facts one rebalance pass reads. The pass changes
+// only its own bookkeeping (node loads, remaining capacity), never these.
+type rebalanceInputs struct {
+	placements           map[string]string                      // placements maps instance ID to its node.
+	instances            map[string]*schedulerInstanceInfo      // instances holds each instance's service and state.
+	serviceResources     map[string]serviceResourceRequirements // serviceResources holds each service's CPU and memory requests.
+	placementConstraints map[string]*servicePlacementConstraint // placementConstraints holds each service's placement rules and rebalance opt-in.
+	serviceToGroup       map[string]string                      // serviceToGroup maps a service to its group; grouped services never move.
+	placedInThisCycle    map[string]bool                        // placedInThisCycle holds instances placed by this cycle; they never move in it.
+	pinnedServices       map[string]bool                        // pinnedServices holds stateful, volume-bound or unreadable-request services.
+	nodesUnderPressure   map[string]bool                        // nodesUnderPressure holds nodes with eviction's derived/node/{id}/pressure marker.
+}
+
+// extractNodesUnderPressure returns the known nodes that carry eviction's
+// derived/node/{id}/pressure marker; a rebalance move never targets them
+// (M267 D1). The marker keys are matched exactly, never parsed.
+func extractNodesUnderPressure(facts []store.Fact, nodes map[string]*schedulerNodeInfo) map[string]bool {
+	derivedNodeKeys := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedNodes) {
+		derivedNodeKeys[fact.Key] = true
+	}
+	nodesUnderPressure := make(map[string]bool)
+	for nodeID := range nodes {
+		if derivedNodeKeys[types.KeyDerivedNodePressure(nodeID)] {
+			nodesUnderPressure[nodeID] = true
+		}
+	}
+	return nodesUnderPressure
+}
+
 // rebalancePlacedInstances detects load imbalance across alive nodes and
-// migrates instances from overloaded to underloaded nodes.
-func rebalancePlacedInstances(
-	nodes map[string]*schedulerNodeInfo,
-	instances map[string]*schedulerInstanceInfo,
-	placements map[string]string,
-	serviceResources map[string]serviceResourceRequirements,
-	placementConstraints map[string]*servicePlacementConstraint,
-	serviceToGroup map[string]string,
-	placedInThisCycle map[string]bool,
-	pinnedServices map[string]bool,
-) []controllers.Change {
+// migrates instances from overloaded to underloaded nodes that fit them.
+func rebalancePlacedInstances(nodes map[string]*schedulerNodeInfo, inputs rebalanceInputs) []controllers.Change {
 	aliveNodeIDs := collectAliveNodeIDs(nodes)
 	if len(aliveNodeIDs) < 2 {
 		return nil
 	}
 
-	nodeLoad := computeRunningLoadPerNode(placements, instances, aliveNodeIDs)
+	nodeLoad := computeRunningLoadPerNode(inputs.placements, inputs.instances, aliveNodeIDs)
 	maxLoad, minLoad := computeMaxMinLoad(nodeLoad, aliveNodeIDs)
 	if maxLoad-minLoad <= rebalanceLoadImbalanceThreshold {
 		return nil
@@ -557,50 +581,45 @@ func rebalancePlacedInstances(
 		"max_load", strconv.Itoa(maxLoad), "min_load", strconv.Itoa(minLoad),
 		"ideal_load", strconv.Itoa(idealLoad), "alive_nodes", strconv.Itoa(len(aliveNodeIDs)))
 
-	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(placements, instances, serviceResources)
+	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(inputs.placements, inputs.instances, inputs.serviceResources)
 	aliveCandidates := buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
 	overloadedNodes := findOverloadedNodes(nodeLoad, aliveNodeIDs, idealLoad)
 
-	return executeRebalanceMoves(
-		overloadedNodes, nodeLoad, aliveCandidates,
-		placements, instances, serviceToGroup,
-		placementConstraints, placedInThisCycle, pinnedServices,
-	)
+	return executeRebalanceMoves(overloadedNodes, nodeLoad, aliveCandidates, inputs)
 }
 
 // executeRebalanceMoves migrates movable instances from overloaded to
-// underloaded nodes, capped at maxRebalanceMovesPerCycle.
+// underloaded nodes that fit them, capped at maxRebalanceMovesPerCycle. Each
+// move updates the loads and the source's and target's remaining capacity, so
+// later moves in the cycle see the room already taken (M267 D1).
 func executeRebalanceMoves(
 	overloadedNodes []string,
 	nodeLoad map[string]int,
 	aliveCandidates []candidateNode,
-	placements map[string]string,
-	instances map[string]*schedulerInstanceInfo,
-	serviceToGroup map[string]string,
-	placementConstraints map[string]*servicePlacementConstraint,
-	placedInThisCycle map[string]bool,
-	pinnedServices map[string]bool,
+	inputs rebalanceInputs,
 ) []controllers.Change {
 	var changes []controllers.Change
 	moveCount := 0
-	serviceInstancesPerNode := countServiceInstancesPerNode(placements, instances)
+	serviceInstancesPerNode := countServiceInstancesPerNode(inputs.placements, inputs.instances)
+	candidateIndexByNode := buildNodeIndexMap(aliveCandidates)
 
 	for _, sourceNodeID := range overloadedNodes {
 		if moveCount >= maxRebalanceMovesPerCycle {
 			break
 		}
-		movable := findMovableInstances(sourceNodeID, placements, instances, serviceToGroup, placedInThisCycle, placementConstraints, pinnedServices)
+		movable := findMovableInstances(sourceNodeID, inputs.placements, inputs.instances, inputs.serviceToGroup,
+			inputs.placedInThisCycle, inputs.placementConstraints, inputs.pinnedServices)
 		for _, instanceID := range movable {
 			if moveCount >= maxRebalanceMovesPerCycle {
 				break
 			}
-			instanceInfo := instances[instanceID]
+			instanceInfo := inputs.instances[instanceID]
 			if instanceInfo == nil {
 				continue
 			}
 			targetNodeID := selectRebalanceTarget(
 				instanceInfo.service, sourceNodeID,
-				aliveCandidates, nodeLoad, serviceInstancesPerNode[instanceInfo.service], placementConstraints,
+				aliveCandidates, nodeLoad, serviceInstancesPerNode[instanceInfo.service], inputs,
 			)
 			if targetNodeID == "" || nodeLoad[targetNodeID] >= nodeLoad[sourceNodeID]-1 {
 				continue
@@ -613,10 +632,31 @@ func executeRebalanceMoves(
 			nodeLoad[targetNodeID]++
 			serviceInstancesPerNode[instanceInfo.service][sourceNodeID]--
 			serviceInstancesPerNode[instanceInfo.service][targetNodeID]++
+			transferRemainingCapacity(aliveCandidates, candidateIndexByNode, sourceNodeID, targetNodeID,
+				inputs.serviceResources[instanceInfo.service])
 			moveCount++
 		}
 	}
 	return changes
+}
+
+// transferRemainingCapacity moves an instance's requests from the target's
+// remaining capacity to the source's after a rebalance move, so the next
+// target selection in the same cycle sees the room the move took (M267 D1).
+func transferRemainingCapacity(
+	aliveCandidates []candidateNode,
+	candidateIndexByNode map[string]int,
+	sourceNodeID, targetNodeID string,
+	requested serviceResourceRequirements,
+) {
+	if targetIndex, isCandidate := candidateIndexByNode[targetNodeID]; isCandidate {
+		aliveCandidates[targetIndex].availCPU -= requested.cpu
+		aliveCandidates[targetIndex].availMemory -= requested.memory
+	}
+	if sourceIndex, isCandidate := candidateIndexByNode[sourceNodeID]; isCandidate {
+		aliveCandidates[sourceIndex].availCPU += requested.cpu
+		aliveCandidates[sourceIndex].availMemory += requested.memory
+	}
 }
 
 // collectAliveNodeIDs returns a sorted list of node IDs in the alive state.
@@ -739,25 +779,29 @@ func findMovableInstances(
 }
 
 // selectRebalanceTarget finds the least-loaded constraint-compatible node
-// that is not the source and hosts fewer instances of the service than the
-// source, so a move never worsens the service's spread. Returns empty string
-// if no target exists.
+// that is not the source, hosts fewer instances of the service than the
+// source (a move never worsens the service's spread), has room for the
+// service's requests and no pressure marker (M267 D1). Returns "" if none.
 func selectRebalanceTarget(
 	serviceName string,
 	sourceNodeID string,
 	aliveCandidates []candidateNode,
 	nodeLoad map[string]int,
 	serviceInstancesOnNode map[string]int,
-	placementConstraints map[string]*servicePlacementConstraint,
+	inputs rebalanceInputs,
 ) string {
-	candidates := filterByConstraints(aliveCandidates, serviceName, placementConstraints)
+	candidates := filterByConstraints(aliveCandidates, serviceName, inputs.placementConstraints)
+	requested := inputs.serviceResources[serviceName]
 	bestNode := ""
 	bestLoad := math.MaxInt
 	for _, candidate := range candidates {
-		if candidate.id == sourceNodeID {
+		if candidate.id == sourceNodeID || inputs.nodesUnderPressure[candidate.id] {
 			continue
 		}
 		if serviceInstancesOnNode[candidate.id] >= serviceInstancesOnNode[sourceNodeID] {
+			continue
+		}
+		if !candidateFitsRequests(candidate, requested) {
 			continue
 		}
 		load := nodeLoad[candidate.id]

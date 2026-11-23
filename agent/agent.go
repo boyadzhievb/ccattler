@@ -1090,7 +1090,12 @@ func (nodeAgent *Agent) republishHostPortIfNeeded(ctx context.Context, instanceI
 // cleanupStoppedStaleInstance removes a container that has already exited and
 // whose instance ID is no longer in the desired set. Unlike cleanupUndesiredInstance,
 // it skips lifecycle hooks and graceful stop since the process is already dead.
+// Whether the instance moved is read first; on a read error nothing is touched.
 func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanceID string) {
+	movedElsewhere, canProceed := nodeAgent.checkStaleInstanceMove(ctx, instanceID)
+	if !canProceed {
+		return
+	}
 	logging.Default().Info("cleaning up stopped stale container", "agent", nodeAgent.nodeID, "instance", instanceID)
 	delete(nodeAgent.appliedInstanceResources, instanceID)
 	delete(nodeAgent.imagePullBackoffs, instanceID)
@@ -1105,9 +1110,7 @@ func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanc
 		logging.Default().Error("failed to remove stopped container", "instance", instanceID, "error", stopError.Error())
 	}
 	nodeAgent.removeInstanceDataIfSupported(ctx, instanceID)
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
-		logging.Default().Error("failed to publish stopped state for stale instance", "instance", instanceID, "error", putError.Error())
-	}
+	nodeAgent.publishRemovedInstanceState(ctx, instanceID, movedElsewhere)
 	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 	if nodeAgent.networkProvider != nil {
 		if releaseError := nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID); releaseError != nil {
@@ -1117,6 +1120,59 @@ func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanc
 			logging.Default().Error("failed to delete network allocation for stale instance", "instance", instanceID, "error", deleteError.Error())
 		}
 	}
+}
+
+// checkStaleInstanceMove reads, before a stale container's cleanup removes
+// anything, whether its instance moved to another node (M267 D2). canProceed
+// is false on a read error (logged): container and store stay as they are, and
+// the next cycle retries the whole cleanup, the container still being stale.
+func (nodeAgent *Agent) checkStaleInstanceMove(ctx context.Context, instanceID string) (movedElsewhere bool, canProceed bool) {
+	movedElsewhere, readError := nodeAgent.isInstanceMovedToAnotherNode(ctx, instanceID)
+	if readError != nil {
+		logging.Default().Warn("cannot read where the stale instance is placed, leaving its container until the next cycle",
+			"agent", nodeAgent.nodeID, "instance", instanceID, "error", readError.Error())
+		return false, false
+	}
+	return movedElsewhere, true
+}
+
+// publishRemovedInstanceState writes observed state stopped for an instance
+// whose container this agent removed, unless the instance moved to another
+// node (M267 D2): stopped is final, so it would keep the target agent from
+// publishing running and the instance controller would replace the instance.
+func (nodeAgent *Agent) publishRemovedInstanceState(ctx context.Context, instanceID string, movedElsewhere bool) {
+	if movedElsewhere {
+		logging.Default().Info("removed instance moved to another node, not publishing stopped",
+			"agent", nodeAgent.nodeID, "instance", instanceID)
+		return
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
+		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", putError.Error())
+	}
+}
+
+// isInstanceMovedToAnotherNode reports whether placement/instance/{id} names
+// another node and no controller stopped the instance (a rebalance move). No
+// placement, a placement on this node or a controller stop are not a move.
+func (nodeAgent *Agent) isInstanceMovedToAnotherNode(ctx context.Context, instanceID string) (bool, error) {
+	placementFact, placementError := nodeAgent.store.Get(ctx, types.KeyPlacementInstance(instanceID))
+	if errors.Is(placementError, store.ErrKeyNotFound) {
+		return false, nil
+	}
+	if placementError != nil {
+		return false, placementError
+	}
+	if string(placementFact.Value) == nodeAgent.nodeID {
+		return false, nil
+	}
+	stopMarkerFact, stopMarkerError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceControllerStopped(instanceID))
+	if errors.Is(stopMarkerError, store.ErrKeyNotFound) {
+		return true, nil
+	}
+	if stopMarkerError != nil {
+		return false, stopMarkerError
+	}
+	return string(stopMarkerFact.Value) != "true", nil
 }
 
 // removeInstanceDataIfSupported deletes what the runtime keeps for an instance
@@ -1165,8 +1221,13 @@ func (nodeAgent *Agent) sweepInstanceData(ctx context.Context, desiredByID map[s
 // cleanupUndesiredInstance tears down an instance that is no longer placed on
 // this node. Cleans up secrets, detaches volumes, stops the runtime process,
 // removes probe state, releases the network IP, deletes the network
-// allocation fact, and removes the applied resource tracking entry.
+// allocation fact, and removes the applied resource tracking entry. Whether the
+// instance moved is read first; on a read error nothing is touched (M267 D2).
 func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID string) {
+	movedElsewhere, canProceed := nodeAgent.checkStaleInstanceMove(ctx, instanceID)
+	if !canProceed {
+		return
+	}
 	delete(nodeAgent.appliedInstanceResources, instanceID)
 	delete(nodeAgent.imagePullBackoffs, instanceID)
 	nodeAgent.clearPullStatusFromStore(ctx, instanceID)
@@ -1184,9 +1245,7 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 		logging.Default().Error("failed to stop instance", "instance", instanceID, "error", stopError.Error())
 	}
 	nodeAgent.removeInstanceDataIfSupported(ctx, instanceID)
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
-		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", putError.Error())
-	}
+	nodeAgent.publishRemovedInstanceState(ctx, instanceID, movedElsewhere)
 	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 	if nodeAgent.networkProvider != nil {
 		if releaseError := nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID); releaseError != nil {

@@ -13,17 +13,17 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// failingRecordedImageStore fails every Get of an instance's recorded image
-// while failGets is set, as a store blip would.
-type failingRecordedImageStore struct {
+// failingKeyStore fails every Get of one key while failGets is set, as a
+// store blip would (a recorded image, an instance's placement).
+type failingKeyStore struct {
 	store.StateStore              // StateStore serves every other call.
-	failedKey        string       // failedKey is the recorded-image key whose reads fail.
+	failedKey        string       // failedKey is the key whose reads fail.
 	failGets         atomic.Bool  // failGets makes reads of failedKey fail.
 	failedGetCount   atomic.Int64 // failedGetCount counts the reads that failed.
 }
 
 // Get fails reads of failedKey while failGets is set.
-func (failingStore *failingRecordedImageStore) Get(ctx context.Context, key string) (*store.Fact, error) {
+func (failingStore *failingKeyStore) Get(ctx context.Context, key string) (*store.Fact, error) {
 	if failingStore.failGets.Load() && key == failingStore.failedKey {
 		failingStore.failedGetCount.Add(1)
 		return nil, errors.New("store unavailable")
@@ -36,7 +36,7 @@ func (failingStore *failingRecordedImageStore) Get(ctx context.Context, key stri
 // start this cycle, and the next cycle starts the recorded image.
 func TestAgentSkipsStartWhenRecordedImageUnreadable(t *testing.T) {
 	memoryStore := newStoreWithRecordedImage(t, "skip1", pinnedTestImage)
-	failingStore := &failingRecordedImageStore{StateStore: memoryStore, failedKey: types.KeyDerivedInstanceImage("skip1")}
+	failingStore := &failingKeyStore{StateStore: memoryStore, failedKey: types.KeyDerivedInstanceImage("skip1")}
 	failingStore.failGets.Store(true)
 	ctx := startImageTestAgent(t, failingStore, "skip1")
 
