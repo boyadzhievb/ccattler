@@ -850,7 +850,8 @@ WHOAMI_EXPECTED_INSTANCE_IDS=0
 # the M267 rebalance loop created about ten per minute (run 45211387656).
 WHOAMI_CHURN_MARGIN=2
 if [[ " ${WORKLOAD_NAMES[*]} " == *" whoami "* ]]; then
-    WHOAMI_EXPECTED_INSTANCE_IDS=$(fetch_cluster_status | jq '[.services[] | select(.name == "whoami") | .desired][0] // 0')
+    WHOAMI_EXPECTED_INSTANCE_IDS=$(fetch_cluster_status | jq '[.services[] | select(.name == "whoami") | .desired][0] // 0' \
+        || echo "")
     [[ "$WHOAMI_EXPECTED_INSTANCE_IDS" =~ ^[0-9]+$ && "$WHOAMI_EXPECTED_INSTANCE_IDS" -gt 0 ]] \
         || fail "whoami-churn: cannot read whoami's desired instance count from /api/status (got '$WHOAMI_EXPECTED_INSTANCE_IDS')"
     log "whoami-churn: $WHOAMI_EXPECTED_INSTANCE_IDS whoami instance IDs expected after deploy"
@@ -1490,8 +1491,12 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]] &
     else
 
     # Each whoami instance on worker-1 may be replaced once while its agent is down.
+    # The bound needs this count: a failed read fails the run by name, not silently under set -e.
     WORKER1_WHOAMI_INSTANCES=$(fetch_cluster_status \
-        | jq --arg w "$WORKER1_NODE" '[.instances[] | select(.service == "whoami" and .node == $w and .state != "stopped")] | length')
+        | jq --arg w "$WORKER1_NODE" '[.instances[] | select(.service == "whoami" and .node == $w and .state != "stopped")] | length' \
+        || echo "")
+    [[ "$WORKER1_WHOAMI_INSTANCES" =~ ^[0-9]+$ ]] \
+        || fail "whoami-churn: cannot read the whoami instances on $WORKER1_NODE from /api/status (got '$WORKER1_WHOAMI_INSTANCES')"
     WHOAMI_EXPECTED_INSTANCE_IDS=$((WHOAMI_EXPECTED_INSTANCE_IDS + WORKER1_WHOAMI_INSTANCES))
     ssh_vm "$WORKER1_NODE" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
     FAILOVER_START=$SECONDS

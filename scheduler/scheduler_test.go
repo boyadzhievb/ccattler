@@ -991,9 +991,9 @@ func TestControllerInterface(t *testing.T) {
 	}
 	// derived/instance/ for controller_stopped (M241 2i.2); effective/service/ and
 	// the invalid-request facts (M243 D4, D5); derived/node/ for the pressure
-	// marker (M267 D1).
-	if len(placementScheduler.Watch()) != 11 {
-		t.Fatalf("expected 11 watch prefixes, got %d", len(placementScheduler.Watch()))
+	// marker (M267 D1); derived/scheduler/rebalanced/ for the move cooldown (M267 D4).
+	if len(placementScheduler.Watch()) != 12 {
+		t.Fatalf("expected 12 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }
 

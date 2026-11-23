@@ -215,7 +215,7 @@ Each controller watches only the prefixes it cares about:
 | Controller | Watches |
 |------------|---------|
 | Instance controller | `desired/service/`, `effective/service/`, `observed/instance/`, `derived/instance/`, `placement/` |
-| Scheduler | `placement/`, `observed/node/`, `observed/instance/`, `desired/service/`, `effective/service/` (resources, M243), `derived/scheduler/invalid_resource_request/` |
+| Scheduler | `placement/`, `observed/node/`, `observed/instance/`, `desired/service/`, `effective/service/` (resources, M243), `derived/scheduler/invalid_resource_request/`, `derived/node/` (pressure, M267), `derived/scheduler/rebalanced/` (own move times, the 10 min move cooldown, M267 D4) |
 | Network controller | `observed/instance/`, `placement/`, `desired/service/` |
 | Storage controller | `desired/volume/`, `observed/volume/`, `placement/` |
 | Autoscaler | `observed/telemetry/`, `desired/service/`, `effective/service/` |

@@ -69,6 +69,33 @@ at the end compares the number of distinct IDs with the IDs the test's own steps
 2→1→2 scale step, the node-failure replacement, plus a small named margin). Above that, it fails with the list of
 IDs, so a loop fails the run even if the final state is healthy. The bound is a named constant with a comment.
 
+### D4. A move keeps its ID and accepts a short, safe backend gap (user decision on N1, 2026-11-23)
+
+A move is stop-old-then-start-new for one instance ID: the source removes its container when its desired set no
+longer holds the instance, the target starts it when it sees the placement. Between the two the service has one
+backend fewer: a multi-instance service serves from its other instances, a single-instance service has a short
+outage. Option A (chosen): keep this and make the gap safe and visible; zero-gap moves (a new instance on the
+target, started and ready before the old one stops, as a rollout does) are a later milestone. Safeguards:
+
+- **Source never leaves it looking running.** After removing a moved instance's container, the source agent writes
+  `observed/instance/{id}/state = pending` and deletes `observed/instance/{id}/probe/readiness`, in one transaction
+  that compares the revisions of `observed/instance/{id}/node` (read as naming the source) and of the state. The
+  agent's state publish writes `node` in the same transaction as `state`, so once the target published, `node`
+  changed and the source's transaction fails; the target's publish always wins. `pending` is not final (only
+  `stopped` is), so the target can still publish. The endpoint controller builds endpoints only for `running`
+  instances, so the source's backend leaves the VIP.
+- **A failed target startup never looks healthy.** The target publishes `image_pull_backoff` (pull failure) or
+  `failed` (start failure, replaced by the failure controller) with `node` = target. A dead target agent publishes
+  nothing: the instance stays `pending` with its placement on the dead node, which node-failure handling marks
+  (`markInstancesOnUnreachableNodesAsFailed` reads placements and counts `pending` as active).
+- **No flapping.** A moved instance is not moved again within `rebalanceMoveCooldown` (10 min). The scheduler
+  records the move time in `derived/scheduler/rebalanced/{id}` (RFC3339, in the move's change group), reads it
+  back from the facts (the clock is injectable, so a reconcile is deterministic given facts and time), and deletes
+  it once the instance is gone, within a per-cycle budget as M262 does for unplaced facts. A move still needs a
+  strict count improvement (`nodeLoad[target] < nodeLoad[source]-1`).
+- **Removal is never evidence of the new placement running.** Only the target's own publish (`running` with
+  `node` = target, then readiness) brings the instance back into endpoints.
+
 ## Failure cases
 
 | Case | What happens |

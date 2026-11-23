@@ -82,21 +82,82 @@ Milestone M267. Design: [design.md](design.md). Spec delta: [specs/instance-reba
 
 ## 3b. Rework from review round 1
 
-- [ ] 3b.1 B1: rebalance computes room from `mergeThisCyclePlacements(placements, changes)` (this cycle's placements
+- [x] 3b.1 B1: rebalance computes room from `mergeThisCyclePlacements(placements, changes)` (this cycle's placements
   and preemptions count). Red first: spec scenario and test "a placement and a move in one cycle share the target's
   room" (`TestRebalanceCountsRoomTakenByThisCyclePlacements`).
-- [ ] 3b.2 B2: when the instance moved elsewhere, the source skips `clearPullStatusFromStore` and
+  Result: `buildRebalanceCandidateNodes` uses the preemption reservations when a preemption ran (victims freed,
+  requesters taken: the room the next cycle sees), else usage from `mergeThisCyclePlacements`; this cycle's victims
+  are not movable (`isPreempted`). Red: `placement` `moved [web-00] to node-2, whose room this cycle's placement
+  already took`; `preemption` `moved [web-00 web-01] to node-2, whose room this cycle's preemption already took`;
+  `TestRebalanceDoesNotMovePreemptedVictim` `moved [web-00] to node-2, want one instance other than the preempted
+  web-00`. All pass after.
+- [x] 3b.2 B2: when the instance moved elsewhere, the source skips `clearPullStatusFromStore` and
   `DeleteNetworkAllocation` (keyed by ID), keeps the node-local `ReleaseIP`; extend `TestAgentDoesNotMarkMovedInstanceStopped`.
-- [ ] 3b.3 B3: fallback for the `WORKER1_WHOAMI_INSTANCES` read (`|| echo 0` and a named `fail` if it must be known);
+  Result: both facts are cleared exactly when stopped is written. Red: `moved running`/`moved exited` `first cycle:
+  observed/instance/web-1/pull-status cleared = true, want false` and the same for `network/allocation/web-1`; all 8
+  sub-cases pass after (`releaseStaleInstanceNetwork`).
+- [x] 3b.3 B3: fallback for the `WORKER1_WHOAMI_INSTANCES` read (`|| echo 0` and a named `fail` if it must be known);
   `bash -n`, shellcheck.
-- [ ] 3b.4 D1: regenerate every `scheduler.go` line number in SCHEDULING_GRAPH (call sites §1–§3, store tables), checked
+  Result: `|| echo ""` plus a named `fail "whoami-churn: cannot read the whoami instances on …"` (the bound needs the
+  count); the Step 5.5 `desired` read had the same gap (its named fail was unreachable under `set -e`) and got the same
+  fallback. `bash -n` passes; shellcheck: 78 findings before and after, none on the changed lines.
+- [x] 3b.4 D1: regenerate every `scheduler.go` line number in SCHEDULING_GRAPH (call sites §1–§3, store tables), checked
   with `grep -n`.
-- [ ] 3b.5 S1–S3: one teardown helper for both cleanup paths (move check first, then teardown); fold
+  Result: §1–§6 call sites and definitions, store tables, reverse index, constants and file size regenerated after all
+  3b changes; a script checked every `name(…) :call/:def` pair against `scheduler.go` (0 mismatches). Agent numbers
+  the 3b changes shifted are updated in INSTANCE_LIFECYCLE_GRAPH and OBSERVABILITY_GRAPH.
+- [x] 3b.5 S1–S3: one teardown helper for both cleanup paths (move check first, then teardown); fold
   `checkStaleInstanceMove`; one `isControllerStopped` helper used by both readers.
-- [ ] 3b.6 N1 (after the user's decision): see milestones.md Phase 267.
-- [ ] 3b.7 Checks as in 3.1.
-- [ ] 3.4 Closing full Deploy Testbed run (job summary says `full run`), including the new churn check. Record the
-  run ID and the whoami instance count.
+  Result: `teardownStaleInstance(ctx, id, removeContainer func())` (each cleanup passes its stop step) replaces both
+  bodies and `checkStaleInstanceMove`; `isControllerStopped` reads value `"true"` (as the scheduler and the API do;
+  every writer writes `"true"`, so `isInstanceMarkedForSkip`'s presence check behaves the same; a read error is still
+  "not marked" there and an error for the move check). Graphs and Flow 35 updated.
+- N1 decided by the user (2026-11-23): option A, in-place moves under the same ID with a short, documented backend
+  gap (design D4); zero-gap moves are a later milestone (milestones.md). Safeguards, red tests first:
+- [x] 3b.6a Source does not leave the moved instance looking running: after removing a moved instance's container
+  the source agent writes `observed/instance/{id}/state = pending` and clears its readiness, in one transaction
+  conditioned on `observed/instance/{id}/node` still naming the source (and the state revision), so it never
+  overwrites the target's publish; the agent's state publish writes `node` in the same transaction as `state`.
+  Tests: the endpoint drops the source backend after removal; the target's later publish wins; the source never
+  overwrites a target publish.
+  Result: `markMovedInstancePending` (TXN on node + state revisions); `publishInstanceStateUnlessStopped` writes
+  `node` in its state transaction. `TestSourceAgentMarksMovedInstancePending` red: `after the source removal: web-1
+  state="running" node="node-1" readiness="ready", want state="pending" …`, `endpoints for [web-1], want []`, and the
+  race case `the source never compared the node key`; all 3 sub-cases pass after (the race case makes the target's
+  state transaction run between the source's reads and its write).
+- [x] 3b.6b A failed target startup does not look healthy: tests that a target pull failure ends in
+  `image_pull_backoff` and a start failure in `failed`, both published by the target, and that a dead target agent
+  leaves the instance `pending` with its placement on the dead node, which node-failure handling marks.
+  Result (verification, existing behaviour, passed first run): `TestTargetStartupFailureAfterMoveIsNotRunning`
+  (agent, both sub-cases: node-2 publishes `image_pull_backoff` / `failed` with `node` = node-2),
+  `TestNodeFailureMarksMovedInstanceOnDeadTarget` (controllers: placement on the dead node-2, state pending, observed
+  node node-1 → `node_failure` marker).
+- [x] 3b.6c Anti-flap: a moved instance is not moved again within `rebalanceMoveCooldown` (10 min), tracked in the
+  scheduler-owned fact `derived/scheduler/rebalanced/{id}` (RFC3339 move time, written in the move's group, deleted
+  once the instance is gone, M262-style budget); moves still need a strict count improvement. Test: not moved twice
+  within the cooldown, movable after.
+  Result: `rebalanceMoveCooldown` = 10 min, `extractRebalanceMoveTimes`, `findInstancesInRebalanceCooldown`,
+  `cleanupGoneInstanceRebalanceFacts` (≤ `maxRebalanceCooldownDeletesPerCycle` = 10), injectable clock
+  (`Scheduler.currentTime`), Watch and the scheduler's write domain (`controllers/topological_sort.go`) gain
+  `derived/scheduler/rebalanced/`. Red: `within cooldown` `moved [web-00 web-01]: web-00 moved = true, want false`;
+  both sub-cases `move of web-0x does not record derived/scheduler/rebalanced/…`; `TestRebalanceCooldownFactDeleted
+  WithInstance` `scheduler does not watch …` and `the cooldown fact of gone-1 … was not deleted`. All pass after.
+- [x] 3b.6d Tests for a multi-instance service (at least one ready backend during a move) and a single-instance
+  service (the gap shows as not ready, not running, and recovers when the target runs).
+  Result: `TestMoveGapMultiInstanceKeepsReadyBackend` red `during the gap: endpoints for [web-1 web-2], want [web-2]`
+  (and the same before the target's probe passed); `TestMoveGapSingleInstanceShowsNotReady` red `during the gap:
+  web-1 state="running" …`, `endpoints for [web-1], want []`. Both pass after (endpoints from the real
+  `EndpointController` over the store).
+- [x] 3b.6e Docs: Flow 35 and the spec state the gap (multi-instance: one backend briefly; single-instance: short
+  outage) and that removal is never evidence that the new placement runs.
+  Result: Flow 35 (chain, diagram, gap, evidence, cooldown), §10 rebalance bullet, design D4, spec requirement text and
+  four scenarios, etcd-schema watch table.
+- [x] 3b.7 Checks as in 3.1.
+  Result: `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
+  `go test -count=1 -race ./scheduler/ ./agent/ ./controllers/` ok (1.5 s, 29.7 s, 6.7 s); `openspec validate` valid
+  (one warning: the requirement "A moved instance keeps running under its ID" is over 500 characters).
+- [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
+  whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
   `instance-rebalancing`), release with `scripts/release.sh`.
 - [ ] 3.6 Note: the ctrl agent logged `etcd watch event dropped (channel buffer full)` during the loop. After the fix,

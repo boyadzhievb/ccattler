@@ -503,6 +503,10 @@ const (
 	// ScanDerivedSchedulerInvalidResourceRequests scans the services whose
 	// stored resource request the scheduler cannot parse (M243 D5).
 	ScanDerivedSchedulerInvalidResourceRequests = PrefixDerived + "/scheduler/invalid_resource_request/"
+
+	// ScanDerivedSchedulerRebalanced scans the scheduler's last rebalance move
+	// time per instance, the anti-flap cooldown (M267 D4).
+	ScanDerivedSchedulerRebalanced = PrefixDerived + "/scheduler/rebalanced/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -2181,6 +2185,13 @@ func KeyDerivedSchedulerUnplacedReason(instanceID string) string {
 // Path: derived/scheduler/unplaced/{instanceID}/requirements
 func KeyDerivedSchedulerUnplacedRequirements(instanceID string) string {
 	return fmt.Sprintf("%s/scheduler/unplaced/%s/requirements", PrefixDerived, instanceID)
+}
+
+// KeyDerivedSchedulerRebalanced returns the store path of the RFC3339 time
+// the scheduler last moved an instance during rebalancing (M267 D4).
+// Path: derived/scheduler/rebalanced/{instanceID}
+func KeyDerivedSchedulerRebalanced(instanceID string) string {
+	return ScanDerivedSchedulerRebalanced + instanceID
 }
 
 // KeyDerivedSchedulerInvalidResourceRequest returns the store path the

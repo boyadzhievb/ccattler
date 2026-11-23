@@ -186,7 +186,7 @@ A single IP (`--advertise-address`) propagates to:
 - **One parser** (M243): every reader uses `types.ParseCPUMillicores` (millicores; bare = cores) and `types.ParseMemoryBytes` (bytes; bare = bytes). Behaviour: `openspec/specs/resource-requests`.
 - **Effective first, then desired**: the agent, the scheduler (`extractServiceResourcesFromFacts`, which watches `effective/service/`), eviction and the vertical autoscaler's current value, through one rule: `types.CollectEffectiveFirstResourceValues` (the agent applies it per key). Per-kind behaviour comes from one table keyed by `types.ResourceKind` (`types.ResourceKindSpecs`). An unreadable effective value does not fall back to desired.
 - **Scheduler**: requests in millicores and MiB rounded up against the node's remaining capacity; no fit → unplaced `insufficient_capacity` (cluster scaling, rollout reason, deadline rollback). The unplaced reason and requirements live only while the instance waits (pending, not controller-stopped, no placement): the scheduler deletes them for every other stored ID (placed, stopped, any other state, removed); its unplaced puts and deletes together are capped at 40 changes per cycle (puts first, lowest IDs first, the rest in later cycles) so placements keep room in the runner's 60-change budget, and cluster scaling counts only instances that still wait (M262). An unreadable stored value → `invalid_resource_request`, no placement, preemption or rebalance, running instances count 0, `derived/scheduler/invalid_resource_request/{svc}` shown by `cca status`.
-- **Rebalance** (M267): a move goes only to a node whose remaining capacity, after the cycle's earlier moves, covers the instance's requests (the same check as placement) and that has no pressure marker; see Flow 35.
+- **Rebalance** (M267): a move goes only to a node whose remaining capacity, after the cycle's placements, preemption reservations and earlier moves, covers the instance's requests (the same check as placement) and that has no pressure marker; a moved instance stays for `rebalanceMoveCooldown` (10 min); see Flow 35.
 - **Preemption** (D12): one lower-priority victim per requester, and only one whose stop makes room: its node's remaining CPU and memory plus its requests cover the requester's, on a node the requester's constraints allow. No such victim → nothing is stopped and the requester stays `insufficient_capacity`.
 - **Other readers on a parse error** (logged once): agent → no limit for that resource; eviction → the instance stays a candidate in normal order, credited 0 MiB freed (never immune); autoscaler → no recommendation (logged only for a service with a vertical policy for that resource); tenant usage → left out.
 - **Units written**: the autoscaler writes `750m` / `768Mi`, and deletes a resource's recommendation when the service has no `scale/vertical/{cpu|memory}/` fact (per resource). Memory is computed in whole MiB (min bound rounded up, max rounded down, current value rounded up), so an unchanged recommendation is not written again and a max that is not whole MiB is never exceeded (D7). The intent resolver deletes `effective/service/{name}/resources/{cpu|memory}` when that resource has no recommendation, so the desired request applies again. An unreadable vertical bound means no recommendation for that resource.
@@ -1897,29 +1897,44 @@ RolloutController pass, per service (sorted), instances sorted by ID     [D3–D
 ## Flow 35: Rebalance Move (M267)
 
 **Chain:** scheduler `rebalancePlacedInstances` → `placement/instance/{id}` = target → source agent
-`cleanupUndesiredInstance` / `cleanupStoppedStaleInstance` (no `stopped` write) → target agent
-`reconcileDesiredInstance` → `observed/instance/{id}/state` = running
+`cleanupUndesiredInstance` / `cleanupStoppedStaleInstance` → `teardownStaleInstance` (pending, not `stopped`) →
+target agent `reconcileDesiredInstance` → `observed/instance/{id}/state` = running, `node` = target → readiness
 
 ```
 scheduler (instance-count spread > rebalanceLoadImbalanceThreshold, opted-in services only):
+  remaining capacity = after this cycle's placements and preemptions (victims freed, requesters
+                       taken: the preemption reservations), never the stored placements alone
+  movable = running, not placed or preempted in this cycle, not moved within
+            rebalanceMoveCooldown (10 min, derived/scheduler/rebalanced/{id})
   target = least-loaded node, not the source, fewer instances of the service than the source,
            room for the service's CPU and memory requests (candidateFitsRequests, the placement
-           check) and no derived/node/{id}/pressure marker
-  → PUT placement/instance/{id} = target, move placement/node/{source}/{id} → {target}/{id}
-    (same instance ID); the target's remaining capacity −= requests, the source's += requests
+           check), no derived/node/{id}/pressure marker, and a strict count improvement
+  → one group: PUT placement/instance/{id} = target, move placement/node/{source}/{id} →
+    {target}/{id}, PUT derived/scheduler/rebalanced/{id} = now (RFC3339); same instance ID;
+    the target's remaining capacity −= requests, the source's += requests
   no target → the instance stays where it is
+  derived/scheduler/rebalanced/{id} of an instance that is gone → DELETE (≤ 10 per cycle)
 source agent (container no longer in its desired set), first, before removing anything:
   read placement/instance/{id} (and controller_stopped when it names another node)
   read error → leave container, local state and store as they are (logged); the container is
                still stale next cycle, so the whole cleanup is retried
   then remove container, local IP, secret token, volumes, instance data, and:
-  placement names another node and no controller_stopped = true → no stopped write
-  otherwise (no placement, this node, controller stop) → observed/instance/{id}/state = stopped
-target agent: starts the instance and publishes its state as for any placed instance
+  moved (placement names another node, no controller_stopped = true):
+    keep pull-status and network/allocation/{id} (keyed by ID only: maybe the target's already)
+    if observed/instance/{id}/node still names this node: one transaction comparing the
+      revisions of node and state → state = pending, DELETE probe/readiness; else nothing
+  otherwise (no placement, this node, controller stop) → observed/instance/{id}/state = stopped,
+    DELETE pull-status and network/allocation/{id}
+target agent: starts the instance and publishes state and node in one transaction (so the
+  source's transaction fails once the target published); readiness only once its probe passes
+  pull failure → image_pull_backoff, start failure → failed (failure controller replaces it),
+  target agent dead → stays pending, placement on the dead node → node-failure marks it
 ```
 
 - **What must hold:** a move keeps its instance ID and ends running on the target; the source agent never declares a moved instance `stopped`, because `stopped` is final for agents (Flow 34, M241 2i.1) and the instance controller would replace it.
-- **What must NOT happen:** a move onto a node without room for the instance's requests or under memory pressure (M262 run 45211387656: whoami moved ctrl → worker-2 at 99–101 % memory allocation, the source wrote `stopped`, a replacement went back to ctrl, about ten times a minute). Two moves in one cycle never share the same room.
-- The old and new containers can overlap for a moment (the source removes its container when it sees the new placement, the target starts it when it does); there is no stop-first ordering.
+- **What must NOT happen:** a move onto a node without room for the instance's requests or under memory pressure (M262 run 45211387656: whoami moved ctrl → worker-2 at 99–101 % memory allocation, the source wrote `stopped`, a replacement went back to ctrl, about ten times a minute). Two moves in one cycle never share the same room, nor a move and a placement or preemption of the same cycle (review B1). The source never deletes facts keyed by instance ID only after a move (review B2).
+- **The gap (user decision on N1, 2026-11-23, design D4):** a move is stop-old-then-start-new for one instance ID, ordered by nothing: the source removes its container when it sees the new placement, the target starts it when it does. Until the target publishes `running` and its readiness passes, the instance is no backend: a multi-instance service serves from its other instances (one backend fewer, briefly); a single-instance service has a short outage. The two containers may also overlap for a moment. Zero-gap moves (start new, then stop old) are a later milestone.
+- **Removal is never evidence that the new placement runs.** During the gap the instance is `pending` without readiness, not `running`; only the target's own publish brings it back. The source never overwrites a target publish (the transaction on `node`'s revision), and `pending` is not final, so the target always can publish.
+- **No flapping:** a moved instance is not moved again within `rebalanceMoveCooldown` (10 min).
 - The source decides before it removes anything: a placement read error leaves the container in place, so the next cycle retries the whole cleanup instead of guessing. Removing first and then skipping the write would leave a really undesired instance `running` with no container and nothing to retry it.
 - Behaviour: `openspec/specs/instance-rebalancing`. Functions and keys: SCHEDULING_GRAPH.md §4, INSTANCE_LIFECYCLE_GRAPH.md § agent cleanup.

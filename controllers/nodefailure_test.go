@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -296,5 +297,36 @@ func TestNodeFailureDefaultBudgets(t *testing.T) {
 	if nodeFailureController.MaxNodeStateChangesPerCycle != defaultMaxNodeStateChangesPerCycle {
 		t.Fatalf("expected default node state %d, got %d",
 			defaultMaxNodeStateChangesPerCycle, nodeFailureController.MaxNodeStateChangesPerCycle)
+	}
+}
+
+// TestNodeFailureMarksMovedInstanceOnDeadTarget: spec instance-rebalancing, "A
+// failed target startup does not look healthy". web-1 was moved to node-2 and
+// left pending by node-1 (observed node still node-1); node-2's agent is dead,
+// so node-failure handling marks it by its placement and it gets replaced.
+func TestNodeFailureMarksMovedInstanceOnDeadTarget(t *testing.T) {
+	failureController := NewNodeFailureController()
+	failureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
+	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(999)},
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
+		{Key: types.KeyLeaseNode("node-2"), Value: millis(960)},
+		{Key: types.KeyObservedNodeState("node-2"), Value: []byte("alive")},
+		{Key: types.KeyPlacementInstance("web-1"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("web-1"), Value: []byte(types.InstancePending)},
+		{Key: types.KeyObservedInstanceNode("web-1"), Value: []byte("node-1")},
+	}
+	store.SortFacts(inputFacts)
+	proposedChanges, reconcileError := failureController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	markedFailed := slices.ContainsFunc(proposedChanges, func(change Change) bool {
+		return change.Key == types.KeyDerivedInstanceNodeFailure("web-1") && string(change.Value) == "true"
+	})
+	if !markedFailed {
+		t.Errorf("moved web-1, pending with its placement on dead node-2, is not marked node-failed: %v", proposedChanges)
 	}
 }

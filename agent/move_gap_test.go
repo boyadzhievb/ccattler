@@ -1,0 +1,268 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
+package agent
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/network"
+	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
+)
+
+// moveGapTestPort is the port the web service exposes in the move-gap tests.
+const moveGapTestPort = 8080
+
+// moveGapCluster is a source agent (node-1) running web instances and a target
+// agent (node-2) that publishes a moved one, on one store; the endpoint
+// controller's view shows which instances are backends.
+type moveGapCluster struct {
+	factStore     *store.MemoryStore        // factStore is the shared store the checks read.
+	sourceRuntime *runtime.SimulatorRuntime // sourceRuntime holds node-1's containers.
+	sourceAgent   *Agent                    // sourceAgent is node-1's agent, which removes the moved container.
+	targetAgent   *Agent                    // targetAgent is node-2's agent, which publishes the moved instance.
+}
+
+// newMoveGapCluster runs each instance on node-1 (container, running, ready)
+// of service web (port 8080, readiness probe). wrapAgentStore, when not nil,
+// wraps the store both agents use.
+func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store.StateStore, instanceIDs ...string) *moveGapCluster {
+	t.Helper()
+	ctx := context.Background()
+	memoryStore := store.NewMemoryStore()
+	t.Cleanup(func() { memoryStore.Close() })
+	var agentStore store.StateStore = memoryStore
+	if wrapAgentStore != nil {
+		agentStore = wrapAgentStore(memoryStore)
+	}
+	cluster := &moveGapCluster{factStore: memoryStore, sourceRuntime: runtime.NewSimulatorRuntime()}
+	cluster.sourceAgent = New("node-1", agentStore, cluster.sourceRuntime)
+	cluster.sourceAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
+	cluster.targetAgent = New("node-2", agentStore, runtime.NewSimulatorRuntime())
+	cluster.targetAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
+
+	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceExpose("web", moveGapTestPort), []byte(""))
+	_, _ = memoryStore.Put(ctx, types.ScanDesiredServices+"web/probe/readiness/method", []byte("http"))
+	for _, instanceID := range instanceIDs {
+		types.WritePlacement(ctx, memoryStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+		if startError := cluster.sourceRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: "web", Image: "nginx:1.27"}); startError != nil {
+			t.Fatal(startError)
+		}
+		cluster.sourceAgent.publishInstanceStateToStore(ctx, instanceID, "web", types.InstanceRunning, "")
+		cluster.passReadiness(ctx, instanceID)
+	}
+	return cluster
+}
+
+// passReadiness records a passing readiness probe for the instance.
+func (cluster *moveGapCluster) passReadiness(ctx context.Context, instanceID string) {
+	_, _ = cluster.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness), []byte(types.ReadinessProbeReady))
+}
+
+// moveAndRemoveOnSource moves the instance's placement to node-2 and runs
+// node-1's cleanup of the container that is no longer desired there.
+func (cluster *moveGapCluster) moveAndRemoveOnSource(ctx context.Context, instanceID string) {
+	types.WritePlacement(ctx, cluster.factStore, types.Placement{InstanceID: instanceID, NodeID: "node-2"})
+	cluster.sourceAgent.cleanupUndesiredInstance(ctx, instanceID)
+}
+
+// publishOnTarget publishes the instance running on node-2, as node-2's agent
+// does after it started the container.
+func (cluster *moveGapCluster) publishOnTarget(ctx context.Context, instanceID string) {
+	cluster.targetAgent.publishInstanceStateToStore(ctx, instanceID, "web", types.InstanceRunning, "")
+}
+
+// endpointInstanceIDs returns the sorted IDs of the web instances the endpoint
+// controller makes backends from the current facts.
+func (cluster *moveGapCluster) endpointInstanceIDs(t *testing.T, ctx context.Context) []string {
+	t.Helper()
+	facts, scanError := cluster.factStore.Scan(ctx, "")
+	if scanError != nil {
+		t.Fatal(scanError)
+	}
+	changes, reconcileError := controllers.NewEndpointController().Reconcile(ctx, facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	var instanceIDs []string
+	for _, change := range changes {
+		endpointPath, isWebEndpoint := strings.CutPrefix(change.Key, types.ScanEndpoints+"web/")
+		if change.Type == store.OpPut && isWebEndpoint {
+			instanceIDs = append(instanceIDs, strings.SplitN(endpointPath, "/", 2)[0])
+		}
+	}
+	slices.Sort(instanceIDs)
+	return instanceIDs
+}
+
+// checkMovedInstanceFacts checks the instance's observed state, node and
+// readiness.
+func (cluster *moveGapCluster) checkMovedInstanceFacts(t *testing.T, ctx context.Context, step string, instanceID string,
+	wantState types.InstanceState, wantNode string, wantReadiness string) {
+	t.Helper()
+	gotState := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceState(instanceID))
+	gotNode := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceNode(instanceID))
+	gotReadiness := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness))
+	if gotState != string(wantState) || gotNode != wantNode || gotReadiness != wantReadiness {
+		t.Errorf("%s: %s state=%q node=%q readiness=%q, want state=%q node=%q readiness=%q",
+			step, instanceID, gotState, gotNode, gotReadiness, wantState, wantNode, wantReadiness)
+	}
+}
+
+// checkEndpointInstanceIDs checks which web instances are backends.
+func (cluster *moveGapCluster) checkEndpointInstanceIDs(t *testing.T, ctx context.Context, step string, want ...string) {
+	t.Helper()
+	if got := cluster.endpointInstanceIDs(t, ctx); !slices.Equal(got, want) {
+		t.Errorf("%s: endpoints for %v, want %v", step, got, want)
+	}
+}
+
+// targetPublishingStore runs the target agent's state publish just before the
+// source's first transaction that compares observed/instance/{id}/node: the
+// target publishes between the source's reads and its write.
+type targetPublishingStore struct {
+	store.StateStore                             // StateStore serves every call.
+	instanceID         string                    // instanceID is the moved instance.
+	publishOnTarget    func(ctx context.Context) // publishOnTarget is the target's publish, run once.
+	targetHasPublished atomic.Bool               // targetHasPublished keeps the publish to one run.
+}
+
+// Transaction runs the target's publish once before a transaction that
+// compares the instance's node key, then the transaction itself.
+func (racingStore *targetPublishingStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
+	comparesNode := slices.ContainsFunc(compares, func(compare store.Compare) bool {
+		return compare.Key == types.KeyObservedInstanceNode(racingStore.instanceID)
+	})
+	if comparesNode && racingStore.targetHasPublished.CompareAndSwap(false, true) {
+		racingStore.publishOnTarget(ctx)
+	}
+	return racingStore.StateStore.Transaction(ctx, compares, onSuccess, onFailure)
+}
+
+// TestSourceAgentMarksMovedInstancePending: spec instance-rebalancing, "The
+// source backend leaves the VIP, the target's publish wins". The source sets
+// the moved instance pending without readiness, so its backend leaves; the
+// target's publish, before, during or after the removal, always wins.
+func TestSourceAgentMarksMovedInstancePending(t *testing.T) {
+	ctx := context.Background()
+	t.Run("removal, then target publish", func(t *testing.T) {
+		cluster := newMoveGapCluster(t, nil, "web-1")
+		cluster.checkEndpointInstanceIDs(t, ctx, "before the move", "web-1")
+		cluster.moveAndRemoveOnSource(ctx, "web-1")
+		cluster.checkMovedInstanceFacts(t, ctx, "after the source removal", "web-1", types.InstancePending, "node-1", "")
+		cluster.checkEndpointInstanceIDs(t, ctx, "after the source removal")
+		cluster.publishOnTarget(ctx, "web-1")
+		cluster.passReadiness(ctx, "web-1")
+		cluster.checkMovedInstanceFacts(t, ctx, "after the target publish", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
+		cluster.checkEndpointInstanceIDs(t, ctx, "after the target publish", "web-1")
+	})
+	t.Run("target published first", func(t *testing.T) {
+		cluster := newMoveGapCluster(t, nil, "web-1")
+		cluster.publishOnTarget(ctx, "web-1")
+		cluster.passReadiness(ctx, "web-1")
+		cluster.moveAndRemoveOnSource(ctx, "web-1")
+		cluster.checkMovedInstanceFacts(t, ctx, "after the source removal", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
+		cluster.checkEndpointInstanceIDs(t, ctx, "after the source removal", "web-1")
+	})
+	t.Run("target publishes between the source's read and write", func(t *testing.T) {
+		var cluster *moveGapCluster
+		var racingStore *targetPublishingStore
+		cluster = newMoveGapCluster(t, func(memoryStore store.StateStore) store.StateStore {
+			racingStore = &targetPublishingStore{StateStore: memoryStore, instanceID: "web-1"}
+			return racingStore
+		}, "web-1")
+		// Only the state transaction: the target is between its state write and the rest of its publish.
+		racingStore.publishOnTarget = func(ctx context.Context) {
+			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, "web-1", types.InstanceRunning)
+		}
+		cluster.moveAndRemoveOnSource(ctx, "web-1")
+		if !racingStore.targetHasPublished.Load() {
+			t.Fatalf("the source never compared the node key; the race case proves nothing")
+		}
+		gotState := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceState("web-1"))
+		gotNode := readFactValue(ctx, cluster.factStore, types.KeyObservedInstanceNode("web-1"))
+		if gotState != string(types.InstanceRunning) || gotNode != "node-2" {
+			t.Errorf("after the race: state=%q node=%q, want the target's running on node-2", gotState, gotNode)
+		}
+	})
+}
+
+// TestMoveGapMultiInstanceKeepsReadyBackend: spec instance-rebalancing, "The
+// gap per service size". web-1 moves while web-2 stays: one backend serves
+// during the gap, both once the target runs web-1 and its probe passes.
+func TestMoveGapMultiInstanceKeepsReadyBackend(t *testing.T) {
+	ctx := context.Background()
+	cluster := newMoveGapCluster(t, nil, "web-1", "web-2")
+	cluster.checkEndpointInstanceIDs(t, ctx, "before the move", "web-1", "web-2")
+	cluster.moveAndRemoveOnSource(ctx, "web-1")
+	cluster.checkEndpointInstanceIDs(t, ctx, "during the gap", "web-2")
+	cluster.publishOnTarget(ctx, "web-1")
+	cluster.checkEndpointInstanceIDs(t, ctx, "target running, probe not passed yet", "web-2")
+	cluster.passReadiness(ctx, "web-1")
+	cluster.checkEndpointInstanceIDs(t, ctx, "target ready", "web-1", "web-2")
+}
+
+// TestMoveGapSingleInstanceShowsNotReady: spec instance-rebalancing, "The gap
+// per service size". The only instance moves: during the gap it is pending
+// (not running) with no backend, and it is back once the target runs it and
+// its probe passes; the removal alone never brings it back.
+func TestMoveGapSingleInstanceShowsNotReady(t *testing.T) {
+	ctx := context.Background()
+	cluster := newMoveGapCluster(t, nil, "web-1")
+	cluster.moveAndRemoveOnSource(ctx, "web-1")
+	cluster.checkMovedInstanceFacts(t, ctx, "during the gap", "web-1", types.InstancePending, "node-1", "")
+	cluster.checkEndpointInstanceIDs(t, ctx, "during the gap")
+	cluster.publishOnTarget(ctx, "web-1")
+	cluster.checkEndpointInstanceIDs(t, ctx, "target running, probe not passed yet")
+	cluster.passReadiness(ctx, "web-1")
+	cluster.checkEndpointInstanceIDs(t, ctx, "target ready", "web-1")
+}
+
+// TestTargetStartupFailureAfterMoveIsNotRunning: spec instance-rebalancing, "A
+// failed target startup does not look healthy". web-1 was moved to node-2 and
+// left pending by node-1; node-2 cannot pull or start it and publishes a
+// non-running state as its own (failed is replaced by the failure controller).
+func TestTargetStartupFailureAfterMoveIsNotRunning(t *testing.T) {
+	testCases := []struct {
+		name      string                          // name is the target's failure
+		setUp     func(*runtime.SimulatorRuntime) // setUp makes node-2's runtime fail
+		wantState types.InstanceState             // wantState is what node-2 publishes
+	}{
+		{name: "pull failure", wantState: types.InstanceImagePullBackoff, setUp: func(targetRuntime *runtime.SimulatorRuntime) {
+			targetRuntime.PullFailures = map[string]string{"nginx:1.27": "registry unreachable"}
+		}},
+		{name: "start failure", wantState: types.InstanceFailed, setUp: func(targetRuntime *runtime.SimulatorRuntime) {
+			targetRuntime.InjectStartFailure("web-1", "CNI setup: no IP addresses available")
+		}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			memoryStore := store.NewMemoryStore()
+			defer memoryStore.Close()
+			_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+			types.WriteInstance(ctx, memoryStore, types.Instance{ID: "web-1", Service: "web", State: types.InstancePending, Node: "node-1"})
+			types.WritePlacement(ctx, memoryStore, types.Placement{InstanceID: "web-1", NodeID: "node-2"})
+			targetRuntime := runtime.NewSimulatorRuntime()
+			testCase.setUp(targetRuntime)
+			targetAgent := New("node-2", memoryStore, targetRuntime)
+			targetAgent.SetInterval(50 * time.Millisecond)
+			go targetAgent.Run(ctx)
+
+			waitFor(t, 2*time.Second, "node-2 publishes "+string(testCase.wantState), func() bool {
+				return readFactValue(ctx, memoryStore, types.KeyObservedInstanceState("web-1")) == string(testCase.wantState) &&
+					readFactValue(ctx, memoryStore, types.KeyObservedInstanceNode("web-1")) == "node-2"
+			})
+		})
+	}
+}

@@ -30,7 +30,7 @@ executeReconciliationCycle
 │   ├── store.Scan(placement/node/{nodeID}/)
 │   ├── isInstanceMarkedForSkip
 │   │   ├── store.Get(derived/instance/{id}/node_failure)
-│   │   └── store.Get(derived/instance/{id}/controller_stopped)
+│   │   └── isControllerStopped → store.Get(derived/instance/{id}/controller_stopped) == "true"
 │   ├── store.Get(observed/instance/{id}/state)     [skip if stopped/failed]
 │   ├── store.Get(derived/drain/evict/{nodeID}/{id}) [skip if drain]
 │   ├── store.Get(observed/instance/{id}/service)    [primary: get service name]
@@ -58,13 +58,16 @@ executeReconciliationCycle
 ├── cleanup: remove containers not in desired set
 │   ├── running → cleanupUndesiredInstance       [pre_stop hook, graceful stop]
 │   ├── exited  → cleanupStoppedStaleInstance    [no hook, container already dead]
-│   └── both, M267 D2:
-│       ├── FIRST checkStaleInstanceMove → isInstanceMovedToAnotherNode
+│   └── both → teardownStaleInstance(id, removeContainer), M267 D2/D4:
+│       ├── FIRST isInstanceMovedToAnotherNode (→ isControllerStopped)
 │       │   read error → return untouched (WARN); the next cycle retries the whole cleanup
-│       ├── then remove (hook/stop, token, volumes, instance data)
-│       └── publishRemovedInstanceState: no stopped write when placement/instance/{id}
-│           names another node and no controller_stopped = true (a rebalance move:
-│           stopped is final and would block the target agent); otherwise stopped
+│       ├── not moved → clearPullStatusFromStore (kept after a move: keyed by ID, B2)
+│       ├── then remove (token, volumes, removeContainer = hook/stop, instance data)
+│       ├── publishRemovedInstanceState: moved (placement/instance/{id} names another
+│       │   node, no controller_stopped = true) → markMovedInstancePending (TXN on node +
+│       │   state revisions: state = pending, readiness deleted, only while node = this
+│       │   node); otherwise stopped
+│       └── releaseStaleInstanceNetwork: ReleaseIP; not moved → DeleteNetworkAllocation
 │
 ├── sweepSecretMaterial                          [M174: remove tmpfs material of instances neither placed nor running]
 │
@@ -214,7 +217,7 @@ executeReconciliationCycle(controller, deltaEvents)
 |---|---|
 | `placement/node/{nodeID}/{instanceID}` | findInstancesPlacedOnThisNode |
 | `derived/instance/{id}/node_failure` | isInstanceMarkedForSkip |
-| `derived/instance/{id}/controller_stopped` | isInstanceMarkedForSkip |
+| `derived/instance/{id}/controller_stopped` | isControllerStopped (isInstanceMarkedForSkip, isInstanceMovedToAnotherNode) |
 | `observed/instance/{id}/state` | findInstancesPlacedOnThisNode |
 | `observed/instance/{id}/service` | findInstancesPlacedOnThisNode |
 | `derived/drain/{nodeID}/{instanceID}` | findInstancesPlacedOnThisNode |
@@ -240,11 +243,11 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/instance/{id}/state` | publishInstanceStateToStore (by CAS via publishInstanceStateUnlessStopped, M241 2i.1) |
 | `observed/instance/{id}/service` | publishInstanceStateToStore |
 | `observed/instance/{id}/ip` | publishInstanceStateToStore |
-| `observed/instance/{id}/node` | publishInstanceStateToStore |
+| `observed/instance/{id}/node` | publishInstanceStateUnlessStopped (same transaction as the state, M267 D4); read by markMovedInstancePending |
 | `observed/instance/{id}/created-at` | publishInstanceStateToStore (write-once) |
 | `observed/instance/{id}/image` | publishInstanceImage (startInstanceAndPublishState, handleInstanceStartError) |
 | `observed/instance/{id}/started_at` | publishInstanceStartedAt (startInstanceAndPublishState, every start; read by the rollout controller, M241 D10) |
-| `observed/instance/{id}/probe/readiness` | DELETE by resetInstanceReadiness at every start (M241 B4); PUT by the probe scheduler |
+| `observed/instance/{id}/probe/readiness` | DELETE by resetInstanceReadiness at every start (M241 B4) and by markMovedInstancePending (M267 D4); PUT by the probe scheduler |
 | `observed/instance/{id}/last_exit` | publishInstanceLastExit (beginCrashLoopWait; read by the rollout controller's rollback reason, M241) |
 | `observed/instance/{id}/exit-reason` | publishExitReason (recordInstanceExit via publishExitReasonFromStatus, recordInstanceStartFailure); deleted by deleteExitReason |
 | `observed/instance/{id}/status_reason` | publishStatusReason |
@@ -273,7 +276,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `buildRuntimeSpecForInstance` | `reconcileDesiredInstance` |
 | `startInstanceAndPublishState` | `reconcileDesiredInstance` |
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
-| `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state; never over another component's stopped, M241 2i.1) |
+| `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4) |
 | `deleteExitReason` | `executeReconciliationCycle` (if running) |
 | `publishExitReason` | `publishExitReasonFromStatus`, `recordInstanceStartFailure` (M238) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |
@@ -285,10 +288,13 @@ executeReconciliationCycle(controller, deltaEvents)
 | `hasConfigChangedSinceStart` | `detectConfigChange`, `isExitedInstanceDueForRestart` (M233) |
 | `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |
 | `cleanupStoppedStaleInstance` | `executeReconciliationCycle` (stale exited containers) |
-| `checkStaleInstanceMove` | `cleanupUndesiredInstance`, `cleanupStoppedStaleInstance` (first, before any removal; M267 D2) |
-| `publishRemovedInstanceState` | `cleanupUndesiredInstance`, `cleanupStoppedStaleInstance` (after the removal; M267 D2) |
-| `isInstanceMovedToAnotherNode` | `checkStaleInstanceMove` (reads `placement/instance/{id}`, `derived/instance/{id}/controller_stopped`) |
-| `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs) |
+| `teardownStaleInstance` | `cleanupUndesiredInstance`, `cleanupStoppedStaleInstance` (each passes its container stop; M267 S1) |
+| `isInstanceMovedToAnotherNode` | `teardownStaleInstance` (first, before any removal; reads `placement/instance/{id}`, then `isControllerStopped`; M267 D2) |
+| `isControllerStopped` | `isInstanceMovedToAnotherNode`, `isInstanceMarkedForSkip` (value "true"; M267 S3) |
+| `publishRemovedInstanceState` | `teardownStaleInstance` (after the removal; M267 D2) |
+| `markMovedInstancePending` | `publishRemovedInstanceState` (moved; M267 D4) |
+| `releaseStaleInstanceNetwork` | `teardownStaleInstance` (M267 B2) |
+| `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs), `teardownStaleInstance` (not moved) |
 | `prepareInstanceSecretMaterial` | `reconcileDesiredInstance` (before image pull) |
 | `buildInstanceSecretMounts` | `reconcileDesiredInstance`, `materializeInitConfigFiles` |
 | `sweepSecretMaterial` | `executeReconciliationCycle` (after stale cleanup) |

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,14 @@ const (
 
 	// rebalanceLoadImbalanceThreshold is the min max-min difference to trigger rebalancing.
 	rebalanceLoadImbalanceThreshold = 2
+
+	// rebalanceMoveCooldown is how long a moved instance is not moved again,
+	// so it cannot flap between nodes (M267 D4).
+	rebalanceMoveCooldown = 10 * time.Minute
+
+	// maxRebalanceCooldownDeletesPerCycle caps the deletes of cooldown facts of
+	// instances that are gone; the rest go in later cycles (as M262 D4).
+	maxRebalanceCooldownDeletesPerCycle = 10
 
 	// nodeAllocationPressurePercent triggers a warning when allocation exceeds this ratio.
 	nodeAllocationPressurePercent = 80
@@ -57,6 +66,9 @@ type Scheduler struct {
 	firstPendingSeenAt time.Time
 	// placementGracePeriod is the wait time before initial placement.
 	placementGracePeriod time.Duration
+	// currentTime returns the time the rebalance cooldown is measured against;
+	// nil means time.Now (tests inject a fixed clock).
+	currentTime func() time.Time
 }
 
 // NewScheduler creates a Scheduler with the default grace period.
@@ -87,7 +99,17 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanEffectiveServices,                       // effective resources from the vertical autoscaler win over desired (M243 D4)
 		types.ScanDerivedSchedulerInvalidResourceRequests, // own invalid-request facts, deleted once fixed (M243 D5)
 		types.ScanDerivedNodes,                            // eviction's pressure marker: no rebalance move onto such a node (M267 D1)
+		types.ScanDerivedSchedulerRebalanced,              // own move times: the anti-flap cooldown, deleted with the instance (M267 D4)
 	}
+}
+
+// currentRebalanceTime returns the time the rebalance cooldown is measured
+// against: the injected clock, else time.Now.
+func (placementScheduler *Scheduler) currentRebalanceTime() time.Time {
+	if placementScheduler.currentTime != nil {
+		return placementScheduler.currentTime()
+	}
+	return time.Now()
 }
 
 // Reconcile examines the current facts to find pending instances that lack a
@@ -131,7 +153,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 
 	placedInThisCycle := collectPlacedInstanceIDs(changes)
 
-	preemptionChanges := attemptPreemptions(
+	preemptionChanges, preemptions := attemptPreemptions(
 		placeableUnplaced, placedInThisCycle, nodes, changes,
 		preemptionInputs{
 			instances: instances, placements: placements, serviceResources: serviceResources,
@@ -151,14 +173,19 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	changes = append(changes, cleanupStaleUnplacedFacts(
 		facts, waitingInstanceIDs, maxUnplacedFactChangesPerCycle-len(unplacedChanges))...)
 
+	rebalanceMoveTimes := extractRebalanceMoveTimes(facts)
+	rebalanceTime := placementScheduler.currentRebalanceTime()
 	rebalanceChanges := rebalancePlacedInstances(nodes, rebalanceInputs{
 		placements: placements, instances: instances, serviceResources: serviceResources,
 		placementConstraints: placementConstraints, serviceToGroup: serviceToGroup,
-		placedInThisCycle:  placedInThisCycle,
+		placedInThisCycle: placedInThisCycle, thisCycleChanges: changes, preemptions: preemptions,
 		pinnedServices:     extractRebalancePinnedServices(facts, statefulServices, invalidResourceRequests),
 		nodesUnderPressure: extractNodesUnderPressure(facts, nodes),
+		recentlyMoved:      findInstancesInRebalanceCooldown(rebalanceMoveTimes, rebalanceTime),
+		moveTimestamp:      rebalanceTime.UTC().Format(time.RFC3339),
 	})
 	changes = append(changes, rebalanceChanges...)
+	changes = append(changes, cleanupGoneInstanceRebalanceFacts(rebalanceMoveTimes, instances)...)
 
 	detectAndLogNodePressure(nodes, placements, instances, serviceResources)
 
@@ -247,14 +274,15 @@ type preemptionReservations struct {
 // attemptPreemptions preempts, for each still-unplaced instance of a
 // priority > 0 service (highest first), one strictly lower-priority victim
 // whose stop makes room for it (D12). Only when such a requester exists does it
-// merge this cycle's placement changes and compute node usage (P-N1).
+// merge this cycle's placement changes and compute node usage (P-N1); it then
+// also returns its reservations for rebalancing (M267 B1), else nil.
 func attemptPreemptions(
 	unplaced []string,
 	placedInThisCycle map[string]bool,
 	nodes map[string]*schedulerNodeInfo,
 	thisCycleChanges []controllers.Change,
 	inputs preemptionInputs,
-) []controllers.Change {
+) ([]controllers.Change, *preemptionReservations) {
 	var requesters []string
 	for _, instanceID := range unplaced {
 		if instanceInfo := inputs.instances[instanceID]; !placedInThisCycle[instanceID] && instanceInfo != nil &&
@@ -263,7 +291,7 @@ func attemptPreemptions(
 		}
 	}
 	if len(requesters) == 0 {
-		return nil
+		return nil, nil
 	}
 	sort.Slice(requesters, func(i, j int) bool {
 		priorityI := inputs.servicePriorities[inputs.instances[requesters[i]].service]
@@ -303,7 +331,13 @@ func attemptPreemptions(
 			Value: []byte("true"),
 		})
 	}
-	return changes
+	return changes, reservations
+}
+
+// isPreempted reports whether instanceID is a victim of this cycle's
+// preemptions; nil reservations (no requester this cycle) have none.
+func (reservations *preemptionReservations) isPreempted(instanceID string) bool {
+	return reservations != nil && reservations.preemptedInstances[instanceID]
 }
 
 // newPreemptionReservations builds the cycle's mutable preemption state: each
@@ -414,8 +448,8 @@ func stopMakesRoom(node *candidateNode, freed serviceResourceRequirements, reque
 }
 
 // mergeThisCyclePlacements returns the stored placements plus the placement
-// puts in changes, so preemption counts this cycle's placements against node
-// capacity.
+// puts in changes, so preemption and rebalancing count this cycle's placements
+// against node capacity.
 func mergeThisCyclePlacements(placements map[string]string, changes []controllers.Change) map[string]string {
 	merged := make(map[string]string, len(placements))
 	for instanceID, nodeID := range placements {
@@ -539,8 +573,58 @@ type rebalanceInputs struct {
 	placementConstraints map[string]*servicePlacementConstraint // placementConstraints holds each service's placement rules and rebalance opt-in.
 	serviceToGroup       map[string]string                      // serviceToGroup maps a service to its group; grouped services never move.
 	placedInThisCycle    map[string]bool                        // placedInThisCycle holds instances placed by this cycle; they never move in it.
+	thisCycleChanges     []controllers.Change                   // thisCycleChanges are the cycle's changes so far; their placements take room (M267 B1).
+	preemptions          *preemptionReservations                // preemptions are this cycle's reservations (nil if none); read only, never moved.
 	pinnedServices       map[string]bool                        // pinnedServices holds stateful, volume-bound or unreadable-request services.
 	nodesUnderPressure   map[string]bool                        // nodesUnderPressure holds nodes with eviction's derived/node/{id}/pressure marker.
+	recentlyMoved        map[string]bool                        // recentlyMoved holds instances moved within rebalanceMoveCooldown; they stay (M267 D4).
+	moveTimestamp        string                                 // moveTimestamp is this cycle's RFC3339 time, recorded for each move.
+}
+
+// extractRebalanceMoveTimes returns the stored rebalance move time per
+// instance ID (derived/scheduler/rebalanced/{id}); an unreadable time is the
+// zero time, so its instance is out of the cooldown.
+func extractRebalanceMoveTimes(facts []store.Fact) map[string]time.Time {
+	moveTimes := make(map[string]time.Time)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedSchedulerRebalanced) {
+		movedAt, _ := time.Parse(time.RFC3339, string(fact.Value))
+		moveTimes[strings.TrimPrefix(fact.Key, types.ScanDerivedSchedulerRebalanced)] = movedAt
+	}
+	return moveTimes
+}
+
+// findInstancesInRebalanceCooldown returns the instances moved less than
+// rebalanceMoveCooldown before now: they are not moved again (M267 D4).
+func findInstancesInRebalanceCooldown(moveTimes map[string]time.Time, now time.Time) map[string]bool {
+	recentlyMoved := make(map[string]bool)
+	for instanceID, movedAt := range moveTimes {
+		if now.Sub(movedAt) < rebalanceMoveCooldown {
+			recentlyMoved[instanceID] = true
+		}
+	}
+	return recentlyMoved
+}
+
+// cleanupGoneInstanceRebalanceFacts deletes the move time of instances that no
+// longer exist, in sorted order, at most maxRebalanceCooldownDeletesPerCycle
+// per cycle (as M262 D4). A live instance keeps its fact; its next move
+// overwrites it, so the two never meet in one cycle.
+func cleanupGoneInstanceRebalanceFacts(moveTimes map[string]time.Time, instances map[string]*schedulerInstanceInfo) []controllers.Change {
+	var goneInstanceIDs []string
+	for instanceID := range moveTimes {
+		if instances[instanceID] == nil {
+			goneInstanceIDs = append(goneInstanceIDs, instanceID)
+		}
+	}
+	sort.Strings(goneInstanceIDs)
+	if len(goneInstanceIDs) > maxRebalanceCooldownDeletesPerCycle {
+		goneInstanceIDs = goneInstanceIDs[:maxRebalanceCooldownDeletesPerCycle]
+	}
+	changes := make([]controllers.Change, 0, len(goneInstanceIDs))
+	for _, instanceID := range goneInstanceIDs {
+		changes = append(changes, controllers.Change{Type: store.OpDelete, Key: types.KeyDerivedSchedulerRebalanced(instanceID)})
+	}
+	return changes
 }
 
 // extractNodesUnderPressure returns the known nodes that carry eviction's
@@ -581,11 +665,23 @@ func rebalancePlacedInstances(nodes map[string]*schedulerNodeInfo, inputs rebala
 		"max_load", strconv.Itoa(maxLoad), "min_load", strconv.Itoa(minLoad),
 		"ideal_load", strconv.Itoa(idealLoad), "alive_nodes", strconv.Itoa(len(aliveNodeIDs)))
 
-	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(inputs.placements, inputs.instances, inputs.serviceResources)
-	aliveCandidates := buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
+	aliveCandidates := buildRebalanceCandidateNodes(nodes, inputs)
 	overloadedNodes := findOverloadedNodes(nodeLoad, aliveNodeIDs, idealLoad)
 
 	return executeRebalanceMoves(overloadedNodes, nodeLoad, aliveCandidates, inputs)
+}
+
+// buildRebalanceCandidateNodes returns each alive node's remaining capacity
+// after this cycle's placements and preemptions (victims freed, requesters
+// taken, as the next cycle sees them), so a move never takes room this cycle
+// already gave away (M267 B1). A copy: rebalancing never writes reservations.
+func buildRebalanceCandidateNodes(nodes map[string]*schedulerNodeInfo, inputs rebalanceInputs) []candidateNode {
+	if inputs.preemptions != nil {
+		return slices.Clone(inputs.preemptions.aliveNodes)
+	}
+	cyclePlacements := mergeThisCyclePlacements(inputs.placements, inputs.thisCycleChanges)
+	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(cyclePlacements, inputs.instances, inputs.serviceResources)
+	return buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
 }
 
 // executeRebalanceMoves migrates movable instances from overloaded to
@@ -607,8 +703,7 @@ func executeRebalanceMoves(
 		if moveCount >= maxRebalanceMovesPerCycle {
 			break
 		}
-		movable := findMovableInstances(sourceNodeID, inputs.placements, inputs.instances, inputs.serviceToGroup,
-			inputs.placedInThisCycle, inputs.placementConstraints, inputs.pinnedServices)
+		movable := findMovableInstances(sourceNodeID, inputs)
 		for _, instanceID := range movable {
 			if moveCount >= maxRebalanceMovesPerCycle {
 				break
@@ -627,7 +722,7 @@ func executeRebalanceMoves(
 			logging.Default().Warn("scheduler: rebalancing instance",
 				"instance", instanceID, "service", instanceInfo.service,
 				"from", sourceNodeID, "to", targetNodeID)
-			changes = append(changes, buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID)...)
+			changes = append(changes, buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID, inputs.moveTimestamp)...)
 			nodeLoad[sourceNodeID]--
 			nodeLoad[targetNodeID]++
 			serviceInstancesPerNode[instanceInfo.service][sourceNodeID]--
@@ -734,38 +829,32 @@ func findOverloadedNodes(nodeLoad map[string]int, aliveNodeIDs []string, idealLo
 }
 
 // findMovableInstances returns running, non-grouped instances on sourceNodeID
-// that were not freshly placed in the current cycle.
-func findMovableInstances(
-	sourceNodeID string,
-	placements map[string]string,
-	instances map[string]*schedulerInstanceInfo,
-	serviceToGroup map[string]string,
-	placedInThisCycle map[string]bool,
-	placementConstraints map[string]*servicePlacementConstraint,
-	pinnedServices map[string]bool,
-) []string {
+// that were not freshly placed in the current cycle, are no victim of this
+// cycle's preemption (moving one would only churn, M267 B1) and were not moved
+// within rebalanceMoveCooldown (M267 D4).
+func findMovableInstances(sourceNodeID string, inputs rebalanceInputs) []string {
 	var movable []string
-	for instanceID, nodeID := range placements {
+	for instanceID, nodeID := range inputs.placements {
 		if nodeID != sourceNodeID {
 			continue
 		}
-		if placedInThisCycle[instanceID] {
+		if inputs.placedInThisCycle[instanceID] || inputs.preemptions.isPreempted(instanceID) || inputs.recentlyMoved[instanceID] {
 			continue
 		}
-		instanceInfo := instances[instanceID]
+		instanceInfo := inputs.instances[instanceID]
 		if instanceInfo == nil || instanceInfo.state != types.InstanceRunning {
 			continue
 		}
-		if _, inGroup := serviceToGroup[instanceInfo.service]; inGroup {
+		if _, inGroup := inputs.serviceToGroup[instanceInfo.service]; inGroup {
 			continue
 		}
-		if pinnedServices[instanceInfo.service] {
+		if inputs.pinnedServices[instanceInfo.service] {
 			continue
 		}
 		if instanceInfo.stillStarting {
 			continue
 		}
-		constraint := placementConstraints[instanceInfo.service]
+		constraint := inputs.placementConstraints[instanceInfo.service]
 		if constraint == nil || !constraint.rebalance {
 			continue
 		}
@@ -814,10 +903,12 @@ func selectRebalanceTarget(
 }
 
 // buildRebalanceMoveChanges generates store changes to migrate an instance
-// from sourceNodeID to targetNodeID.
-func buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID string) []controllers.Change {
+// from sourceNodeID to targetNodeID, with its move time for the anti-flap
+// cooldown in the same group (M267 D4).
+func buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID string, moveTimestamp string) []controllers.Change {
 	groupID := "rebalance/" + instanceID
 	return []controllers.Change{
+		{Type: store.OpPut, Key: types.KeyDerivedSchedulerRebalanced(instanceID), Value: []byte(moveTimestamp), Group: groupID},
 		{Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(targetNodeID), Group: groupID},
 		{Type: store.OpDelete, Key: types.KeyPlacementNodeInstance(sourceNodeID, instanceID), Group: groupID},
 		{Type: store.OpPut, Key: types.KeyPlacementNodeInstance(targetNodeID, instanceID), Value: []byte(""), Group: groupID},

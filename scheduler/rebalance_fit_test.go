@@ -127,3 +127,83 @@ func TestRebalanceMovesToTargetWithRoom(t *testing.T) {
 		}
 	}
 }
+
+// TestRebalanceCountsRoomTakenByThisCyclePlacements: spec instance-rebalancing,
+// "A placement and a move in one cycle share the target's room". node-1 holds 8
+// web instances; node-2's remaining room is taken in this cycle by a placement
+// (pending api, 512Mi, node-2 has 768 MiB) or by a preemption's requester (api,
+// 4864Mi, takes node-2's room after its batch victim stops), so no web moves.
+func TestRebalanceCountsRoomTakenByThisCyclePlacements(t *testing.T) {
+	testCases := []struct {
+		name             string                  // name describes how node-2's room is taken
+		targetMemoryMiB  string                  // targetMemoryMiB is node-2's memory
+		apiMemoryRequest string                  // apiMemoryRequest is the pending api instance's memory request
+		extraFacts       []struct{ k, v string } // extraFacts add the preemption's victim and priority
+		wantChangeKey    string                  // wantChangeKey is the change proving the room was taken in this cycle
+	}{
+		{
+			name: "placement", targetMemoryMiB: "768", apiMemoryRequest: rebalanceFitTestMemoryRequest,
+			wantChangeKey: types.KeyPlacementInstance("api-00"),
+		},
+		{
+			name: "preemption", targetMemoryMiB: "5120", apiMemoryRequest: "4864Mi",
+			extraFacts: []struct{ k, v string }{
+				kv(types.KeyDesiredServicePriority("api"), "100"),
+				kv(types.KeyDesiredServiceResourcesMemory("batch"), rebalanceFitTestMemoryRequest),
+				kv(types.KeyObservedInstanceService("batch-00"), "batch"),
+				kv(types.KeyObservedInstanceState("batch-00"), "running"),
+				kv(types.KeyPlacementInstance("batch-00"), "node-2"),
+			},
+			wantChangeKey: types.KeyDerivedInstanceControllerStopped("batch-00"),
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			extraFacts := append([]struct{ k, v string }{
+				kv(types.KeyDesiredServiceResourcesMemory("api"), testCase.apiMemoryRequest),
+				kv(types.KeyObservedInstanceService("api-00"), "api"),
+				kv(types.KeyObservedInstanceState("api-00"), "pending"),
+			}, testCase.extraFacts...)
+			facts := buildRebalanceFitFacts(8, testCase.targetMemoryMiB, extraFacts...)
+			changes, reconcileError := newTestScheduler().Reconcile(context.Background(), facts)
+			if reconcileError != nil {
+				t.Fatal(reconcileError)
+			}
+			roomTaken := slices.ContainsFunc(changes, func(change controllers.Change) bool {
+				return change.Type == store.OpPut && change.Key == testCase.wantChangeKey
+			})
+			if !roomTaken {
+				t.Fatalf("no %s change in this cycle; the test setup does not take node-2's room", testCase.wantChangeKey)
+			}
+			if movedInstanceIDs := rebalanceMovesTo(changes, "node-2"); len(movedInstanceIDs) != 0 {
+				t.Errorf("moved %v to node-2, whose room this cycle's %s already took", movedInstanceIDs, testCase.name)
+			}
+		})
+	}
+}
+
+// TestRebalanceDoesNotMovePreemptedVictim: spec instance-rebalancing, "A
+// placement and a move in one cycle share the target's room". web-00 on node-1
+// is this cycle's preemption victim for api (4608Mi); a move would only churn an
+// instance the scheduler already stopped, so another web instance moves instead.
+func TestRebalanceDoesNotMovePreemptedVictim(t *testing.T) {
+	facts := buildRebalanceFitFacts(8, "768",
+		kv(types.KeyDesiredServicePriority("api"), "100"),
+		kv(types.KeyDesiredServiceResourcesMemory("api"), "4608Mi"),
+		kv(types.KeyObservedInstanceService("api-00"), "api"),
+		kv(types.KeyObservedInstanceState("api-00"), "pending"))
+	changes, reconcileError := newTestScheduler().Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	victimStopped := slices.ContainsFunc(changes, func(change controllers.Change) bool {
+		return change.Type == store.OpPut && change.Key == types.KeyDerivedInstanceControllerStopped("web-00")
+	})
+	if !victimStopped {
+		t.Fatalf("web-00 was not preempted; the test setup does not exercise a victim")
+	}
+	movedInstanceIDs := rebalanceMovesTo(changes, "node-2")
+	if slices.Contains(movedInstanceIDs, "web-00") || len(movedInstanceIDs) != 1 {
+		t.Errorf("moved %v to node-2, want one instance other than the preempted web-00", movedInstanceIDs)
+	}
+}

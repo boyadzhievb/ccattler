@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -14,6 +15,10 @@ import (
 
 // movedInstanceTestInstanceID is the instance every moved-instance case cleans up.
 const movedInstanceTestInstanceID = "web-1"
+
+// movedInstanceTestTargetIP is the network allocation the target agent wrote
+// for the moved instance.
+const movedInstanceTestTargetIP = "10.100.2.7"
 
 // movedInstanceTestCase describes the facts around a container that left
 // node-1's desired set and what node-1's agent must do with it.
@@ -75,9 +80,13 @@ func runMovedInstanceTestCase(t *testing.T, testCase movedInstanceTestCase) {
 	if testCase.containerExited {
 		simulatorRuntime.KillWorkload(movedInstanceTestInstanceID, 1, "crash")
 	}
+	// Keyed by instance ID only: after a move the target agent may already have written them (M267 B2).
+	_, _ = memoryStore.Put(ctx, types.KeyObservedInstancePullStatus(movedInstanceTestInstanceID), []byte("pulled"))
+	_, _ = types.WriteNetworkAllocation(ctx, memoryStore, movedInstanceTestInstanceID, movedInstanceTestTargetIP)
 	failingStore.failGets.Store(testCase.placementReadFails)
 
 	nodeAgent := New("node-1", failingStore, simulatorRuntime)
+	nodeAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
 	runStaleContainerCleanup(ctx, nodeAgent, testCase.containerExited)
 	checkStaleContainerCleanup(t, ctx, "first cycle", memoryStore, simulatorRuntime, testCase.wantContainerRemoved, testCase.wantStoppedWritten)
 	if !testCase.placementReadFails {
@@ -102,7 +111,9 @@ func runStaleContainerCleanup(ctx context.Context, nodeAgent *Agent, containerEx
 }
 
 // checkStaleContainerCleanup checks whether the container is gone from the
-// runtime and whether observed state stopped was written.
+// runtime and whether observed state stopped was written. The pull status and
+// network allocation (keyed by ID only) are cleared exactly when stopped is
+// written: a move or an untouched cycle keeps them for the target (M267 B2).
 func checkStaleContainerCleanup(t *testing.T, ctx context.Context, cycleName string, factStore store.StateStore,
 	simulatorRuntime *runtime.SimulatorRuntime, wantContainerRemoved bool, wantStoppedWritten bool) {
 	t.Helper()
@@ -113,5 +124,13 @@ func checkStaleContainerCleanup(t *testing.T, ctx context.Context, cycleName str
 	stoppedWritten := readFactValue(ctx, factStore, types.KeyObservedInstanceState(movedInstanceTestInstanceID)) == string(types.InstanceStopped)
 	if stoppedWritten != wantStoppedWritten {
 		t.Errorf("%s: stopped written = %v, want %v", cycleName, stoppedWritten, wantStoppedWritten)
+	}
+	for _, instanceKey := range []string{
+		types.KeyObservedInstancePullStatus(movedInstanceTestInstanceID),
+		types.KeyNetworkAllocation(movedInstanceTestInstanceID),
+	} {
+		if cleared := readFactValue(ctx, factStore, instanceKey) == ""; cleared != wantStoppedWritten {
+			t.Errorf("%s: %s cleared = %v, want %v", cycleName, instanceKey, cleared, wantStoppedWritten)
+		}
 	}
 }
