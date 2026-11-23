@@ -66,6 +66,35 @@ Milestone M267. Design: [design.md](design.md). Spec delta: [specs/instance-reba
 - [ ] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
   and the spec, including the patterns review against `design/Anti-pattern.md`. Record each finding as fixed or
   rejected, with one line of reasoning.
+  - Round 1 (2026-11-23, on 800c0cc; Codex: approve, no findings). Verified by the main session:
+
+    | # | Finding | Resolution |
+    |---|---|---|
+    | B1 | Rebalance room ignores placements made earlier in the same cycle (scheduler.go:584 uses stored `placements`); reproduced: a placement and a move both land on a node with room for one | **fix** 3b.1 |
+    | B2 | Source cleanup of a moved instance deletes `observed/instance/{id}/pull_status` and `network/allocation/{id}` (keyed by ID only) the target may have written | **fix** 3b.2 (skip both store deletes when moved; keep node-local `ReleaseIP`) |
+    | B3 | `WORKER1_WHOAMI_INSTANCES=$(fetch_cluster_status …)` has no fallback under `set -e` (cluster_test.sh:1493) | **fix** 3b.3 |
+    | N1 | A move is stop-old-then-start-new for that instance ID: the VIP keeps the removed source container until the target publishes | **decision with the user** (see 3b.6) |
+    | D1 | SCHEDULING_GRAPH placement call sites and store-table lines stale by +44 | **fix** 3b.4 |
+    | S1 | `cleanupUndesiredInstance` / `cleanupStoppedStaleInstance` share a near-duplicate teardown >10 lines, now plus the move check | **fix** 3b.5 (shared teardown helper) |
+    | S2 | `checkStaleInstanceMove` is a thin wrapper | **fix** 3b.5 (fold into the helper) |
+    | S3 | `controller_stopped` read as `== "true"` here, as presence in `isInstanceMarkedForSkip` | **fix** 3b.5 (one helper for both) |
+    | S4 | WARN "load imbalance" every cycle when no target fits | **rejected**: accepted in the design; noise only, logged with the counts |
+
+## 3b. Rework from review round 1
+
+- [ ] 3b.1 B1: rebalance computes room from `mergeThisCyclePlacements(placements, changes)` (this cycle's placements
+  and preemptions count). Red first: spec scenario and test "a placement and a move in one cycle share the target's
+  room" (`TestRebalanceCountsRoomTakenByThisCyclePlacements`).
+- [ ] 3b.2 B2: when the instance moved elsewhere, the source skips `clearPullStatusFromStore` and
+  `DeleteNetworkAllocation` (keyed by ID), keeps the node-local `ReleaseIP`; extend `TestAgentDoesNotMarkMovedInstanceStopped`.
+- [ ] 3b.3 B3: fallback for the `WORKER1_WHOAMI_INSTANCES` read (`|| echo 0` and a named `fail` if it must be known);
+  `bash -n`, shellcheck.
+- [ ] 3b.4 D1: regenerate every `scheduler.go` line number in SCHEDULING_GRAPH (call sites §1–§3, store tables), checked
+  with `grep -n`.
+- [ ] 3b.5 S1–S3: one teardown helper for both cleanup paths (move check first, then teardown); fold
+  `checkStaleInstanceMove`; one `isControllerStopped` helper used by both readers.
+- [ ] 3b.6 N1 (after the user's decision): see milestones.md Phase 267.
+- [ ] 3b.7 Checks as in 3.1.
 - [ ] 3.4 Closing full Deploy Testbed run (job summary says `full run`), including the new churn check. Record the
   run ID and the whoami instance count.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
