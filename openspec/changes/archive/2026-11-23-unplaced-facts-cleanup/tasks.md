@@ -66,7 +66,7 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
       re-put once per second (20 puts per instance in 20 s, 7 instances): `publishInstanceStateUnlessStopped`
       (agent.go:2097, since M241) always commits its CAS; etcd `Put` skips unchanged values, etcd transactions do not,
       and the memory store's transactions do (memory.go:514), so unit tests cannot see it.
-- [ ] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
+- [x] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
   and the spec, including the patterns review against `design/Anti-pattern.md`. Record each finding as fixed or
   rejected, with one line of reasoning.
   - Round 1 (2026-11-23, on 3048f72; Codex: approve, no findings). Verified by the main session:
@@ -125,5 +125,5 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
     whoami-multiport, gate-tls, no skipped checks, adversarial replay with every case, deploy and replay `success`;
     whoami-churn 4 IDs, bound 6. Closing run for M262 (its code since 819c02c; the scheduler budget it introduced was
     renamed `maxSchedulerBookkeepingChangesPerCycle` in M267 3d).
-- [ ] 3.5 Update the milestones.md M262 row to the final scope, link this change from Phase 262, archive (syncing
+- [x] 3.5 Update the milestones.md M262 row to the final scope, link this change from Phase 262, archive (syncing
   `resource-requests`), release with `scripts/release.sh`.
