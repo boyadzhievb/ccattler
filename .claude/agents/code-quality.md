@@ -39,6 +39,11 @@ These are mandatory — violations must be reported:
 13. **Optimistic concurrency.** Compare-and-swap via store transactions, never lock-and-hold.
 14. **Prefix-based scan.** Use `Scan(prefix)` for fact store queries, not full-store iteration + filter.
 
+## Patterns and References
+
+Also read [design/Anti-pattern.md](../../design/Anti-pattern.md), including its fact-based architecture section and
+"References for the patterns review" (anti-patterns, GoF patterns, data structures), and report violations of it.
+
 ## What to Check
 
 ### Step 1 — Determine scope

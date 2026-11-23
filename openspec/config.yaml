@@ -23,6 +23,7 @@ rules:
   tasks:
     - The first tasks write the tests named in the spec scenarios and record them failing, before any implementation task
     - The last tasks are lint, unit tests, a deploy-cluster or e2e run, and the independent review from CLAUDE.md
+    - The independent review includes a patterns review of the diff against design/Anti-pattern.md and its references, with each finding recorded as fixed or rejected
 
 operations:
   apply:

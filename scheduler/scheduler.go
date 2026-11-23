@@ -133,6 +133,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	unplacedChanges := emitUnplacedDemandFacts(
 		unplaced, placedInThisCycle, nodes, instances,
 		serviceResources, placementConstraints, invalidResourceRequests,
+		extractStoredUnplacedValues(facts),
 	)
 	changes = append(changes, unplacedChanges...)
 	changes = append(changes, cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)...)
@@ -857,6 +858,8 @@ func collectPlacedInstanceIDs(changes []controllers.Change) map[string]bool {
 
 // emitUnplacedDemandFacts produces unplaced-demand facts for instances that
 // could not be placed in this cycle, categorizing each by why placement failed.
+// A fact whose stored value is already the same is not written again: the
+// scheduler watches that prefix, so a re-put would wake it forever (3g.1, F1).
 func emitUnplacedDemandFacts(
 	unplaced []string,
 	placedInThisCycle map[string]bool,
@@ -865,6 +868,7 @@ func emitUnplacedDemandFacts(
 	serviceResources map[string]serviceResourceRequirements,
 	placementConstraints map[string]*servicePlacementConstraint,
 	invalidResourceRequests map[string]string,
+	storedUnplacedValues map[string]string,
 ) []controllers.Change {
 	aliveCount := countAliveNodes(nodes)
 	var changes []controllers.Change
@@ -874,9 +878,25 @@ func emitUnplacedDemandFacts(
 		}
 		instanceInfo := instances[instanceID]
 		reason := classifyUnplacedReason(instanceInfo, aliveCount, nodes, placementConstraints, invalidResourceRequests)
-		changes = append(changes, buildUnplacedFactChanges(instanceID, instanceInfo, reason, serviceResources, placementConstraints)...)
+		for _, change := range buildUnplacedFactChanges(instanceID, instanceInfo, reason, serviceResources, placementConstraints) {
+			if storedValue, stored := storedUnplacedValues[change.Key]; stored && storedValue == string(change.Value) {
+				continue // unchanged: compare before update, as Kubernetes controllers do
+			}
+			changes = append(changes, change)
+		}
 	}
 	return changes
+}
+
+// extractStoredUnplacedValues returns the stored derived/scheduler/unplaced/
+// facts (reason and requirements per instance) by key, the scheduler's own
+// last writes, read from its watched input.
+func extractStoredUnplacedValues(facts []store.Fact) map[string]string {
+	storedValues := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedSchedulerUnplaced) {
+		storedValues[fact.Key] = string(fact.Value)
+	}
+	return storedValues
 }
 
 // countAliveNodes returns the number of nodes in alive state.
@@ -975,7 +995,9 @@ func toleratesRestrictionsForNode(node *schedulerNodeInfo, acceptLabels map[stri
 }
 
 // buildUnplacedFactChanges creates the store changes for a single unplaced
-// instance's reason and requirements facts.
+// instance's reason and requirements facts. The requirements JSON comes from
+// encoding/json on a struct (fields in declaration order), so the same
+// requirements always give the same bytes and compare equal.
 func buildUnplacedFactChanges(
 	instanceID string,
 	instanceInfo *schedulerInstanceInfo,

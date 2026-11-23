@@ -931,10 +931,57 @@ agent/telemetry.go:207). Behaviour must not change: every existing test stays gr
     - `go test -count=1 ./...` → 20 packages `ok`.
     - `go test -count=1 -race ./controllers/ ./scheduler/ ./types/` → all `ok`.
 
+## 3g. Fixes from the testbed run (task 4.1 findings, user approved 2026-11-23)
+
+- [x] 3g.1 F1 write loop: the scheduler writes `derived/scheduler/unplaced/{id}/reason` and `/requirements` only when
+  the stored value differs (compare with the facts it already reads); unchanged → no change. Red first: a scheduler
+  test that reconciles twice with the same unplaced instance and asserts the second cycle proposes no put for those
+  keys; and a runner-level test (resync off, real watch) showing the scheduler does not re-trigger itself with one
+  unplaced instance (bounded reconcile count over a short window). Kubernetes controllers compare before update.
+  - Red without the scheduler.go change: second cycle re-puts `requirements`; runner test counts 28 cycles in 300ms
+    (limit 3). Green with it (`scheduler/unplaced_facts_test.go`).
+- [x] 3g.2 F4 lint: `cca lint` refuses an unreadable resource value as apply does (same compiler check and message);
+  test with `memory 512MB` (`TestLintRefusesUnreadableResourceValue`).
+- [x] 3g.3 Checks: gofmt and golangci-lint clean; `go test -count=1 ./...` all `ok`; `-race` on scheduler and lang
+  `ok`; SCHEDULING_GRAPH updated (2026-11-23).
+- Deferred to milestones (recorded in milestones.md): F2 → M239 (resource changes roll out progressively; a rollback
+  restores the whole service spec, not only the image); F3 → M260 (`cca server` never runs the cluster-autoscale
+  controller); F4 rest → M261 (HTTP 403 for schema errors; unplaced reason not shown in `cca describe`).
+
 ## 4. Testbed, review, release (main session)
 
 - [ ] 4.1 Testbed by hand (`deploy-run:resource-capacity`, on the cluster a push run leaves). Record commands and
   output here:
+  - Run 2026-11-23 on the cluster push run 45179887458 (89362c3, partial, success) left; configs in
+    `/tmp/{bad,big,roll1,roll2,fill}.cca` on cca-deploy-ctrl; free CPU before: ctrl 1150m, worker-1 1400m,
+    worker-2 1250m.
+    - **Refused apply: pass.** `cca apply /tmp/bad.cca` → exit 1, `service "m243bad" memory "512MB" cannot be read …`;
+      `cca describe service m243bad` → not found. (Notes: `cca lint` accepts the file; the API answers HTTP 403 for
+      this schema error.)
+    - **Request no node can meet: pass, except the capacity request.** `m243big` (priority 900, `memory 64Gi`) stays
+      pending; `cca watch derived/scheduler/unplaced/` → `reason=insufficient_capacity`, requirements memory 65536;
+      no `controller_stopped` written, the 7 existing instances keep running (D12). No capacity request: `cca server`
+      never creates the cluster-autoscale controller (only `cca run` / `--simulate` paths do), pre-existing.
+      The reason is not shown by `cca describe service` for a new service (REASON column empty).
+    - **M241 capacity case: pass.** `m243roll` whoami → nginx with `memory 64Gi`, `progress_deadline 2m`; rollout
+      reason `waiting for 32078f9704 unplaced: insufficient_capacity (cpu 100m, memory 65536Mi)`; at +2m `State:
+      rolled-back`, `Rollback reason: no progress for 2m: …insufficient_capacity…`, also in `cca status`.
+    - **Filling a worker: pass on capacity, with a finding.** `m243fill` 4 × `cpu 750m`: one each on ctrl and
+      worker-2, two unplaced `insufficient_capacity`; no node above capacity. worker-1 took none, because the
+      rolled-back `m243roll` still declares `memory 64Gi` (rollback restores only the image) and its running instance
+      counts 64 GiB there.
+    - **No vertical scaling:** `grep -rn vertical test/e2e/workloads` → none (D8).
+    - **Findings (verified in logs/code):**
+      - F1 **write loop**: every scheduler cycle re-puts unchanged `derived/scheduler/unplaced/{id}/{reason,
+        requirements}` (scheduler.go:992-994) and the scheduler watches that prefix (:74); `cca watch` counted 135
+        puts per key in 10 s (≈80 etcd puts/s for 3 unplaced instances). Pre-existing since M78, made common by
+        M243. Stopped after scaling the test services to 0.
+      - F2 a resource change restarts running old instances at once, outside the rollout (agent: `resource change
+        detected … live resize unsupported, stopping instance for restart`), and a rollback restores only the image,
+        so the new resources stay (pre-existing in M241; matters since M243).
+      - F3 `cca server` never runs the cluster-autoscale controller (pre-existing).
+      - F4 small: `cca lint` does not refuse an unreadable resource value; HTTP 403 for a schema error; the unplaced
+        reason is not shown in `cca describe` outside a rollout.
   - **Refused apply:** apply `memory 512MB`; the apply is refused with field and value, and the store is unchanged.
   - **Request no node can meet:** apply a new service with `memory 64Gi`. The instance is unplaced, `cca describe
     service` shows `insufficient_capacity`, and the cluster-scale controller writes a capacity request. No

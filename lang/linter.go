@@ -31,7 +31,27 @@ func Lint(file *File) []LintDiagnostic {
 	diagnostics = append(diagnostics, lintPortRanges(file)...)
 	diagnostics = append(diagnostics, lintUndefinedReferences(file)...)
 	diagnostics = append(diagnostics, lintTCPHealthWithoutExpose(file)...)
+	diagnostics = append(diagnostics, lintResourceValues(file)...)
 	diagnostics = append(diagnostics, ApplyTimeWarnings(file)...)
+	return diagnostics
+}
+
+// lintResourceValues reports, as an error, each service whose resource or
+// vertical value apply would refuse, with the compiler's own check and message
+// (validateServiceResourceValues, M243 D3; 3g.2).
+func lintResourceValues(file *File) []LintDiagnostic {
+	var diagnostics []LintDiagnostic
+	for _, serviceDecl := range file.Services {
+		validationError := validateServiceResourceValues(serviceDecl, nil)
+		if validationError == nil {
+			continue
+		}
+		message := validationError.Error()
+		if parseError, isParseError := validationError.(*ParseError); isParseError {
+			message = parseError.Message
+		}
+		diagnostics = append(diagnostics, LintDiagnostic{Severity: "error", Message: message, Line: serviceDecl.Line})
+	}
 	return diagnostics
 }
 

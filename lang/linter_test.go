@@ -425,3 +425,36 @@ func TestLintTCPHealthWithExposeNoWarning(t *testing.T) {
 		}
 	}
 }
+
+// TestLintRefusesUnreadableResourceValue: 3g.2 (testbed F4). cca lint reports
+// an unreadable resource value as an error with the compiler's message, the
+// same check apply runs, so a lint pass never hides an apply refusal.
+func TestLintRefusesUnreadableResourceValue(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    resources {
+        memory 512MB
+    }
+}
+`
+	parsedFile, parseError := Parse(input)
+	if parseError != nil {
+		t.Fatalf("parse failed: %v", parseError)
+	}
+	_, compileError := Compile(parsedFile)
+	compileParseError, isParseError := compileError.(*ParseError)
+	if !isParseError {
+		t.Fatalf("compile error = %v, want the *ParseError apply reports", compileError)
+	}
+	var lintErrors []LintDiagnostic
+	for _, diagnostic := range Lint(parsedFile) {
+		if diagnostic.Severity == "error" {
+			lintErrors = append(lintErrors, diagnostic)
+		}
+	}
+	if len(lintErrors) != 1 || lintErrors[0].Message != compileParseError.Message || lintErrors[0].Line != compileParseError.Line {
+		t.Errorf("lint errors = %+v, want one error with the compiler's message %q at line %d",
+			lintErrors, compileParseError.Message, compileParseError.Line)
+	}
+}

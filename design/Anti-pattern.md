@@ -80,3 +80,21 @@ Use optimistic concurrency via CAS transactions. Never hold a lock across a reco
 ### No Non-Deterministic Reconciliation
 
 Controllers must produce the same output for the same input. Sort map keys before processing. Use deterministic tie-breaking in placement decisions.
+
+## References for the patterns review
+
+Every milestone gets a patterns, anti-patterns and data-structures review (CLAUDE.md, Independent Review) against
+this document and these references (added 2026-11-23):
+
+- **Anti-patterns:** [Antipatterns to avoid in code](https://www.freecodecamp.org/news/antipatterns-to-avoid-in-code/):
+  Spaghetti Code, Golden Hammer, Boat Anchor, Dead Code, Proliferation of Code (middlemen that only forward), God
+  Object (fix with single responsibility and interface segregation).
+- **Design patterns:** [Design Patterns for Humans](https://github.com/nilbuild/design-patterns-for-humans), the 23
+  GoF patterns. Use one where it fits Go (interfaces, function values, composition); never force one. In CCattler:
+  store watch = Observer, runtime backends = Strategy/Adapter, package-level mutable state = Singleton (keep it small
+  and testable). The Command pattern conflicts with "store facts, not commands".
+- **Data structures and algorithms:** [Data-Structures-and-Algorithms](https://github.com/thepranaygupta/Data-Structures-and-Algorithms)
+  as a checklist: heaps (use the heap order, not its backing array), hash maps (struct keys over joined strings),
+  sorting and selection (Kth largest instead of a full sort when only one element is needed), sliding windows
+  (sample by time, not by call), topological sort (deterministic order), prefix search (trie / prefix scan).
+  Optimize only with a benchmark (CLAUDE.md, Performance Optimization Principle).

@@ -62,6 +62,18 @@ Per CLAUDE.md, these are not suggestions — they are rules:
 - **Declarative facts**: store facts and desired results, not commands or actions.
 - **Change proposals**: controller `Reconcile` must return `[]Change`, not mutate the store directly.
 
+### 3b — Patterns, Anti-Patterns, Data Structures
+
+Read [design/Anti-pattern.md](../../design/Anti-pattern.md) whole, including "References for the patterns review", and
+check the diff against it:
+
+- **Anti-patterns:** spaghetti code, golden hammer, boat anchor, dead code, middlemen that only forward, God objects;
+  raw strings where a typed enum belongs; the same logic in 3+ places.
+- **Design patterns:** a pattern used where it fits Go, or forced where it doesn't. Package-level mutable state
+  (Singleton) kept small and testable. Nothing that stores commands instead of facts.
+- **Data structures and algorithms:** complexity of new loops, map vs slice choice, struct keys instead of joined
+  and re-split strings, deterministic iteration, unneeded allocation. Optimization findings need a benchmark.
+
 ### 4 — Test Quality (If tests are in the diff)
 
 - Tests must assert something meaningful — not just "didn't panic"
@@ -76,7 +88,20 @@ Per CLAUDE.md, these are not suggestions — they are rules:
 2. For each changed file, read the surrounding context (not just the diff lines) to understand the change in place.
 3. Check each category above against every changed function/block.
 4. For anything suspicious, read the original code to confirm it's a real issue, not a false positive.
-5. Only report confirmed findings.
+5. **Second opinion from Codex.** Run Codex's adversarial review on the same diff, with the same focus you were given,
+   while or after you do your own pass:
+   ```bash
+   CODEX_COMPANION=$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs | sort -V | tail -1)
+   # committed range: --base <ref> --scope branch; uncommitted work: --scope working-tree
+   node "$CODEX_COMPANION" adversarial-review --background --base <ref> --scope <branch|working-tree> "<focus>"
+   node "$CODEX_COMPANION" status --json    # repeat until the job is done
+   node "$CODEX_COMPANION" result <job-id>
+   ```
+   Codex is review-only here: never let it edit files. Treat its output as unverified. Check every Codex finding in
+   the code like your own, and drop the ones that don't hold. If Codex is unavailable (`setup --json` says not ready)
+   or fails, say so in the report and continue without it. Never skip your own pass.
+6. Only report confirmed findings. Mark each one's source: **Claude**, **Codex** or **both**, and list the Codex
+   findings you rejected, with one line each on why.
 
 ## Output Format
 
