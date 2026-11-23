@@ -80,17 +80,17 @@ type etcdLikeStore struct {
 
 // Transaction turns each put of a key's current value into a delete and a put
 // of that value in the same transaction, so watchers see the write.
-func (etcdStore *etcdLikeStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
+func (etcdLikeStore *etcdLikeStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
 	var operations []store.Op
 	for _, operation := range onSuccess {
 		if operation.Type == store.OpPut {
-			if currentFact, getError := etcdStore.Get(ctx, operation.Key); getError == nil && bytes.Equal(currentFact.Value, operation.Value) {
+			if currentFact, getError := etcdLikeStore.Get(ctx, operation.Key); getError == nil && bytes.Equal(currentFact.Value, operation.Value) {
 				operations = append(operations, store.Op{Type: store.OpDelete, Key: operation.Key})
 			}
 		}
 		operations = append(operations, operation)
 	}
-	return etcdStore.StateStore.Transaction(ctx, compares, operations, onFailure)
+	return etcdLikeStore.StateStore.Transaction(ctx, compares, operations, onFailure)
 }
 
 // countingScheduler counts the scheduler's reconcile cycles.
@@ -100,9 +100,9 @@ type countingScheduler struct {
 }
 
 // Reconcile counts the cycle and delegates to the scheduler.
-func (counting *countingScheduler) Reconcile(ctx context.Context, facts []store.Fact) ([]controllers.Change, error) {
-	counting.reconcileCount.Add(1)
-	return counting.Scheduler.Reconcile(ctx, facts)
+func (countingScheduler *countingScheduler) Reconcile(ctx context.Context, facts []store.Fact) ([]controllers.Change, error) {
+	countingScheduler.reconcileCount.Add(1)
+	return countingScheduler.Scheduler.Reconcile(ctx, facts)
 }
 
 // TestSchedulerDoesNotRetriggerItselfWithAnUnplacedInstance: 3g.1 (testbed
@@ -119,8 +119,8 @@ func TestSchedulerDoesNotRetriggerItselfWithAnUnplacedInstance(t *testing.T) {
 		}
 	}
 
-	scheduler := &countingScheduler{Scheduler: newTestScheduler()}
-	controllerRunner := controllers.NewRunner(factStore, scheduler)
+	countingPlacementScheduler := &countingScheduler{Scheduler: newTestScheduler()}
+	controllerRunner := controllers.NewRunner(factStore, countingPlacementScheduler)
 	controllerRunner.SetDebounce(schedulerRunnerPollInterval)
 	controllerRunner.SetResyncInterval(0)
 	runnerDone := make(chan struct{})
@@ -138,9 +138,14 @@ func TestSchedulerDoesNotRetriggerItselfWithAnUnplacedInstance(t *testing.T) {
 		_, requirementsError := factStore.Get(ctx, types.KeyDerivedSchedulerUnplacedRequirements("web-1"))
 		return reasonError == nil && requirementsError == nil
 	})
-	reconcilesBefore := scheduler.reconcileCount.Load()
+	reconcilesBefore := countingPlacementScheduler.reconcileCount.Load()
 	<-time.After(unplacedQuietWindow)
-	if extraReconciles := scheduler.reconcileCount.Load() - reconcilesBefore; extraReconciles > maxReconcilesInQuietWindow {
+	select {
+	case <-runnerDone:
+		t.Fatal("the controller runner exited during the quiet window, so the cycle count proves nothing")
+	default:
+	}
+	if extraReconciles := countingPlacementScheduler.reconcileCount.Load() - reconcilesBefore; extraReconciles > maxReconcilesInQuietWindow {
 		t.Errorf("%d scheduler cycles in %v with nothing changed, want at most %d (a write loop)",
 			extraReconciles, unplacedQuietWindow, maxReconcilesInQuietWindow)
 	}

@@ -944,6 +944,18 @@ agent/telemetry.go:207). Behaviour must not change: every existing test stays gr
   test with `memory 512MB` (`TestLintRefusesUnreadableResourceValue`).
 - [x] 3g.3 Checks: gofmt and golangci-lint clean; `go test -count=1 ./...` all `ok`; `-race` on scheduler and lang
   `ok`; SCHEDULING_GRAPH updated (2026-11-23).
+- [x] 3g.4 Review of 4d42565 (code-reviewer Opus high + Codex: no correctness bugs). Findings:
+  - fix: receiver names `etcdStore`/`counting` in `scheduler/unplaced_facts_test.go` → match the type (mandatory rule);
+    local `scheduler` → `countingPlacementScheduler`.
+  - fix: SCHEDULING_GRAPH `extractExistingUnplacedInstanceIDs` line number; the "put only when the stored value
+    differs" row names `emitUnplacedDemandFacts` (the filter), not `buildUnplacedFactChanges`.
+  - fix (optional, taken): runner test asserts the runner is still running after the quiet window.
+  - rejected: `errors.As` in `lintResourceValues`: the fallback is harmless; style only.
+  - rejected here: `Severity: "error"` raw string, ~20 existing call sites → M259.
+  - deferred → M262: unplaced facts are never deleted when the instance stops or is removed (pre-existing since M78,
+    confirmed on the testbed, see 4.1 rerun).
+  - checks after the fixes: gofmt -l scheduler clean; golangci-lint ./scheduler/... 0 issues; go test -race
+    ./scheduler/ ok; both TestSchedulerDoesNot* pass -count=10 -race.
 - Deferred to milestones (recorded in milestones.md): F2 → M239 (resource changes roll out progressively; a rollback
   restores the whole service spec, not only the image); F3 → M260 (`cca server` never runs the cluster-autoscale
   controller); F4 rest → M261 (HTTP 403 for schema errors; unplaced reason not shown in `cca describe`).
@@ -982,6 +994,14 @@ agent/telemetry.go:207). Behaviour must not change: every existing test stays gr
       - F3 `cca server` never runs the cluster-autoscale controller (pre-existing).
       - F4 small: `cca lint` does not refuse an unreadable resource value; HTTP 403 for a schema error; the unplaced
         reason is not shown in `cca describe` outside a rollout.
+  - Rerun 2026-11-23 on the cluster push run 45187338094 (4d42565, success) left, after 3g:
+    - **F1 fixed:** `cca apply /tmp/big.cca`, then `cca watch derived/scheduler/unplaced/` for 10 s → no events (was
+      135 puts per key). `cca scale m243big 2` → exactly one put of reason (`insufficient_capacity`) and requirements
+      for the new instance, no repeats in 40 s.
+    - **F4 lint fixed:** `cca lint /tmp/bad.cca` → `line 1: error: service "m243bad" memory "512MB" cannot be read …`,
+      exit 1.
+    - **New (review, confirmed):** `cca scale m243big 0` stops both instances, but no delete of their unplaced facts
+      follows in 20 s → M262.
   - **Refused apply:** apply `memory 512MB`; the apply is refused with field and value, and the store is unchanged.
   - **Request no node can meet:** apply a new service with `memory 64Gi`. The instance is unplaced, `cca describe
     service` shows `insufficient_capacity`, and the cluster-scale controller writes a capacity request. No

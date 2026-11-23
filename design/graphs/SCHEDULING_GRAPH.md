@@ -436,15 +436,15 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `observed/instance/{id}/probe/startup` | node agent | `extractInstanceInfoFromFacts` |
 | `derived/instance/{id}/controller_stopped` | instance, failure, scheduler (preemption) | `extractInstanceInfoFromFacts` (counts as stopped, M241 2i.2) |
 | `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |
-| `derived/scheduler/unplaced/{id}/*` | self | `extractStoredUnplacedValues` (compare before put, 3g.1), `extractExistingUnplacedInstanceIDs` :852 |
+| `derived/scheduler/unplaced/{id}/*` | self | `extractStoredUnplacedValues` (compare before put, 3g.1), `extractExistingUnplacedInstanceIDs` :1066 |
 
 ### Writes
 | Key Pattern | Value | Written By |
 |---|---|---|
 | `placement/instance/{id}` | nodeID | `placeBatchedInstances` :976, `placeOneGroup` :1712, `buildRebalanceMoveChanges` :586 |
 | `placement/node/{nodeID}/{id}` | "" | `placeBatchedInstances` :977, `placeOneGroup` :1713, `buildRebalanceMoveChanges` :588 |
-| `derived/scheduler/unplaced/{id}/reason` | reason string (incl. `invalid_resource_request`) | `buildUnplacedFactChanges` :1001 (put only when the stored value differs, 3g.1) |
-| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :1001 (put only when the stored value differs, 3g.1) |
+| `derived/scheduler/unplaced/{id}/reason` | reason string (incl. `invalid_resource_request`) | `buildUnplacedFactChanges` :1001 (put only when the stored value differs; the filter is `emitUnplacedDemandFacts` :863, 3g.1) |
+| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :1001 (put only when the stored value differs; the filter is `emitUnplacedDemandFacts` :863, 3g.1) |
 | `derived/scheduler/invalid_resource_request/{svc}` | `{key}={value}` of the unreadable request | `buildInvalidResourceRequestChanges` resource_requests.go:96; read by `/api/status` → `cca status` "Resources:" line (M243 D5) |
 | `derived/instance/{id}/controller_stopped` | "true" | `attemptPreemptions` :236 (only a victim whose stop makes room, D12) |
 
