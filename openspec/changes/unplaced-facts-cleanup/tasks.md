@@ -115,11 +115,15 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 
   S1 result: `whole instances` passes (39 puts in cycle 1, new-20's 2 in cycle 2); red under a temporary per-change
   put loop (`first cycle puts: 40 unplaced keys, want 39`, `unexpected .../new-20/reason`); gofmt, lint, -race ok.
-- [ ] 3.4 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
+- [x] 3.4 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
   - Run 45211387656 (workflow_dispatch, 819c02c): **failed**, `REGRESSED: 541014b05f (whoami) state=pending`.
     Cause, verified in the log, the code and live on the cluster: the scheduler's rebalancing moves whoami onto
     worker-2 by instance count although its memory is full (`selectRebalanceTarget` ignores requests), placement
     puts the replacement back on ctrl, every ~6 s (about 40 whoami instances on worker-2 in 4 minutes). Pre-existing
     (reachable since M243), not in M262's diff → M267. Not citable; a new full run is needed.
+  - **Run 45254885232** (workflow_dispatch, 1a7869d, 2026-11-23): `RUN_KIND: full`, workloads airflow, whoami,
+    whoami-multiport, gate-tls, no skipped checks, adversarial replay with every case, deploy and replay `success`;
+    whoami-churn 4 IDs, bound 6. Closing run for M262 (its code since 819c02c; the scheduler budget it introduced was
+    renamed `maxSchedulerBookkeepingChangesPerCycle` in M267 3d).
 - [ ] 3.5 Update the milestones.md M262 row to the final scope, link this change from Phase 262, archive (syncing
   `resource-requests`), release with `scripts/release.sh`.
