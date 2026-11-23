@@ -202,6 +202,14 @@ Round-1 findings B1–B3, D1, S1–S3 confirmed fixed; new tests verified red on
 - [x] 3c.5 Checks as in 3.1.
   Result: `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
   `-race` on scheduler, agent, controllers ok (1.4 s, 29.8 s, 6.8 s).
+- [ ] 3c.6 Stop-time Codex check on 0754484, verified by the main session: the placement guard covers only the state
+  transaction; `publishInstanceStateToStore` then writes the marker, service, `ip` and `network/allocation/{id}`
+  with separate Puts (agent.go ~2248–2290), so a move between the transaction and those Puts lets the source
+  overwrite the target's IP (the VIP points at the removed container until the target's next publish, ~1 s).
+  Fix: resolve the IP first (AllocateIP / runtime IP), then write state, node, marker, service, `ip` and the
+  allocation in the one guarded transaction; `created-at` stays create-only. Red first: a test that moves the
+  instance between the source's state write and its IP write (inject via a store wrapper) and expects the target's
+  IP to remain. Checks as in 3.1.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
