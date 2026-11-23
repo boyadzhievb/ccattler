@@ -89,6 +89,17 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 - [x] 3a.4 Checks as in 3.1, plus `go test -count=10 -run 'Unplaced' ./scheduler/`.
   `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` exit 0 (20 ok, 0 FAIL); `-race`
   scheduler and controllers ok; `-count=10 -run Unplaced ./scheduler/` ok.
+- [x] 3a.5 Review round 2 (2026-11-23, on d44bd3f; code-reviewer Opus high: APPROVE; Codex: approve, no findings).
+  Round-1 findings 1–4 confirmed fixed; new tests verified red on 3048f72. Suggestions, verified by the main session:
+
+  | # | Finding | Resolution |
+  |---|---|---|
+  | S1 | No test pins "whole instances only": with all instances costing 2 and an even budget, a per-change budget would pass | **fixed**: sub-case `whole instances` added to `TestSchedulerBudgetsUnplacedFactChanges` (an instance with only its reason changed, cost 1, first; cycle 1 stops at 39, the next instance's 2 puts both come in cycle 2) |
+  | S2 | `stateWithControllerStop` doc and Flow 8 table omit rollout, which depends on it via `extractWaitingUnplacedDemand` | **fixed** (main session): doc names all three callers; Flow 8 table has a rollout row |
+  | S3 | Stale reasons while puts are deferred not in the failure table | **fixed** (main session): row added to design.md; not a regression |
+
+  S1 result: `whole instances` passes (39 puts in cycle 1, new-20's 2 in cycle 2); red under a temporary per-change
+  put loop (`first cycle puts: 40 unplaced keys, want 39`, `unexpected .../new-20/reason`); gofmt, lint, -race ok.
 - [ ] 3.4 Closing full Deploy Testbed run (job summary says `full run`). Record the run ID.
 - [ ] 3.5 Update the milestones.md M262 row to the final scope, link this change from Phase 262, archive (syncing
   `resource-requests`), release with `scripts/release.sh`.

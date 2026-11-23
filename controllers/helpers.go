@@ -168,8 +168,8 @@ func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]stri
 
 // stateWithControllerStop returns the observed state, or stopped under the
 // controller_stopped marker; node_failure (a scheduling signal) is ignored.
-// Callers: endpoint eligibility (buildDesiredEndpoints) and cluster-scaling
-// demand (isInstanceWaitingForPlacement); a change here affects both.
+// Used by endpoints and, via isInstanceWaitingForPlacement, by cluster-scaling
+// demand and rollout waiting reasons: a change here affects all three.
 func stateWithControllerStop(instanceFields map[string]string) types.InstanceState {
 	if instanceFields["controller_stopped"] == "true" {
 		return types.InstanceStopped

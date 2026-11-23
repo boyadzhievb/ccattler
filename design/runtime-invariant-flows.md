@@ -280,6 +280,7 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 |---|---|---|
 | Endpoint | `stateWithControllerStop` | Endpoints reflect runtime state, not scheduling intent |
 | Cluster autoscale | `stateWithControllerStop` | Demand counts only instances still pending, not stopped by a controller (M262) |
+| Rollout (waiting reason) | `stateWithControllerStop` (via `extractWaitingUnplacedDemand`) | "unplaced: …" is shown only for instances still waiting for a placement (M262) |
 | Stateful DNS | `effectiveInstanceState` | Per-instance DNS should update when rescheduled |
 | Instance | `effectiveInstanceState` | Needs `node_failure` to trigger replacement |
 | Failure | `effectiveInstanceState` | Needs `node_failure` for failure detection |

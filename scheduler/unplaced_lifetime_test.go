@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -268,6 +269,17 @@ func assertUnplacedKeySet(t *testing.T, label string, got map[string]bool, want 
 	}
 }
 
+// marshalWebRequirementsJSON returns the requirements value the scheduler
+// writes for a web instance (cpu 2000m), so a stored copy reads as unchanged.
+func marshalWebRequirementsJSON(t *testing.T) string {
+	t.Helper()
+	requirementsJSON, marshalError := json.Marshal(unplacedDemandRequirements{Service: "web", CPU: 2000})
+	if marshalError != nil {
+		t.Fatal(marshalError)
+	}
+	return string(requirementsJSON)
+}
+
 // TestSchedulerBudgetsUnplacedFactChanges: M262 3a.1 (D4), spec requirement
 // "Unplaced-fact changes are budgeted per scheduler cycle". Puts and deletes
 // share maxUnplacedFactChangesPerCycle, puts first, whole instances in ID
@@ -282,6 +294,8 @@ func TestSchedulerBudgetsUnplacedFactChanges(t *testing.T) {
 		wantDeletes       unplacedIDRange // wantDeletes are the instances the first cycle cleans.
 		wantSecondPuts    unplacedIDRange // wantSecondPuts are written by the second cycle.
 		wantSecondDeletes unplacedIDRange // wantSecondDeletes are cleaned by the second cycle.
+		storedFacts       []store.Fact    // storedFacts are unplaced facts a previous cycle wrote for new instances.
+		wantExtraPuts     []string        // wantExtraPuts are single keys the first cycle writes beyond wantPuts.
 	}{
 		{
 			name: "deletes only", stoppedCount: 50, placeable: true,
@@ -299,10 +313,26 @@ func TestSchedulerBudgetsUnplacedFactChanges(t *testing.T) {
 			wantPuts:       unplacedIDRange{"new", 0, 20},
 			wantSecondPuts: unplacedIDRange{"new", 20, 30},
 		},
+		{
+			// new-00 costs 1 (only its reason changed), new-01..19 cost 2:
+			// 39 puts; new-20 (2 more) would exceed 40, so neither of its
+			// puts is written until the second cycle. A per-change budget
+			// would write new-20's reason in the first cycle.
+			name: "whole instances", newCount: 21,
+			storedFacts: []store.Fact{
+				factOf(types.KeyDerivedSchedulerUnplacedReason("new-00"), string(types.UnplacedNoNodes)),
+				factOf(types.KeyDerivedSchedulerUnplacedRequirements("new-00"), marshalWebRequirementsJSON(t)),
+			},
+			wantExtraPuts:  []string{types.KeyDerivedSchedulerUnplacedReason("new-00")},
+			wantPuts:       unplacedIDRange{"new", 1, 20},
+			wantSecondPuts: unplacedIDRange{"new", 20, 21},
+		},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			facts := unplacedBudgetFacts(testCase.stoppedCount, testCase.newCount, testCase.placeable)
+			facts := append(unplacedBudgetFacts(testCase.stoppedCount, testCase.newCount, testCase.placeable),
+				testCase.storedFacts...)
+			store.SortFacts(facts)
 			firstChanges, reconcileError := newTestScheduler().Reconcile(context.Background(), facts)
 			if reconcileError != nil {
 				t.Fatal(reconcileError)
@@ -311,7 +341,11 @@ func TestSchedulerBudgetsUnplacedFactChanges(t *testing.T) {
 				t.Errorf("placement of web-1 proposed = %v, want %v", placed, testCase.placeable)
 			}
 			putKeys, deleteKeys := unplacedKeysChanged(firstChanges)
-			assertUnplacedKeySet(t, "first cycle puts", putKeys, unplacedKeysOf(testCase.wantPuts))
+			wantFirstPutKeys := unplacedKeysOf(testCase.wantPuts)
+			for _, extraPutKey := range testCase.wantExtraPuts {
+				wantFirstPutKeys[extraPutKey] = true
+			}
+			assertUnplacedKeySet(t, "first cycle puts", putKeys, wantFirstPutKeys)
 			assertUnplacedKeySet(t, "first cycle deletes", deleteKeys, unplacedKeysOf(testCase.wantDeletes))
 
 			secondChanges, reconcileError := newTestScheduler().Reconcile(context.Background(),
