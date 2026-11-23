@@ -52,15 +52,18 @@ Scheduler.Reconcile(ctx, facts)                                  :93
 ├── attemptPreemptions(placeableUnplaced, placed, nodes, changes, inputs) :123/:236
 │   [full tree in §5]
 │
-├── emitUnplacedDemandFacts(unplaced, placed, nodes, ..., invalid, extractStoredUnplacedValues(facts)) :133/:863
+├── selectInstancesWaitingForPlacement(unplaced, placed)         :133/:863 → waiting (unplaced \ placed, sorted;
+│   computed once, input of both unplaced-fact steps below, M262 D1)
+│
+├── emitUnplacedDemandFacts(waiting, nodes, ..., invalid, extractStoredUnplacedValues(facts)) :134/:877
 │   [full tree in §6]
 │
-├── cleanupStaleUnplacedFacts(facts, placements, placed)         :139
+├── cleanupStaleUnplacedFacts(facts, waiting)                    :140/:1056
 │
-├── rebalancePlacedInstances(nodes, instances, ..., pinned)      :141/:519
-│   [full tree in §4; pinned = extractRebalancePinnedServices(facts, stateful, invalid) :144]
+├── rebalancePlacedInstances(nodes, instances, ..., pinned)      :142/:521
+│   [full tree in §4; pinned = extractRebalancePinnedServices(facts, stateful, invalid) :145]
 │
-└── detectAndLogNodePressure(nodes, placements, instances, ...)  :148/:772
+└── detectAndLogNodePressure(nodes, placements, instances, ...)  :149/:774
     └── FOR EACH alive node:
         ├── cpuPercent = usedCPU * 100 / availCPU
         ├── memPercent = usedMemory * 100 / availMemory
@@ -308,21 +311,22 @@ attemptPreemptions(unplaced, placed, nodes, thisCycleChanges, inputs) :236
 
 ### emitUnplacedDemandFacts → signal autoscaler
 ```
-emitUnplacedDemandFacts(unplaced, placed, nodes, instances, ..., invalid, stored) :863
-│   stored = extractStoredUnplacedValues(facts) :894  (derived/scheduler/unplaced/ is a watched prefix,
+emitUnplacedDemandFacts(waiting, nodes, instances, ..., invalid, stored) :877
+│   waiting = selectInstancesWaitingForPlacement(unplaced, placedInThisCycle) :863
+│   stored = extractStoredUnplacedValues(facts) :904  (derived/scheduler/unplaced/ is a watched prefix,
 │   so the scheduler's own last writes are in its input)
-├── countAliveNodes(nodes)                                       :903
+├── countAliveNodes(nodes)                                       :913
 │
-└── FOR EACH unplaced instance not in placedInThisCycle:
-    ├── classifyUnplacedReason(info, alive, nodes, constraints, invalid) :916
+└── FOR EACH waiting instance (sorted):
+    ├── classifyUnplacedReason(info, alive, nodes, constraints, invalid) :926
     │   ├── service request unreadable → "invalid_resource_request" (checked FIRST, so it is never
     │   │   "no_nodes", which cluster scaling counts as demand; filterInsufficientCapacityDemand
     │   │   is an allow-list and ignores it, M243 D5)
     │   ├── aliveCount == 0 → "no_nodes"
-    │   ├── countConstraintMatchingNodes() == 0 → "volume_home_node_unavailable" | "unsatisfiable_constraint" :949
+    │   ├── countConstraintMatchingNodes() == 0 → "volume_home_node_unavailable" | "unsatisfiable_constraint" :959
     │   └── else → "insufficient_capacity" (a request no node's remaining cpu/MiB covers)
     │
-    └── buildUnplacedFactChanges(instanceID, reason, requirements) :1001
+    └── buildUnplacedFactChanges(instanceID, reason, requirements) :1011
         ├── PUT derived/scheduler/unplaced/{id}/reason = reason
         ├── PUT derived/scheduler/unplaced/{id}/requirements = JSON {cpu millicores, memory MiB}
         │   (encoding/json on a struct: deterministic bytes)
@@ -333,10 +337,14 @@ emitUnplacedDemandFacts(unplaced, placed, nodes, instances, ..., invalid, stored
 
 ### cleanupStaleUnplacedFacts
 ```
-cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)  :1044
-├── extractExistingUnplacedInstanceIDs(facts)                    :1066
-└── FOR EACH existing unplaced ID:
-    └── if now placed → DELETE derived/scheduler/unplaced/{id}/*
+cleanupStaleUnplacedFacts(facts, waiting)                        :1056
+├── waiting → set (O(1) membership)
+├── extractExistingUnplacedInstanceIDs(facts)                    :1078 (sorted)
+└── FOR EACH existing unplaced ID not in waiting (placed, stored or this cycle; stopped, controller_stopped
+    included; any other state; gone from the store, M262 D1):
+    └── DELETE derived/scheduler/unplaced/{id}/reason and /requirements
+        (waiting and the deleted IDs are complementary: never a put and a delete of one key in a cycle;
+        leftovers of an older version go on the first cycle, no migration, D3)
 ```
 
 ## 7. Node Heap (scheduler/node_heap.go)
@@ -436,15 +444,15 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `observed/instance/{id}/probe/startup` | node agent | `extractInstanceInfoFromFacts` |
 | `derived/instance/{id}/controller_stopped` | instance, failure, scheduler (preemption) | `extractInstanceInfoFromFacts` (counts as stopped, M241 2i.2) |
 | `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |
-| `derived/scheduler/unplaced/{id}/*` | self | `extractStoredUnplacedValues` (compare before put, 3g.1), `extractExistingUnplacedInstanceIDs` :1066 |
+| `derived/scheduler/unplaced/{id}/*` | self | `extractStoredUnplacedValues` (compare before put, 3g.1), `extractExistingUnplacedInstanceIDs` :1078 |
 
 ### Writes
 | Key Pattern | Value | Written By |
 |---|---|---|
 | `placement/instance/{id}` | nodeID | `placeBatchedInstances` :976, `placeOneGroup` :1712, `buildRebalanceMoveChanges` :586 |
 | `placement/node/{nodeID}/{id}` | "" | `placeBatchedInstances` :977, `placeOneGroup` :1713, `buildRebalanceMoveChanges` :588 |
-| `derived/scheduler/unplaced/{id}/reason` | reason string (incl. `invalid_resource_request`) | `buildUnplacedFactChanges` :1001 (put only when the stored value differs; the filter is `emitUnplacedDemandFacts` :863, 3g.1) |
-| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :1001 (put only when the stored value differs; the filter is `emitUnplacedDemandFacts` :863, 3g.1) |
+| `derived/scheduler/unplaced/{id}/reason` | reason string (incl. `invalid_resource_request`) | `buildUnplacedFactChanges` :1011 (put only while the instance waits and the stored value differs; the filter is `emitUnplacedDemandFacts` :877 over `selectInstancesWaitingForPlacement` :863, 3g.1, M262) |
+| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :1011 (put only while the instance waits and the stored value differs; the filter is `emitUnplacedDemandFacts` :877 over `selectInstancesWaitingForPlacement` :863, 3g.1, M262) |
 | `derived/scheduler/invalid_resource_request/{svc}` | `{key}={value}` of the unreadable request | `buildInvalidResourceRequestChanges` resource_requests.go:96; read by `/api/status` → `cca status` "Resources:" line (M243 D5) |
 | `derived/instance/{id}/controller_stopped` | "true" | `attemptPreemptions` :236 (only a victim whose stop makes room, D12) |
 
@@ -452,7 +460,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | Key Pattern | Deleted By |
 |---|---|
 | `placement/node/{oldNode}/{id}` | `buildRebalanceMoveChanges` :761 |
-| `derived/scheduler/unplaced/{id}/*` | `cleanupStaleUnplacedFacts` :1044 |
+| `derived/scheduler/unplaced/{id}/{reason,requirements}` | `cleanupStaleUnplacedFacts` :1056 (every stored ID not in this cycle's waiting set: placed, stopped, controller-stopped, other state, removed; M262 D1) |
 | `derived/scheduler/invalid_resource_request/{svc}` | `buildInvalidResourceRequestChanges` (request readable again) |
 
 ## DSL Syntax → Fact Keys → Constraint Fields
@@ -485,7 +493,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `extractServiceGroupMemberships` | scheduler.go:1993 | Reconcile |
 | `extractServicePriorities` | scheduler.go:192 | Reconcile |
 | `extractStatefulServices` | scheduler.go:422 | Reconcile |
-| `findUnplacedPendingInstances` | scheduler.go:1265 | Reconcile |
+| `findUnplacedPendingInstances` | scheduler.go:1277 | Reconcile |
 | `attemptPlacements` | scheduler.go:800 | Reconcile |
 | `collectPlacedInstanceIDs` | scheduler.go:846 | Reconcile |
 | `attemptPreemptions` | scheduler.go:236 | Reconcile |
@@ -496,14 +504,15 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `newPreemptionReservations` | scheduler.go:297 | attemptPreemptions |
 | `preemptionReservations.reserve` | scheduler.go:310 | attemptPreemptions (the only writer of reservations, P-N3) |
 | `allowedPreemptionNodes` | scheduler.go:373 | findPreemptionVictim (same node set as placement, review round 2 I1) |
-| `emitUnplacedDemandFacts` | scheduler.go:863 | Reconcile |
-| `extractStoredUnplacedValues` | scheduler.go:894 | Reconcile (input of emitUnplacedDemandFacts: unchanged unplaced facts are not re-put, 3g.1) |
-| `classifyUnplacedReason` | scheduler.go:916 | emitUnplacedDemandFacts (invalid request checked first) |
-| `countConstraintMatchingNodes` | scheduler.go:949 | classifyUnplacedReason |
-| `buildUnplacedFactChanges` | scheduler.go:1001 | emitUnplacedDemandFacts |
-| `buildUnplacedRequirements` | scheduler.go:1022 | buildUnplacedFactChanges |
-| `cleanupStaleUnplacedFacts` | scheduler.go:1044 | Reconcile |
-| `extractExistingUnplacedInstanceIDs` | scheduler.go:1066 | cleanupStaleUnplacedFacts |
+| `selectInstancesWaitingForPlacement` | scheduler.go:863 | Reconcile (waiting set, input of emitUnplacedDemandFacts and cleanupStaleUnplacedFacts, M262 D1) |
+| `emitUnplacedDemandFacts` | scheduler.go:877 | Reconcile |
+| `extractStoredUnplacedValues` | scheduler.go:904 | Reconcile (input of emitUnplacedDemandFacts: unchanged unplaced facts are not re-put, 3g.1) |
+| `classifyUnplacedReason` | scheduler.go:926 | emitUnplacedDemandFacts (invalid request checked first) |
+| `countConstraintMatchingNodes` | scheduler.go:959 | classifyUnplacedReason |
+| `buildUnplacedFactChanges` | scheduler.go:1011 | emitUnplacedDemandFacts |
+| `buildUnplacedRequirements` | scheduler.go:1032 | buildUnplacedFactChanges |
+| `cleanupStaleUnplacedFacts` | scheduler.go:1056 | Reconcile |
+| `extractExistingUnplacedInstanceIDs` | scheduler.go:1078 | cleanupStaleUnplacedFacts |
 | `rebalancePlacedInstances` | scheduler.go:520 | Reconcile |
 | `executeRebalanceMoves` | scheduler.go:561 | rebalancePlacedInstances |
 | `collectAliveNodeIDs` | scheduler.go:611 | rebalancePlacedInstances |
@@ -549,7 +558,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `RemoveNode` | cache.go:95 | placeBatchedInstances (per-node) |
 | `buildNodeHeap` | node_heap.go:66 | NewNodeCapacityCache |
 | `selectFromHeap` | node_heap.go:93 | BestNode |
-| `countAliveNodes` | scheduler.go:903 | shouldDeferInitialPlacement, emitUnplacedDemandFacts |
+| `countAliveNodes` | scheduler.go:913 | shouldDeferInitialPlacement, emitUnplacedDemandFacts |
 | `satisfiesRequireLabelsForNode` | scheduler.go:976 | countConstraintMatchingNodes |
 | `toleratesRestrictionsForNode` | scheduler.go:988 | countConstraintMatchingNodes |
 | `types.CollectEffectiveFirstResourceValues` | types/resource_kind.go:120 | extractServiceResourcesFromFacts (and controllers.collectResourceQuantities) |

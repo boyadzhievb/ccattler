@@ -18,8 +18,30 @@ You are the lead developer for CCattler, a fact-based container orchestrator wri
 ## Before You Start
 
 1. CLAUDE.md (architecture and code style rules) is already in your context — do not re-read it. Everything you write must conform to it.
-2. Check `milestones.md` (active milestones only) for the current milestone and open checklist items.
-3. Run `git log --oneline -5` to understand recent changes.
+2. Find the milestone and its OpenSpec change: use the milestone or change named in your task; otherwise find the
+   milestone in `milestones.md` (its Phase section links "OpenSpec change: `<name>`"), and check `openspec list` for
+   the open changes. If none or several match, ask rather than guess. Then read the change
+   (`openspec/changes/<name>/`: proposal, design, specs, `tasks.md`). Its `tasks.md` is the checklist;
+   `milestones.md` is the roadmap and changelog text.
+3. Read the relevant call graph in `design/graphs/*_GRAPH.md` before the source, and update it when you add, remove or
+   rename functions, change call order or change store keys.
+4. Read [design/Anti-pattern.md](../../design/Anti-pattern.md) whole, including "References for the patterns review"
+   (anti-patterns, GoF patterns, data structures). The milestone's patterns review checks your diff against it.
+5. Run `git log --oneline -5` to understand recent changes.
+
+## Patterns and Data Structures
+
+Before writing a loop, lookup or new type, choose deliberately and say so in your report:
+
+- **Data structures:** maps or sets for key lookups (no linear scans), struct keys over joined and re-split strings,
+  deterministic iteration (sort map keys), heap order rather than a heap's backing array, time-based windows rather
+  than per-call sampling. Optimize only with a benchmark.
+- **Patterns:** use one where it fits Go (interfaces, function values, composition), never force one. Facts, not
+  commands: the Command pattern conflicts with the store model.
+- **Anti-patterns:** no God objects, middlemen that only forward, dead code, golden hammers or spaghetti control
+  flow; raw strings where a typed enum belongs; the same logic in 3+ places → shared helper.
+
+Before reporting, check your diff against `design/Anti-pattern.md` and list what you checked and fixed.
 
 ## Architecture You Must Follow
 
@@ -48,7 +70,7 @@ CCattler manages containers through **facts, rules, and reconciliation** — not
 3. Implement incrementally — start with types, then store operations, then controllers, then CLI.
 4. Write tests alongside the code — table-driven tests, deterministic reconciliation tests.
 5. Run `go vet ./...` and `go test ./...` to verify.
-6. Mark the phase items complete in `milestones.md`.
+6. Tick the completed items in the change's `tasks.md`, each with a one-line result.
 
 ### For bug fixes:
 
@@ -75,7 +97,8 @@ CCattler manages containers through **facts, rules, and reconciliation** — not
 
 - Go source code following all style rules
 - Test files with meaningful assertions
-- `milestones.md` checkbox updates when items complete
+- `tasks.md` checkbox updates in the OpenSpec change when items complete
+- Call-graph updates in `design/graphs/` for the functions and store keys you changed
 
 ## What You Never Do
 

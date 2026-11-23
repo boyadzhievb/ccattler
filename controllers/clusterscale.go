@@ -220,8 +220,35 @@ type unplacedDemandEntry struct {
 	requirements infra.CapacityRequestRequirements
 }
 
-// extractUnplacedDemand parses scheduler unplaced-demand facts.
+// extractUnplacedDemand parses scheduler unplaced-demand facts, keeping only
+// instances that still wait for a placement: a fact the scheduler has not yet
+// deleted, or one an older version left, is not demand (M262 D2).
 func extractUnplacedDemand(facts []store.Fact) map[string]*unplacedDemandEntry {
+	demand := parseUnplacedDemandFacts(facts)
+	if len(demand) == 0 {
+		return demand // the common case: no instance index to build
+	}
+	instanceFields := parseInstanceFieldsFromFacts(facts)
+	placementNodeByInstanceID := parsePlacementsByNode(facts)
+	for instanceID := range demand {
+		if !isInstanceWaitingForPlacement(instanceFields[instanceID], placementNodeByInstanceID[instanceID]) {
+			delete(demand, instanceID)
+		}
+	}
+	return demand
+}
+
+// isInstanceWaitingForPlacement reports whether an instance, given its
+// observed and derived fields (nil when gone from the store) and its placement
+// node, is pending, not stopped by a controller and not yet placed. The state
+// is endpointEligibleState's: observed state, stopped under controller_stopped.
+func isInstanceWaitingForPlacement(instanceFields map[string]string, placementNodeID string) bool {
+	return endpointEligibleState(instanceFields) == types.InstancePending && placementNodeID == ""
+}
+
+// parseUnplacedDemandFacts parses every derived/scheduler/unplaced/{id}/
+// reason and requirements fact into a demand entry per instance ID.
+func parseUnplacedDemandFacts(facts []store.Fact) map[string]*unplacedDemandEntry {
 	demand := make(map[string]*unplacedDemandEntry)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedSchedulerUnplaced) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedSchedulerUnplaced)

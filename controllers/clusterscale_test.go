@@ -24,6 +24,13 @@ func filterCapacityRequestChanges(changes []Change) []Change {
 	return filtered
 }
 
+// pendingInstanceStateFact returns observed/instance/{id}/state = pending: the
+// scheduler writes unplaced facts only for pending instances, and cluster
+// scaling ignores the facts of any other instance (M262 D2).
+func pendingInstanceStateFact(instanceID string) storelib.Fact {
+	return storelib.Fact{Key: types.KeyObservedInstanceState(instanceID), Value: []byte(types.InstancePending)}
+}
+
 // findCapacityRequestStateChange finds a state change for the given request ID.
 func findCapacityRequestStateChange(changes []Change, requestID string) *Change {
 	targetKey := types.KeyDerivedCapacityRequestState(requestID)
@@ -41,6 +48,7 @@ func TestClusterAutoscaleEmitsCapacityRequestForInsufficientCapacity(t *testing.
 	autoscaleController := NewClusterAutoscaleController(simulatorProvider, factStore)
 
 	facts := []storelib.Fact{
+		pendingInstanceStateFact("inst-1"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000,"memory":512,"architecture":"amd64"}`)},
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte(string(types.NodeAlive))},
@@ -72,6 +80,7 @@ func TestClusterAutoscaleIgnoresUnsatisfiableConstraint(t *testing.T) {
 	autoscaleController := NewClusterAutoscaleController(simulatorProvider, factStore)
 
 	facts := []storelib.Fact{
+		pendingInstanceStateFact("inst-1"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedUnsatisfiableConstraint))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000,"memory":512,"architecture":"arm64"}`)},
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte(string(types.NodeAlive))},
@@ -96,10 +105,13 @@ func TestClusterAutoscaleRespectsMaxNodes(t *testing.T) {
 
 	facts := []storelib.Fact{
 		{Key: types.KeyDesiredClusterAutoscaleMaxNodes(), Value: []byte("2")},
+		pendingInstanceStateFact("inst-1"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000}`)},
+		pendingInstanceStateFact("inst-2"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-2"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-2"), Value: []byte(`{"cpu":1000}`)},
+		pendingInstanceStateFact("inst-3"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-3"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-3"), Value: []byte(`{"cpu":1000}`)},
 		// 1 alive auto-node already exists, max=2, so only 1 more allowed.
@@ -131,6 +143,7 @@ func TestClusterAutoscaleDoesNotDuplicateInFlightRequests(t *testing.T) {
 	autoscaleController := NewClusterAutoscaleController(simulatorProvider, factStore)
 
 	facts := []storelib.Fact{
+		pendingInstanceStateFact("inst-1"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000}`)},
 		// An in-flight request already exists for inst-1.
@@ -314,6 +327,7 @@ func TestClusterAutoscaleNoDuplicateKeysWhenFailedRequestAndPersistentDemand(t *
 	autoscaleController := NewClusterAutoscaleController(simulatorProvider, factStore)
 
 	facts := []storelib.Fact{
+		pendingInstanceStateFact("inst-1"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000}`)},
 		{Key: types.KeyDerivedCapacityRequestState("inst-1"), Value: []byte(string(types.CapacityRequestFailed))},
@@ -355,6 +369,7 @@ func TestClusterAutoscaleHandlesNoNodesReason(t *testing.T) {
 	autoscaleController := NewClusterAutoscaleController(simulatorProvider, factStore)
 
 	facts := []storelib.Fact{
+		pendingInstanceStateFact("inst-1"),
 		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedNoNodes))},
 		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000}`)},
 	}
@@ -371,5 +386,70 @@ func TestClusterAutoscaleHandlesNoNodesReason(t *testing.T) {
 	}
 	if string(stateChange.Value) != string(types.CapacityRequestPending) {
 		t.Errorf("expected pending state, got %s", stateChange.Value)
+	}
+}
+
+// TestClusterAutoscaleIgnoresUnplacedFactsOfInstancesNotWaiting: M262 1.4.
+// web-1's insufficient_capacity facts are stored but web-1 no longer waits
+// for a placement; no capacity request is written. The pending row is the
+// control: the same facts with web-1 waiting do ask for a node.
+func TestClusterAutoscaleIgnoresUnplacedFactsOfInstancesNotWaiting(t *testing.T) {
+	testCases := []struct {
+		name          string          // name describes web-1's situation.
+		instanceFacts []storelib.Fact // instanceFacts are web-1's instance and placement facts.
+		wantRequest   bool            // wantRequest is whether a capacity request for web-1 is expected.
+	}{
+		{
+			name: "stopped",
+			instanceFacts: []storelib.Fact{
+				{Key: types.KeyObservedInstanceState("web-1"), Value: []byte(types.InstanceStopped)},
+			},
+		},
+		{
+			name: "controller-stopped",
+			instanceFacts: []storelib.Fact{
+				{Key: types.KeyObservedInstanceState("web-1"), Value: []byte(types.InstancePending)},
+				{Key: types.KeyDerivedInstanceControllerStopped("web-1"), Value: []byte("true")},
+			},
+		},
+		{
+			name: "placed",
+			instanceFacts: []storelib.Fact{
+				{Key: types.KeyObservedInstanceState("web-1"), Value: []byte(types.InstancePending)},
+				{Key: types.KeyPlacementInstance("web-1"), Value: []byte("node-1")},
+			},
+		},
+		{
+			name: "no instance facts",
+		},
+		{
+			name: "pending without placement (control)",
+			instanceFacts: []storelib.Fact{
+				{Key: types.KeyObservedInstanceState("web-1"), Value: []byte(types.InstancePending)},
+			},
+			wantRequest: true,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			factStore := storelib.NewMemoryStore()
+			autoscaleController := NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore), factStore)
+			facts := []storelib.Fact{
+				{Key: types.KeyDerivedSchedulerUnplacedReason("web-1"), Value: []byte(types.UnplacedInsufficientCapacity)},
+				{Key: types.KeyDerivedSchedulerUnplacedRequirements("web-1"), Value: []byte(`{"cpu":2000,"service":"web"}`)},
+				{Key: types.KeyObservedNodeState("node-1"), Value: []byte(types.NodeAlive)},
+			}
+			facts = append(facts, testCase.instanceFacts...)
+			storelib.SortFacts(facts)
+
+			changes, reconcileError := autoscaleController.Reconcile(context.Background(), facts)
+			if reconcileError != nil {
+				t.Fatalf("Reconcile failed: %v", reconcileError)
+			}
+			requested := findCapacityRequestStateChange(changes, "web-1") != nil
+			if requested != testCase.wantRequest {
+				t.Errorf("capacity request for web-1 = %v, want %v", requested, testCase.wantRequest)
+			}
+		})
 	}
 }

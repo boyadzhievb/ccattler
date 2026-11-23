@@ -130,13 +130,14 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	)
 	changes = append(changes, preemptionChanges...)
 
+	waitingInstanceIDs := selectInstancesWaitingForPlacement(unplaced, placedInThisCycle)
 	unplacedChanges := emitUnplacedDemandFacts(
-		unplaced, placedInThisCycle, nodes, instances,
+		waitingInstanceIDs, nodes, instances,
 		serviceResources, placementConstraints, invalidResourceRequests,
 		extractStoredUnplacedValues(facts),
 	)
 	changes = append(changes, unplacedChanges...)
-	changes = append(changes, cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)...)
+	changes = append(changes, cleanupStaleUnplacedFacts(facts, waitingInstanceIDs)...)
 
 	rebalanceChanges := rebalancePlacedInstances(
 		nodes, instances, placements, serviceResources,
@@ -856,13 +857,25 @@ func collectPlacedInstanceIDs(changes []controllers.Change) map[string]bool {
 	return placed
 }
 
-// emitUnplacedDemandFacts produces unplaced-demand facts for instances that
-// could not be placed in this cycle, categorizing each by why placement failed.
+// selectInstancesWaitingForPlacement returns the unplaced pending instances
+// not placed in this cycle, in unplaced's sorted order: the only instances
+// whose unplaced-demand facts may exist after this cycle (M262 D1).
+func selectInstancesWaitingForPlacement(unplaced []string, placedInThisCycle map[string]bool) []string {
+	waitingInstanceIDs := make([]string, 0, len(unplaced))
+	for _, instanceID := range unplaced {
+		if !placedInThisCycle[instanceID] {
+			waitingInstanceIDs = append(waitingInstanceIDs, instanceID)
+		}
+	}
+	return waitingInstanceIDs
+}
+
+// emitUnplacedDemandFacts produces unplaced-demand facts for the instances
+// still waiting for a placement, categorizing each by why placement failed.
 // A fact whose stored value is already the same is not written again: the
 // scheduler watches that prefix, so a re-put would wake it forever (3g.1, F1).
 func emitUnplacedDemandFacts(
-	unplaced []string,
-	placedInThisCycle map[string]bool,
+	waitingInstanceIDs []string,
 	nodes map[string]*schedulerNodeInfo,
 	instances map[string]*schedulerInstanceInfo,
 	serviceResources map[string]serviceResourceRequirements,
@@ -872,10 +885,7 @@ func emitUnplacedDemandFacts(
 ) []controllers.Change {
 	aliveCount := countAliveNodes(nodes)
 	var changes []controllers.Change
-	for _, instanceID := range unplaced {
-		if placedInThisCycle[instanceID] {
-			continue
-		}
+	for _, instanceID := range waitingInstanceIDs {
 		instanceInfo := instances[instanceID]
 		reason := classifyUnplacedReason(instanceInfo, aliveCount, nodes, placementConstraints, invalidResourceRequests)
 		for _, change := range buildUnplacedFactChanges(instanceID, instanceInfo, reason, serviceResources, placementConstraints) {
@@ -1039,17 +1049,19 @@ func buildUnplacedRequirements(
 	return requirements
 }
 
-// cleanupStaleUnplacedFacts removes unplaced-demand facts for instances that
-// now have a placement (either from a prior cycle or from this one).
-func cleanupStaleUnplacedFacts(
-	facts []store.Fact,
-	existingPlacements map[string]string,
-	placedInThisCycle map[string]bool,
-) []controllers.Change {
+// cleanupStaleUnplacedFacts deletes the unplaced-demand facts of every stored
+// instance ID outside this cycle's waiting set: placed, stopped (controller
+// stop included), in any other state, or gone from the store (M262 D1). The
+// sets are complementary, so it never deletes a key this cycle writes.
+func cleanupStaleUnplacedFacts(facts []store.Fact, waitingInstanceIDs []string) []controllers.Change {
+	waitingForPlacement := make(map[string]bool, len(waitingInstanceIDs))
+	for _, instanceID := range waitingInstanceIDs {
+		waitingForPlacement[instanceID] = true
+	}
 	var changes []controllers.Change
 	existingUnplaced := extractExistingUnplacedInstanceIDs(facts)
 	for _, instanceID := range existingUnplaced {
-		if existingPlacements[instanceID] != "" || placedInThisCycle[instanceID] {
+		if !waitingForPlacement[instanceID] {
 			changes = append(changes, controllers.Change{
 				Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedReason(instanceID),
 			})
