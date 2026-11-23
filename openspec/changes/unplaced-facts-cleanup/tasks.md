@@ -48,9 +48,24 @@ Milestone M262. Design: [design.md](design.md). Spec delta: [specs/resource-requ
 - [x] 3.1 gofmt, golangci-lint, `go test -count=1 ./...`, `-race` on `scheduler` and `controllers`.
   `gofmt -l` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` all ok; `-race` scheduler and
   controllers ok.
-- [ ] 3.2 Deploy cluster by hand, `deploy-run:unplaced-cleanup`, on the cluster a push run leaves: apply a service with
+- [x] 3.2 Deploy cluster by hand, `deploy-run:unplaced-cleanup`, on the cluster a push run leaves: apply a service with
   `memory 64Gi` and `instances 2`, `cca watch derived/scheduler/unplaced/` shows one put per key per instance;
   `cca scale <svc> 0` → a delete of each key within 10 s; then nothing more. Record commands and output here.
+  - 2026-11-23 on the cluster push run 45207059879 (819c02c, success) left; `/tmp/m262*.cca` on cca-deploy-ctrl
+    (whoami, `memory 64Gi`, `cpu 100m`).
+    - **Pass.** `m262big` (apply, 2 instances): one put of reason and requirements per instance (rev 2278);
+      `cca scale m262big 0` → deletes of all four keys (rev 2450), within the 10 s window; nothing after rev 2456.
+      `m262b` (`cca scale` 1, then 2, then 0): put once, deleted 2 revisions after `controller_stopped`, GC 3 later.
+    - **Transient re-put, healed by M262 (pre-existing cause → M265):** after a fresh apply (`m262c`), scale 0 gave
+      put (4345) → marker (4523) → delete (4526) → GC of the whole instance, atomic `gc-<id>` group (4528) → **put
+      again (4532)** → delete (4533). No single revision has the instance pending without a marker: the runner scans
+      each watched prefix separately (`scanFactsForController`, runner.go:603), so one cycle read `observed/instance/`
+      before 4528 and `derived/instance/` after it; the input-key guards are capped, so the commit went through. D1
+      deleted the stray facts one cycle later (before M262 they would have stayed).
+    - **Unrelated finding → M266:** every running instance's unchanged `observed/instance/{id}/state = running` is
+      re-put once per second (20 puts per instance in 20 s, 7 instances): `publishInstanceStateUnlessStopped`
+      (agent.go:2097, since M241) always commits its CAS; etcd `Put` skips unchanged values, etcd transactions do not,
+      and the memory store's transactions do (memory.go:514), so unit tests cannot see it.
 - [ ] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
   and the spec, including the patterns review against `design/Anti-pattern.md`. Record each finding as fixed or
   rejected, with one line of reasoning.
