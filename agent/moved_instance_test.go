@@ -30,6 +30,7 @@ type movedInstanceTestCase struct {
 	placementReadFails   bool   // placementReadFails makes the agent's read of the placement fail in the first cycle.
 	wantContainerRemoved bool   // wantContainerRemoved is whether the first cycle removes the container.
 	wantStoppedWritten   bool   // wantStoppedWritten is whether the first cycle writes observed state stopped.
+	keepsIDKeyedFacts    bool   // keepsIDKeyedFacts: pull status and allocation stay although stopped is written (placed on another node).
 }
 
 // TestAgentDoesNotMarkMovedInstanceStopped: spec instance-rebalancing, "Source
@@ -42,7 +43,7 @@ func TestAgentDoesNotMarkMovedInstanceStopped(t *testing.T) {
 		{name: "moved running", placementNodeID: "node-2", wantContainerRemoved: true},
 		{name: "moved exited", placementNodeID: "node-2", containerExited: true, wantContainerRemoved: true},
 		{name: "controller stop", placementNodeID: "node-1", controllerStopped: true, wantContainerRemoved: true, wantStoppedWritten: true},
-		{name: "controller stop after move", placementNodeID: "node-2", controllerStopped: true, wantContainerRemoved: true, wantStoppedWritten: true},
+		{name: "controller stop after move", placementNodeID: "node-2", controllerStopped: true, wantContainerRemoved: true, wantStoppedWritten: true, keepsIDKeyedFacts: true},
 		{name: "no placement", wantContainerRemoved: true, wantStoppedWritten: true},
 		{name: "no placement exited", containerExited: true, wantContainerRemoved: true, wantStoppedWritten: true},
 		{name: "placement read error", placementReadFails: true},
@@ -82,13 +83,14 @@ func runMovedInstanceTestCase(t *testing.T, testCase movedInstanceTestCase) {
 	}
 	// Keyed by instance ID only: after a move the target agent may already have written them (M267 B2).
 	_, _ = memoryStore.Put(ctx, types.KeyObservedInstancePullStatus(movedInstanceTestInstanceID), []byte("pulled"))
-	_, _ = types.WriteNetworkAllocation(ctx, memoryStore, movedInstanceTestInstanceID, movedInstanceTestTargetIP)
+	_, _ = memoryStore.Put(ctx, types.KeyNetworkAllocation(movedInstanceTestInstanceID), []byte(movedInstanceTestTargetIP))
 	failingStore.failGets.Store(testCase.placementReadFails)
 
 	nodeAgent := New("node-1", failingStore, simulatorRuntime)
 	nodeAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
 	runStaleContainerCleanup(ctx, nodeAgent, testCase.containerExited)
-	checkStaleContainerCleanup(t, ctx, "first cycle", memoryStore, simulatorRuntime, testCase.wantContainerRemoved, testCase.wantStoppedWritten)
+	checkStaleContainerCleanup(t, ctx, "first cycle", memoryStore, simulatorRuntime, testCase.wantContainerRemoved, testCase.wantStoppedWritten,
+		testCase.wantStoppedWritten && !testCase.keepsIDKeyedFacts)
 	if !testCase.placementReadFails {
 		return
 	}
@@ -97,7 +99,7 @@ func runMovedInstanceTestCase(t *testing.T, testCase movedInstanceTestCase) {
 	}
 	failingStore.failGets.Store(false)
 	runStaleContainerCleanup(ctx, nodeAgent, testCase.containerExited)
-	checkStaleContainerCleanup(t, ctx, "next cycle, placement readable", memoryStore, simulatorRuntime, true, true)
+	checkStaleContainerCleanup(t, ctx, "next cycle, placement readable", memoryStore, simulatorRuntime, true, true, true)
 }
 
 // runStaleContainerCleanup runs the cleanup the agent's cycle picks for a
@@ -112,10 +114,10 @@ func runStaleContainerCleanup(ctx context.Context, nodeAgent *Agent, containerEx
 
 // checkStaleContainerCleanup checks whether the container is gone from the
 // runtime and whether observed state stopped was written. The pull status and
-// network allocation (keyed by ID only) are cleared exactly when stopped is
-// written: a move or an untouched cycle keeps them for the target (M267 B2).
+// network allocation (keyed by ID only) are cleared only when the instance is
+// not placed on another node (M267 B2, 3e): they may be the target's.
 func checkStaleContainerCleanup(t *testing.T, ctx context.Context, cycleName string, factStore store.StateStore,
-	simulatorRuntime *runtime.SimulatorRuntime, wantContainerRemoved bool, wantStoppedWritten bool) {
+	simulatorRuntime *runtime.SimulatorRuntime, wantContainerRemoved bool, wantStoppedWritten bool, wantIDKeyedFactsCleared bool) {
 	t.Helper()
 	_, statusError := simulatorRuntime.Status(ctx, movedInstanceTestInstanceID)
 	if containerRemoved := statusError != nil; containerRemoved != wantContainerRemoved {
@@ -129,8 +131,8 @@ func checkStaleContainerCleanup(t *testing.T, ctx context.Context, cycleName str
 		types.KeyObservedInstancePullStatus(movedInstanceTestInstanceID),
 		types.KeyNetworkAllocation(movedInstanceTestInstanceID),
 	} {
-		if cleared := readFactValue(ctx, factStore, instanceKey) == ""; cleared != wantStoppedWritten {
-			t.Errorf("%s: %s cleared = %v, want %v", cycleName, instanceKey, cleared, wantStoppedWritten)
+		if cleared := readFactValue(ctx, factStore, instanceKey) == ""; cleared != wantIDKeyedFactsCleared {
+			t.Errorf("%s: %s cleared = %v, want %v", cycleName, instanceKey, cleared, wantIDKeyedFactsCleared)
 		}
 	}
 }

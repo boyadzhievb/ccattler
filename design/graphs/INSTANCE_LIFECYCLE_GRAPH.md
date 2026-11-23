@@ -293,30 +293,28 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   │       [runc "unable to start container process: " + optional "error during container init: "
     │   │        + `exec: "`; ProcessError = the `exec: "…": …` part (runc 1.1 / 1.4), M238]
     │   ├── START FAILED → handleInstanceStartError(ctx, instanceInfo, image, err)
-    │   │   ├── revoke token, publishInstanceImage
+    │   │   ├── revoke token
     │   │   ├── StartError.ProcessFailed (workload's process could not start, M238):
-    │   │   │   ├── publishInstanceConfigHash(configHashBeforeBuild)   [compared during the wait]
+    │   │   │   ├── writeInstanceFacts(image, config-hash(configHashBeforeBuild))  [guarded; compared during the wait]
     │   │   │   └── recordInstanceStartFailure(ProcessError, else Reason) [section 12b] → return true (attempt counted)
     │   │   └── otherwise (image, CNI, netns, create container, cgroup/seccomp/shim):
-    │   │       ├── PUT observed/instance/{id}/state = "failed"
-    │   │       ├── publishStatusReason("start failed: {err}")
+    │   │       ├── publishInstanceStateToStore(failed, image, status "start failed: {err}")  [one guarded TXN]
     │   │       └── return false
     │   └── START OK: continue
     │
     ├── retryBridgeAttachmentIfNeeded(ctx)                   :438
     ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1441
-    ├── publishInstanceHostPorts(ctx, id, ...)
     ├── runtime.Status(id) → get IP
-    ├── publishInstanceStartedAt(id)                 :1052
-    │   └── PUT observed/instance/{id}/started_at = now (RFC 3339, fractions)
-    │       [every start, in-place restarts included, before the state; rollout min_healthy_time, M241 D10]
-    ├── resetInstanceReadiness(id)                   :1062
-    │   └── DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
-    ├── publishInstanceStateToStore(ctx, instanceInfo, state, runtimeIP)
+    ├── start facts, all in the publish transaction below (M267 3e):
+    │   hostPortChangesIfSupported → PUT observed/instance/{id}/host_port/{port}
+    │   PUT observed/instance/{id}/started_at = now (RFC 3339, fractions)  [every start; min_healthy_time, M241 D10]
+    │   DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
+    │   PUT image, PUT config-hash = configHashBeforeBuild, PUT status_reason = "running" (running only)
+    ├── publishInstanceStateToStore(ctx, instanceInfo, state, runtimeIP, start facts…)
     │   ├── resolvePublishedContainerIP: networkProvider.AllocateIP (also → network/allocation)
     │   │   else a valid runtime IP, else none — resolved BEFORE anything is written (M267 3c.6)
-    │   ├── dropUnchangedPuts(marker, service, ip, allocation): Get each, keep the changed ones
+    │   ├── dropNoOpChanges(marker, service, ip, allocation, sameCycleFacts): Get each, keep the changed ones
     │   │   (no more key writes than the former idempotent Puts on etcd, M266)
     │   ├── publishInstanceStateUnlessStopped(…, those puts)  [M241 2i.1]
     │   │   Get state → stopped (written by another component) → write nothing, return;
@@ -325,14 +323,11 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   │   0 = no guard, only for test-built infos; a move deletes the key, so a source still
     │   │   in the cycle that scanned before the move never publishes, M267 R2-1) → PUT state
     │   │   = "running"|"starting", PUT observed/instance/{id}/node = nodeID and the changed
-    │   │   marker/service/ip/network-allocation puts, all in ONE transaction (M267 D4, 3c.6: a
+    │   │   marker/service/ip/network-allocation/sameCycleFacts, all in ONE transaction (M267 D4, 3c.6, 3e: a
     │   │   move can never land between state and IP); lost CAS → next cycle; store error →
     │   │   ERROR, next cycle
-    │   ├── created-at: separate create-only TXN (unchanged)
+    │   ├── createInstanceCreatedAtOnce: create-only TXN with placementGuard
     │   └── registerEndpointIdentityIfSupported (after a successful commit)
-    ├── publishStatusReason("running")              [running only]
-    ├── publishInstanceImage → PUT observed/instance/{id}/image = image
-    ├── publishInstanceConfigHash → PUT observed/instance/{id}/config-hash = configHashBeforeBuild
     └── recordInstanceStarted(id)                   [section 12b] → return true
 ```
 
@@ -372,14 +367,12 @@ executeReconciliationCycle                                   :539
     ├── reconcileResourceChanges(ctx, instanceInfo)
     │   └── live resize CPU/memory if supported
     │
-    ├── republishHostPortIfNeeded(ctx, id)                   :1083
-    │
-    ├── observeInstanceState(id)
-    │   ├── Running: true  → InstanceRunning
-    │   └── otherwise      → InstanceStarting   [exited after List: next cycle records it, Flow 33, M238 D4]
-    │
-    ├── publishInstanceStateToStore(ctx, id, state, ip, node)   [CAS, never over stopped: 2i.1]
-    └── deleteExitReason(ctx, id)               [DELETE observed/instance/{id}/exit-reason]
+    └── publishRunningInstance(ctx, info, ip)                [M267 3e]
+        ├── observeInstanceState(id)
+        │   ├── Running: true  → InstanceRunning
+        │   └── otherwise      → InstanceStarting   [exited after List: next cycle records it, Flow 33, M238 D4]
+        └── publishInstanceStateToStore(ctx, info, state, ip, host ports, DELETE exit-reason)
+            [one guarded TXN, never over stopped: 2i.1; host ports every cycle for endpoints/DNAT]
 ```
 
 ### ProbeScheduler.Run → independent goroutine (5s tick)
@@ -717,33 +710,31 @@ reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerE
 │   └── isExitedInstanceDueForRestart  [false → return]
 │       ├── no crashLoopBackoffs entry → true (agent restarted: restart once)
 │       ├── entry.waiting == false → recordInstanceExit → false
-│       │   ├── publishExitReasonFromStatus   [exit code != 0]
-│       │   └── beginCrashLoopWait("exited with code N")
+│       │   └── beginCrashLoopWait("exited with code N", exitReasonChanges(status))  [exit code != 0]
 │       ├── now < retryAfter → hasConfigChangedSinceStart ? (drop entry → true) : false
 │       └── now >= retryAfter → true
 ├── otherwise (container missing): entry.waiting = false (the next exit is a new one)
 ├── reconcileDesiredInstance → attempted bool       [section 3; false on any bail-out or a start error published failed]
 │   ├── started (startInstanceAndPublishState) → recordInstanceStarted   [entry.waiting = false, startFailed = false, lastStartedAt = now]
 │   ├── process could not start (handleInstanceStartError, StartError.ProcessFailed, M238)
-│   │   ├── publishInstanceConfigHash(configHashBeforeBuild)  [so hasConfigChangedSinceStart compares with this attempt]
+│   │   ├── writeInstanceFacts(image, config-hash)              [so hasConfigChangedSinceStart compares with this attempt]
 │   │   └── recordInstanceStartFailure(processError)          [runc `exec: "…": …`]
 │   │       ├── ensureCrashLoopBackoffEntry
-│   │       ├── publishExitReason(processError)               [PUT observed/instance/{id}/exit-reason]
-│   │       ├── beginCrashLoopWait(processError)              [reset decided from the previous lastStartedAt]
+│   │       ├── beginCrashLoopWait(processError, exitReasonChange(processError))  [reset from the previous lastStartedAt]
 │   │       └── entry.startFailed = true ; lastStartedAt = now
 │   └── false → return: no count, entry stays waiting with its past retryAfter, so the next
 │       cycle retries without recording a new exit; the bail-out's own state and reason
 │       (image-pull-backoff, waiting-for-secrets, init, volumes) stay visible
 └── attempted && (containerExited || retryAfterStartFailure)
-    → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1 write]
+    → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1, writeInstanceFacts (guarded)]
 
-beginCrashLoopWait(instanceInfo, entry, exitDescription)
+beginCrashLoopWait(instanceInfo, entry, exitDescription, exitFacts…)  [crash_loop_backoff.go:164]
 ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
 ├── attempts++ ; retryAfter = now + backoff.Delay(base, max, attempts) ; waiting = true
-├── publishInstanceStateToStore(crash-loop-backoff)
-├── publishStatusReason("{exitDescription}; restarting in 40s")
-└── publishInstanceLastExit(exitDescription)        [crash_loop_backoff.go:138]
-    └── PUT observed/instance/{id}/last_exit  [kept after the restart; rollback reason, M241]
+└── publishInstanceStateToStore(crash-loop-backoff, ONE guarded TXN with:  [M267 3e]
+        status_reason "{exitDescription}; restarting in 40s",
+        last_exit = exitDescription  [kept after the restart; rollback reason, M241],
+        exitFacts (exit-reason))
 
 cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of instances not placed here]
 cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance image fallback log (M241)]
@@ -762,35 +753,35 @@ cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance im
 
 | Location | Trigger | Source |
 |---|---|---|
-| Init failure | Before BAIL | agent.go:730 |
-| Volume attach failure | Before BAIL | agent.go:743 |
+| Init failure | Before BAIL | agent.go:732 |
+| Volume attach failure | Before BAIL | agent.go:745 |
 | Start failure | In handleInstanceStartError (both outcomes) | agent.go |
-| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1109 |
+| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1046 |
 
 Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
 
 ### Agent cleanup of a container that left the node (M267 D2, D4)
 ```
 executeReconciliationCycle: container not in this node's desired set
-├── running → cleanupUndesiredInstance(id)                  agent.go:1295
+├── running → cleanupUndesiredInstance(id)                  agent.go:1226
 │             removeContainer = pre_stop hook + stopInstanceWithGracePeriod
-└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1096
+└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1033
               removeContainer = runtime.Stop (no hook, container already dead)
-    both: teardownStaleInstance(id, removeContainer)        agent.go:1109
+    both: teardownStaleInstance(id, removeContainer)        agent.go:1046
     ├── FIRST, before anything is removed:
-    │   isInstanceMovedToAnotherNode(id)                    agent.go:1216
+    │   isInstanceMovedToAnotherNode(id)                    agent.go:1147
     │   ├── GET placement/instance/{id}: not found → false; error → error; this node → false
-    │   └── isControllerStopped(id)                         agent.go:1237
+    │   └── isControllerStopped(id)                         agent.go:1168
     │       GET derived/instance/{id}/controller_stopped: not found → false; error → error;
     │       value "true" → true (controller stop → not a move); else moved
     ├── read error → RETURN: container, local state and store untouched, WARN "cannot read
     │                where the stale instance is placed, leaving its container until the next
     │                cycle"; the container is still stale next cycle, so the whole cleanup retries
-    ├── drop local resource/backoff tracking; not moved → clearPullStatusFromStore
-    │   (DELETE observed/instance/{id}/pull-status; kept after a move: keyed by ID only, M267 B2)
+    ├── drop local resource/backoff tracking; deleteFactsUnlessPlacedElsewhere(pull-status)
+    │   (TXN on placement/instance/{id}'s revision; kept while placed on another node: keyed by ID, M267 B2, 3e)
     ├── revoke token, detach volumes, removeContainer(), removeInstanceDataIfSupported
-    ├── publishRemovedInstanceState(id, moved)              agent.go:1156
-    │   ├── moved     → markMovedInstancePending(id)        agent.go:1170
+    ├── publishRemovedInstanceState(id, moved)              agent.go:1087
+    │   ├── moved     → markMovedInstancePending(id)        agent.go:1101
     │   │   GET observed/instance/{id}/node: missing or another node → nothing (the target
     │   │     published); GET state: stopped → nothing (final)
     │   │   TXN compare node revision + state revision → PUT state = pending,
@@ -800,9 +791,9 @@ executeReconciliationCycle: container not in this node's desired set
     │   └── not moved → PUT observed/instance/{id}/state = stopped (scale-down, controller
     │                   stop, no placement)
     ├── probe cleanup
-    └── releaseStaleInstanceNetwork(id, moved)              agent.go:1137
-        ReleaseIP (node-local); not moved → DeleteNetworkAllocation (network/allocation/{id},
-        kept after a move: keyed by ID only, M267 B2)
+    └── releaseStaleInstanceNetwork(id)
+        ReleaseIP (node-local); deleteFactsUnlessPlacedElsewhere(network/allocation/{id},
+        kept while placed on another node: keyed by ID only, M267 B2, 3e)
 ```
 
 ---
@@ -835,11 +826,9 @@ executeReconciliationCycle: container not in this node's desired set
 | `recordInstanceStarted` | startInstanceAndPublishState |
 | `ensureCrashLoopBackoffEntry` | recordInstanceStarted, recordInstanceStartFailure |
 | `handleInstanceStartError` | startInstanceAndPublishState |
-| `publishInstanceConfigHash` | startInstanceAndPublishState, handleInstanceStartError (ProcessFailed) |
-| `publishInstanceStartedAt` | startInstanceAndPublishState (start OK, M241 D10) |
+| `instanceConfigHashChange` / `instanceImageChange` | startInstanceAndPublishState (start publish), handleInstanceStartError (M267 3e) |
 | `replaceContainerOnAnotherImage` | executeReconciliationCycle (running path, before detectConfigChange; M241 2e.1) |
-| `resetInstanceReadiness` | startInstanceAndPublishState (start OK, M241 review B4) |
-| `publishInstanceLastExit` | beginCrashLoopWait (M241) |
+| `writeInstanceFacts` | every agent write of observed/instance/{id}/* outside a publish (→ writeGuardedInstanceFacts, M267 3e) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |

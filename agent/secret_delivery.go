@@ -156,12 +156,12 @@ func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, insta
 		return nil, false
 	}
 	if !requirements.needsSecrets {
-		nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
+		nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo)
 		return nil, true
 	}
 	if nodeAgent.secretMaterialStore != nil {
 		if existingValues, hasMaterial := nodeAgent.secretMaterialStore.ReadInstanceSecrets(instanceInfo.id); hasMaterial && materialMatchesRequirements(existingValues, requirements) {
-			nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
+			nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo)
 			return existingValues, true
 		}
 	}
@@ -187,7 +187,7 @@ func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, insta
 		// Leave waiting-for-secrets; with a cached image nothing else would change the state before start.
 		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePending, "")
 	}
-	nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
+	nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo)
 	logging.Default().Info("secrets delivered", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "count", strconv.Itoa(len(deliveredValues)))
 	return deliveredValues, true
 }
@@ -233,18 +233,15 @@ func (nodeAgent *Agent) recordSecretDeliveryWait(ctx context.Context, instanceIn
 	waitEntry.requirementsVersion = requirements.requirementsVersion
 	waitEntry.retryAfter = time.Now().Add(secretDeliveryRetryDelay(deliveryFailure.Reason, waitEntry.attempts))
 
-	if !nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "") {
-		return // stopped or moved meanwhile: no wait status for an instance this node no longer runs (M267 R3-S2)
-	}
 	statusJSON, _ := json.Marshal(secretWaitStatus{Reason: string(waitEntry.reason), Secrets: waitEntry.secretNames, NextRetry: waitEntry.retryAfter.Format(time.RFC3339)})
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceSecretWait(instanceInfo.id), statusJSON); putError != nil {
-		logging.Default().Error("failed to write secret wait status", "instance", instanceInfo.id, "error", putError.Error())
-	}
 	statusReason := "waiting for secrets: " + string(waitEntry.reason)
 	if len(waitEntry.secretNames) > 0 {
 		statusReason += " (" + strings.Join(waitEntry.secretNames, ", ") + ")"
 	}
-	nodeAgent.publishStatusReason(ctx, instanceInfo.id, statusReason)
+	// The wait status and reason commit with the state, or not at all (stopped or moved meanwhile, M267 3e).
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "",
+		store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceSecretWait(instanceInfo.id), Value: statusJSON},
+		statusReasonChange(instanceInfo.id, statusReason))
 }
 
 // secretDeliveryRetryDelay returns exponential backoff (2s … 30s) for an
@@ -270,14 +267,20 @@ func secretDeliveryRetryDelay(reason SecretWaitReason, attempts int) time.Durati
 
 // clearSecretDeliveryWait drops the wait entry and its status fact after a
 // successful delivery or when the instance no longer needs secrets.
-func (nodeAgent *Agent) clearSecretDeliveryWait(ctx context.Context, instanceID string) {
-	if _, waiting := nodeAgent.secretDeliveryWaits[instanceID]; !waiting {
+func (nodeAgent *Agent) clearSecretDeliveryWait(ctx context.Context, instanceInfo placedInstanceInfo) {
+	if _, waiting := nodeAgent.secretDeliveryWaits[instanceInfo.id]; !waiting {
 		return
 	}
+	delete(nodeAgent.secretDeliveryWaits, instanceInfo.id)
+	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceSecretWait(instanceInfo.id)})
+}
+
+// clearLeftSecretDeliveryWait is clearSecretDeliveryWait for an instance that
+// left this node's desired set: the status fact goes only while it is not
+// placed on another node (deleteFactsUnlessPlacedElsewhere, M267 3e).
+func (nodeAgent *Agent) clearLeftSecretDeliveryWait(ctx context.Context, instanceID string) {
 	delete(nodeAgent.secretDeliveryWaits, instanceID)
-	if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedInstanceSecretWait(instanceID)); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
-		logging.Default().Error("failed to delete secret wait status", "instance", instanceID, "error", deleteError.Error())
-	}
+	deleteFactsUnlessPlacedElsewhere(ctx, nodeAgent.store, nodeAgent.nodeID, instanceID, types.KeyObservedInstanceSecretWait(instanceID))
 }
 
 // buildInstanceSecretMounts writes connection files and returns the read-only
@@ -383,7 +386,7 @@ func addSecretHelperIfMounted(secretMounts map[string]string, configFiles map[st
 func (nodeAgent *Agent) sweepSecretMaterial(ctx context.Context, desiredByID map[string]bool, running []runtime.Status) {
 	for instanceID := range nodeAgent.secretDeliveryWaits {
 		if !desiredByID[instanceID] {
-			nodeAgent.clearSecretDeliveryWait(ctx, instanceID)
+			nodeAgent.clearLeftSecretDeliveryWait(ctx, instanceID)
 		}
 	}
 	if nodeAgent.secretMaterialStore == nil {

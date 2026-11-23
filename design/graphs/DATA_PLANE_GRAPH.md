@@ -158,16 +158,16 @@ buildRouteDataPlaneConfigs(ctx, serviceVIPConfigs)   [agent/dataplane.go:190]
             └── routeConfig.CookieConfig = {Name, Secure, HTTPOnly, SameSite}
 ```
 
-### PublishAdvertiseAddress / publishInstanceHostPorts
+### PublishAdvertiseAddress / hostPortChanges
 
 ```
 PublishAdvertiseAddress(ctx)                          [agent/dataplane.go:500]
 └── factStore.Put(KeyObservedNodeAddress(nodeID), advertiseAddress)
 
-publishInstanceHostPorts(ctx, factStore, id, portMappings)
-                                                     [agent/dataplane.go:512]
-└── FOR EACH containerPort → hostPort:
-    └── factStore.Put(KeyObservedInstanceHostPortForPort(id, port), hostPort)
+hostPortChanges(id, portMappings) → []store.Op       [agent/dataplane.go:514]
+└── FOR EACH containerPort (sorted, hostPort > 0):
+    └── PUT KeyObservedInstanceHostPortForPort(id, port) = hostPort
+    written in the agent's guarded publish transaction (start and running path, M267 3e)
 ```
 
 ## Provider 1: NftablesDataPlane (network/nftables_dataplane.go)
@@ -384,7 +384,7 @@ ShadowDataPlane.ReconcileVIPDataPlane(ctx, configs)  [shadow_dataplane.go:50]
 | Key Pattern | Where Written |
 |---|---|
 | `observed/node/{nodeID}/address` | `PublishAdvertiseAddress` (node LAN IP) |
-| `observed/instance/{id}/host_port/{port}` | `publishInstanceHostPorts` (port mapping) |
+| `observed/instance/{id}/host_port/{port}` | `hostPortChanges` in the agent's guarded publish (port mapping, M267 3e) |
 
 ## Store Key Data Flow (controller/user writes → reconciler reads)
 
@@ -417,7 +417,7 @@ ShadowDataPlane.ReconcileVIPDataPlane(ctx, configs)  [shadow_dataplane.go:50]
 | `buildRouteConfigFromEntry` | `buildRouteDataPlaneConfigs` (for each route) |
 | `parseBackendAddressList` | `buildRouteConfigFromEntry` |
 | `PublishAdvertiseAddress` | Agent startup [agent/agent.go] |
-| `publishInstanceHostPorts` | Agent reconcile (after container start) |
+| `hostPortChanges` | `Agent.hostPortChangesIfSupported` (start publish, running-path publish) |
 | `RegisterDataPlaneFactory` | `init()` in each provider's registration file |
 | `LookupDataPlaneFactory` | Agent startup (select provider) |
 | `NewNftablesDataPlane` | Factory via `RegisterDataPlaneFactory` |

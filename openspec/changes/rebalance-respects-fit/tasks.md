@@ -279,19 +279,47 @@ the guarded helper, and a test enforces it.**
 | S2 | `design/plans/reconciliation-consistency-contract.md` still names `maxTransactionChanges` | **fix** 3e.2 |
 | Sg2 | Probe-after-move test has no positive control (a current revision still writes ready) | **fix** 3e.2 |
 
-- [ ] 3e.1 One guarded writer for the agent's per-instance facts: `putGuardedInstanceFact` / a new guarded delete
+- [x] 3e.1 One guarded writer for the agent's per-instance facts: `putGuardedInstanceFact` / a new guarded delete
   (and the publish transaction's `instanceFacts` for facts of the same publish) are the only ways the agent writes
   or deletes `observed/instance/{id}/*`, except the `stopped` write and cleanup of an instance this node still owns
   (documented exceptions). Convert every call site found by the reviewer and any others. Red first: a subcase per
   finding (B1 pull failure, B2 start path readiness/started_at/config-hash, B3 exit reason, B4 progress delete)
   showing the source writes nothing after a move.
-- [ ] 3e.2 Enforcement test (AST or source scan over `agent/*.go`, not tests): fails on a plain `store.Put`,
+  Result: `writeGuardedInstanceFacts` (placement_guard.go) is the one writer (puts and deletes, no-op changes dropped
+  so unchanged values cause no writes); `publishInstanceStateToStore(…, sameCycleFacts...)` carries the facts of the
+  same publish (pull status + reason, start facts: host ports, started_at, readiness reset, image, config hash,
+  "running"; failed + image + reason; crash loop: reason, last_exit, exit reason; secret-wait + reason; running path:
+  host ports + exit-reason delete). Converted the rest: restarts, init step state/reason/progress, status reasons,
+  pull-status/secret-wait clears, probe-progress delete, telemetry (`currentPlacementInfo` first); cleanup deletes
+  (pull status, secret wait, network allocation) use `deleteFactsUnlessPlacedElsewhere`; created-at is create-only
+  with the guard. Removed: `publishInstanceStartedAt`, `resetInstanceReadiness`, `publishInstanceImage`,
+  `publishInstanceConfigHash`, `publishInstanceLastExit`, `publishExitReason(FromStatus)`, `deleteExitReason`,
+  `republishHostPortIfNeeded`, `publishInstanceHostPorts` (now `hostPortChanges`). Red
+  (`TestSourceWritesNothingAfterMove`): B1 status-reason and pull-status written; B2 start path started_at, readiness
+  deleted, config-hash, image; B2 reconcileDesiredInstance "starting", started_at, readiness, config-hash, image; B3
+  exit-reason; B4 probe-progress deleted. All pass after. Behaviour change: "controller stop after move" now keeps
+  pull status and allocation (placed on another node); its test expectation records it.
+- [x] 3e.2 Enforcement test (AST or source scan over `agent/*.go`, not tests): fails on a plain `store.Put`,
   `store.Delete` or unguarded transaction whose key comes from `types.KeyObservedInstance*` outside the guarded
   helpers and the listed exceptions. S1: delete `WriteNetworkAllocation` (or replace with an op builder used by the
   agent) and update its tests; S2 doc name; Sg2 positive control.
-- [ ] 3e.3 Docs: Flow 35 and D4 state the rule ("all per-instance observed writes are guarded by placement") and
+  Result: `TestAgentInstanceWritesAreGuarded` (go/ast over `agent/*.go`): store Put/Delete/PutWithLease of a
+  `types.KeyObservedInstance*` key (direct or via a variable) and any Transaction in a function building such keys,
+  outside `guardedInstanceWriters` (6 entries, each with its reason; a stale entry fails too). Red before 3e.1: 28
+  violations (agent.go, crash_loop_backoff.go, dataplane.go, init.go, probes.go, secret_delivery.go, telemetry.go);
+  0 after. `TestInstanceWriteScanDetectsViolations` is the scan's positive control (3 of 3 found). S1:
+  `WriteNetworkAllocation` and `DeleteNetworkAllocation` (now unused too) deleted with their codec test. S2:
+  reconciliation-consistency-contract.md names `controllers.MaxTransactionChanges`. Sg2: the probe test first
+  checks node-1 writes ready/healthy/health with its placement current.
+- [x] 3e.3 Docs: Flow 35 and D4 state the rule ("all per-instance observed writes are guarded by placement") and
   its exceptions; graphs updated.
-- [ ] 3e.4 Checks as in 3.1.
+  Result: Flow 35 rule bullet, D4 rule bullet; CALL_GRAPH (rule, writes table, trees, reverse index),
+  INSTANCE_LIFECYCLE_GRAPH (start, running, crash loop, cleanup trees, reverse index, line numbers), DATA_PLANE_GRAPH
+  and EXTENSIBILITY_GRAPH (hostPortChanges), OBSERVABILITY_GRAPH line numbers.
+- [x] 3e.4 Checks as in 3.1.
+  Result: `gofmt -l` empty; golangci-lint 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests; `-race`
+  scheduler/agent/controllers ok (1.4 s, 29.9 s, 6.6 s); `openspec validate` valid. `executeReconciliationCycle`
+  was 114 lines before this group (over 80, pre-existing) and is 111 now (`publishRunningInstance` extracted).
 - Run 45254885232 (first closing full run, dispatched on 1a7869d before this round) tests code that 3e changes: it
   can't count towards the two closing runs.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the

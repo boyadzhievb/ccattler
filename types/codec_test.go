@@ -420,34 +420,6 @@ func TestServiceVIPDeleteRemovesAllFacts(t *testing.T) {
 	}
 }
 
-// TestNetworkAllocationWriteAndDelete verifies that an instance IP allocation
-// can be written and then removed from the fact store.
-func TestNetworkAllocationWriteAndDelete(t *testing.T) {
-	stateStore := store.NewMemoryStore()
-	defer stateStore.Close()
-
-	_, err := WriteNetworkAllocation(ctx, stateStore, "instance-aaa", "10.100.1.2")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	factEntry, err := stateStore.Get(ctx, KeyNetworkAllocation("instance-aaa"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(factEntry.Value) != "10.100.1.2" {
-		t.Errorf("allocation: got %s, want 10.100.1.2", factEntry.Value)
-	}
-
-	if deleteErr := DeleteNetworkAllocation(ctx, stateStore, "instance-aaa"); deleteErr != nil {
-		t.Fatal(deleteErr)
-	}
-	_, err = stateStore.Get(ctx, KeyNetworkAllocation("instance-aaa"))
-	if err != store.ErrKeyNotFound {
-		t.Errorf("expected ErrKeyNotFound after delete, got %v", err)
-	}
-}
-
 // TestReadServiceVIPNotFound verifies that reading a VIP for a service that
 // has none returns an error.
 func TestReadServiceVIPNotFound(t *testing.T) {

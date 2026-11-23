@@ -94,7 +94,14 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   never land between the state and the IP (3c.6). `created-at` stays a separate create-only write. The status
   reason, last exit and secret-wait status are written only after a committed publish, and the probe pass's probe,
   health and progress writes compare the same placement revision (`placementGuard`), so an in-flight source probe
-  cannot write `ready` after the move (R3-S1, R3-S2). Store errors
+  cannot write `ready` after the move (R3-S1, R3-S2).
+- **The rule (review round 4, 3e): all per-instance observed writes are guarded by placement.** Every agent write
+  or delete under `observed/instance/{id}/` goes through `writeGuardedInstanceFacts` (the scanned placement
+  revision, no-op changes dropped) or the guarded publish transaction, which carries the facts of the same publish
+  (status reason, start facts, last exit, exit reason, pull and secret-wait status). Telemetry reads the placement
+  first. Exceptions: the `stopped` write after the move check, the source's `pending` after a move (its own node and
+  state guard), and cleanup of an instance that left the desired set (only while it is not placed on another node).
+  A source scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`) enforces it. Store errors
   in these transactions are logged as errors with the error, not as "changed meanwhile" (R2-3).
 - **A failed target startup never looks healthy.** The target publishes `image_pull_backoff` (pull failure) or
   `failed` (start failure, replaced by the failure controller) with `node` = target. A dead target agent publishes

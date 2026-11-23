@@ -19,7 +19,7 @@ commits. What a controller may rely on has never been written down, and the code
 - **Absence:** a decision based on a key not existing is protected only when the controller also writes that key
   (create-only guard). A key created by another writer under a scanned prefix does not fail the transaction (M180
   item "Absence guards").
-- **Budget:** a commit holds at most 60 changes (`maxTransactionChanges`); the rest are deferred, sorted by
+- **Budget:** a commit holds at most 60 changes (`controllers.MaxTransactionChanges`); the rest are deferred, sorted by
   (Group, Key). Each controller must cap its own output (runner contract); M262 D4 and M267 showed how a missing cap
   or a missing fit check turns into delayed placements or loops.
 - **Unchanged writes:** etcd gives an unchanged put inside a transaction a new revision and a watch event; the memory

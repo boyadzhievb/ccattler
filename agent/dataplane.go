@@ -508,18 +508,21 @@ func (dataPlaneReconciler *DataPlaneReconciler) PublishAdvertiseAddress(ctx cont
 	}
 }
 
-// publishInstanceHostPorts writes per-container-port host port mappings to
-// the store. Each containerPort gets its own key so the endpoint controller
-// can resolve the correct host port for multi-port services.
-func publishInstanceHostPorts(ctx context.Context, factStore store.StateStore, instanceID string, portMappings map[int]int) {
+// hostPortChanges returns the puts of per-container-port host port mappings,
+// in container-port order, for a guarded write: each containerPort gets its own
+// key so the endpoint controller can resolve the host port of multi-port services.
+func hostPortChanges(instanceID string, portMappings map[int]int) []store.Op {
+	containerPorts := make([]int, 0, len(portMappings))
 	for containerPort, hostPort := range portMappings {
-		if hostPort <= 0 {
-			continue
-		}
-		hostPortKey := types.KeyObservedInstanceHostPortForPort(instanceID, containerPort)
-		if _, putError := factStore.Put(ctx, hostPortKey, []byte(strconv.Itoa(hostPort))); putError != nil {
-			logging.Default().Error("failed to publish instance host port",
-				"instance", instanceID, "containerPort", strconv.Itoa(containerPort), "error", putError.Error())
+		if hostPort > 0 {
+			containerPorts = append(containerPorts, containerPort)
 		}
 	}
+	sort.Ints(containerPorts)
+	changes := make([]store.Op, 0, len(containerPorts))
+	for _, containerPort := range containerPorts {
+		changes = append(changes, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceHostPortForPort(instanceID, containerPort),
+			Value: []byte(strconv.Itoa(portMappings[containerPort]))})
+	}
+	return changes
 }

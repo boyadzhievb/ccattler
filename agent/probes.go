@@ -641,7 +641,7 @@ func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, 
 	}
 
 	if !hasProgress {
-		_ = probeScheduler.factStore.Delete(ctx, types.KeyObservedInstanceProbeProgress(instanceInfo.id))
+		deleteGuardedInstanceFact(ctx, probeScheduler.factStore, probeScheduler.nodeID, instanceInfo, types.KeyObservedInstanceProbeProgress(instanceInfo.id))
 		return
 	}
 

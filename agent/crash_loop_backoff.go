@@ -62,7 +62,7 @@ func (nodeAgent *Agent) reconcileInstanceWithoutRunningContainer(ctx context.Con
 		return
 	}
 	if containerExited || retryAfterStartFailure {
-		nodeAgent.incrementRestartCountInStore(ctx, instanceInfo.id)
+		nodeAgent.incrementRestartCountInStore(ctx, instanceInfo)
 	}
 }
 
@@ -122,10 +122,27 @@ func (nodeAgent *Agent) isExitedInstanceDueForRestart(ctx context.Context, insta
 // recordInstanceExit counts a new exit of the instance's container, publishes
 // its exit reason for a non-zero code and starts the back-off wait.
 func (nodeAgent *Agent) recordInstanceExit(ctx context.Context, instanceInfo placedInstanceInfo, backoffEntry *crashLoopBackoffEntry, runtimeStatus runtime.Status) {
-	if runtimeStatus.ExitCode != 0 {
-		nodeAgent.publishExitReasonFromStatus(ctx, instanceInfo.id, runtimeStatus)
+	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, describeContainerExit(runtimeStatus),
+		exitReasonChanges(instanceInfo.id, runtimeStatus)...)
+}
+
+// exitReasonChanges returns the put of observed/instance/{id}/exit-reason for a
+// non-zero exit (the runtime's error, else "exit(N)"), else none; it is written
+// in the crash-loop publish's guarded transaction (M267 3e).
+func exitReasonChanges(instanceID string, runtimeStatus runtime.Status) []store.Op {
+	if runtimeStatus.ExitCode == 0 {
+		return nil
 	}
-	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, describeContainerExit(runtimeStatus))
+	exitReason := runtimeStatus.Error
+	if exitReason == "" {
+		exitReason = fmt.Sprintf("exit(%d)", runtimeStatus.ExitCode)
+	}
+	return []store.Op{exitReasonChange(instanceID, exitReason)}
+}
+
+// exitReasonChange returns the put of observed/instance/{id}/exit-reason.
+func exitReasonChange(instanceID string, exitReason string) store.Op {
+	return store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceExitReason(instanceID), Value: []byte(exitReason)}
 }
 
 // recordInstanceStartFailure records a start whose workload process could not
@@ -135,16 +152,16 @@ func (nodeAgent *Agent) recordInstanceExit(ctx context.Context, instanceInfo pla
 // failure after a long stable run waits the base delay again.
 func (nodeAgent *Agent) recordInstanceStartFailure(ctx context.Context, instanceInfo placedInstanceInfo, processError string) {
 	backoffEntry := nodeAgent.ensureCrashLoopBackoffEntry(instanceInfo.id)
-	nodeAgent.publishExitReason(ctx, instanceInfo.id, processError)
-	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, processError)
+	nodeAgent.beginCrashLoopWait(ctx, instanceInfo, backoffEntry, processError, exitReasonChange(instanceInfo.id, processError))
 	backoffEntry.startFailed = true
 	backoffEntry.lastStartedAt = time.Now()
 }
 
 // beginCrashLoopWait counts an exit described by exitDescription, starts the
 // wait before the next restart and publishes the crash-loop-backoff state with
-// the exit and the wait as its reason.
-func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo placedInstanceInfo, backoffEntry *crashLoopBackoffEntry, exitDescription string) {
+// the exit and the wait as its reason, last_exit and exitFacts in one guarded
+// transaction (M267 3e).
+func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo placedInstanceInfo, backoffEntry *crashLoopBackoffEntry, exitDescription string, exitFacts ...store.Op) {
 	now := time.Now()
 	if now.Sub(backoffEntry.lastStartedAt) >= nodeAgent.crashLoopResetPeriod {
 		backoffEntry.attempts = 0
@@ -158,20 +175,13 @@ func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo pla
 	logging.Default().Warn("container exited, restarting after back-off",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "service", instanceInfo.service,
 		"attempt", strconv.Itoa(backoffEntry.attempts), "wait", waitDelay.String(), "exit", backoffEntry.lastExitReason)
-	if !nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceCrashLoopBackoff, "") {
-		return // stopped or moved meanwhile: the status would describe another container (M267 R3-S2)
-	}
-	nodeAgent.publishStatusReason(ctx, instanceInfo.id, fmt.Sprintf("%s; restarting in %s", backoffEntry.lastExitReason, waitDelay))
-	nodeAgent.publishInstanceLastExit(ctx, instanceInfo.id, backoffEntry.lastExitReason)
-}
-
-// publishInstanceLastExit writes observed/instance/{id}/last_exit, how the
-// container last exited. It outlives the restart (the status reason becomes
-// "running"), so a rollback can still name the exit (M241, testbed 4.1 a).
-func (nodeAgent *Agent) publishInstanceLastExit(ctx context.Context, instanceID string, exitDescription string) {
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceLastExit(instanceID), []byte(exitDescription)); putError != nil {
-		logging.Default().Error("failed to write last exit", "instance", instanceID, "error", putError.Error())
-	}
+	// last_exit outlives the restart (the status reason becomes "running"), so a
+	// rollback can still name the exit (M241, testbed 4.1 a).
+	crashLoopFacts := append([]store.Op{
+		statusReasonChange(instanceInfo.id, fmt.Sprintf("%s; restarting in %s", backoffEntry.lastExitReason, waitDelay)),
+		{Type: store.OpPut, Key: types.KeyObservedInstanceLastExit(instanceInfo.id), Value: []byte(backoffEntry.lastExitReason)},
+	}, exitFacts...)
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceCrashLoopBackoff, "", crashLoopFacts...)
 }
 
 // describeContainerExit returns "exited with code N", followed by the runtime's
@@ -206,7 +216,8 @@ func (nodeAgent *Agent) ensureCrashLoopBackoffEntry(instanceID string) *crashLoo
 // incrementRestartCountInStore adds one to observed/instance/{id}/restarts.
 // The agent is the only writer for its instances; a failed write is logged
 // and the restart still happens.
-func (nodeAgent *Agent) incrementRestartCountInStore(ctx context.Context, instanceID string) {
+func (nodeAgent *Agent) incrementRestartCountInStore(ctx context.Context, instanceInfo placedInstanceInfo) {
+	instanceID := instanceInfo.id
 	restartKey := types.KeyObservedInstanceRestarts(instanceID)
 	restartCount := 0
 	if restartFact, getError := nodeAgent.store.Get(ctx, restartKey); getError == nil {
@@ -219,9 +230,7 @@ func (nodeAgent *Agent) incrementRestartCountInStore(ctx context.Context, instan
 		logging.Default().Error("failed to read restart count", "instance", instanceID, "error", getError.Error())
 		return
 	}
-	if _, putError := nodeAgent.store.Put(ctx, restartKey, []byte(strconv.Itoa(restartCount+1))); putError != nil {
-		logging.Default().Error("failed to write restart count", "instance", instanceID, "error", putError.Error())
-	}
+	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpPut, Key: restartKey, Value: []byte(strconv.Itoa(restartCount + 1))})
 }
 
 // cleanupStaleCrashLoopBackoffs drops the back-off state of instances that are

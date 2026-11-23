@@ -459,18 +459,6 @@ func DeleteServiceVIP(ctx context.Context, stateStore store.StateStore, serviceN
 	return nil
 }
 
-// WriteNetworkAllocation records an instance's allocated IP address in the
-// networking section of the fact store.
-func WriteNetworkAllocation(ctx context.Context, stateStore store.StateStore, instanceID string, allocatedIP string) (int64, error) {
-	return stateStore.Put(ctx, KeyNetworkAllocation(instanceID), []byte(allocatedIP))
-}
-
-// DeleteNetworkAllocation removes an instance's IP allocation record from
-// the fact store. Called when an instance is stopped and its IP is released.
-func DeleteNetworkAllocation(ctx context.Context, stateStore store.StateStore, instanceID string) error {
-	return stateStore.Delete(ctx, KeyNetworkAllocation(instanceID))
-}
-
 // WriteDesiredVolume writes a volume's desired-state declaration as flat
 // key-value pairs under the desired/volume/ prefix.
 func WriteDesiredVolume(ctx context.Context, stateStore store.StateStore, volumeName string, size string, persistent bool) error {

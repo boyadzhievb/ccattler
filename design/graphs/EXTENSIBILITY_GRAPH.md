@@ -632,7 +632,7 @@ IF --cloud-provider set:
 | `Runtime.Resize` | `reconcileResourceChanges` |
 | `Runtime.Logs` | `handleLogs` (api/server.go) |
 | `GracefulStopper.StopWithGracePeriod` | `cleanupUndesiredInstance` (if grace period configured) |
-| `HostPortProvider.HostPortsForInstance` | `startInstanceAndPublishState` → `publishInstanceHostPorts` |
+| `HostPortProvider.HostPortsForInstance` | `hostPortChangesIfSupported` (start and running-path publishes) |
 | `ImagePuller.PullImage` | `ensureImageAvailable` |
 | `ImagePuller.IsImageCached` | `ensureImageAvailable` |
 | `ImageLister.ListImages` | `handleImagesList` (api) |

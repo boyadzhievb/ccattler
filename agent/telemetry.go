@@ -154,20 +154,21 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 			continue
 		}
 
-		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceCPU(workloadStatus.ID),
-			fmt.Appendf(nil, "%d", resourceStats.CPUMillicores)); putError != nil {
-			logging.Default().Error("failed to write instance CPU telemetry", "instance", workloadStatus.ID, "error", putError.Error())
+		telemetryFacts := []store.Op{
+			{Type: store.OpPut, Key: types.KeyObservedInstanceCPU(workloadStatus.ID), Value: fmt.Appendf(nil, "%d", resourceStats.CPUMillicores)},
+			{Type: store.OpPut, Key: types.KeyObservedInstanceMemory(workloadStatus.ID), Value: fmt.Appendf(nil, "%d", resourceStats.MemoryBytes)},
 		}
-		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceMemory(workloadStatus.ID),
-			fmt.Appendf(nil, "%d", resourceStats.MemoryBytes)); putError != nil {
-			logging.Default().Error("failed to write instance memory telemetry", "instance", workloadStatus.ID, "error", putError.Error())
+		if resourceStats.OOMKillCount > 0 {
+			telemetryFacts = append(telemetryFacts, store.Op{Type: store.OpPut,
+				Key: types.KeyObservedInstanceOOMKills(workloadStatus.ID), Value: fmt.Appendf(nil, "%d", resourceStats.OOMKillCount)})
+		}
+		// Only for a container whose instance is placed here now: after a move the
+		// source's samples never land on the target's instance (M267 3e).
+		if placedInfo, placedHere := currentPlacementInfo(ctx, nodeReporter.factStore, nodeReporter.nodeID, workloadStatus.ID); placedHere {
+			writeGuardedInstanceFacts(ctx, nodeReporter.factStore, nodeReporter.nodeID, placedInfo, telemetryFacts)
 		}
 
 		if resourceStats.OOMKillCount > 0 {
-			if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceOOMKills(workloadStatus.ID),
-				fmt.Appendf(nil, "%d", resourceStats.OOMKillCount)); putError != nil {
-				logging.Default().Error("failed to write OOM kill telemetry", "instance", workloadStatus.ID, "error", putError.Error())
-			}
 			memoryLimitMiB := resourceStats.MemoryLimitBytes / (1024 * 1024)
 			memoryUsageMiB := resourceStats.MemoryBytes / (1024 * 1024)
 			logging.Default().Warn("container OOM kill detected",

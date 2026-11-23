@@ -367,33 +367,50 @@ func TestSourcePublishNeverOverwritesTargetIP(t *testing.T) {
 	}
 }
 
-// TestSourceProbeAfterMoveDoesNotSetReadiness: review round 3 R3-S1. node-1's
-// probe pass read its placed instances before the move; its readiness check
-// then passes after the move, but node-1 must not write ready (or any probe
-// fact) for the instance that now belongs to node-2, which probes it itself.
-func TestSourceProbeAfterMoveDoesNotSetReadiness(t *testing.T) {
+// runSourceProbePass scans web-1 on node-1 (readiness and liveness probes
+// against a healthy server), optionally moves it to node-2, runs node-1's probe
+// pass with that scan and returns the store.
+func runSourceProbePass(t *testing.T, moveBeforeProbe bool) store.StateStore {
+	t.Helper()
 	factStore, _, sourceAgent := setupProbeTestAgent("node-1")
-	defer factStore.Close()
+	t.Cleanup(func() { factStore.Close() })
 	ctx := context.Background()
 	healthyListener, healthyPort := startTestHTTPServer(t, 200)
-	defer healthyListener.Close()
+	t.Cleanup(func() { healthyListener.Close() })
 	setupInstanceInStore(ctx, factStore, "web", "web-1", "node-1", "127.0.0.1")
 	writeHTTPProbeConfig(ctx, factStore, "web", types.ProbeReadiness, healthyPort, "/", 0, 3, 1)
 	writeHTTPProbeConfig(ctx, factStore, "web", types.ProbeLiveness, healthyPort, "/", 0, 3, 1)
 
-	probePassInfo := scannedInstanceInfo(t, ctx, sourceAgent, "web-1") // the probe pass's scan, before the move
-	_ = types.DeletePlacement(ctx, factStore, "node-1", "web-1")
-	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "web-1", NodeID: "node-2"})
+	probePassInfo := scannedInstanceInfo(t, ctx, sourceAgent, "web-1") // the probe pass's scan
+	if moveBeforeProbe {
+		_ = types.DeletePlacement(ctx, factStore, "node-1", "web-1")
+		types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "web-1", NodeID: "node-2"})
+	}
 	sourceAgent.probeScheduler.executeProbesForInstance(ctx, probePassInfo)
+	return factStore
+}
 
-	for _, probeType := range []types.ProbeType{types.ProbeReadiness, types.ProbeLiveness} {
-		if written := readFactValue(ctx, factStore, types.KeyObservedInstanceProbeState("web-1", probeType)); written != "" {
-			t.Errorf("node-1 wrote %s = %q for web-1 after it moved to node-2", probeType, written)
+// TestSourceProbeAfterMoveDoesNotSetReadiness: review round 3 R3-S1 (positive
+// control, round 4 Sg2). With its placement current, node-1's probe pass
+// writes ready, healthy and health; after the move the same pass (scanned
+// before it) writes none of node-2's instance's probe facts.
+func TestSourceProbeAfterMoveDoesNotSetReadiness(t *testing.T) {
+	ctx := context.Background()
+	probedKeys := []string{
+		types.KeyObservedInstanceProbeState("web-1", types.ProbeReadiness),
+		types.KeyObservedInstanceProbeState("web-1", types.ProbeLiveness),
+		types.KeyObservedInstanceHealth("web-1"),
+	}
+	controlStore := runSourceProbePass(t, false)
+	for _, probedKey := range probedKeys {
+		if readFactValue(ctx, controlStore, probedKey) == "" {
+			t.Fatalf("control: node-1 did not write %s with its placement current; the guard case proves nothing", probedKey)
 		}
 	}
-	for _, instanceKey := range []string{types.KeyObservedInstanceProbeProgress("web-1"), types.KeyObservedInstanceHealth("web-1")} {
-		if written := readFactValue(ctx, factStore, instanceKey); written != "" {
-			t.Errorf("node-1 wrote %s = %q for web-1 after it moved to node-2", instanceKey, written)
+	movedStore := runSourceProbePass(t, true)
+	for _, probedKey := range append(probedKeys, types.KeyObservedInstanceProbeProgress("web-1")) {
+		if written := readFactValue(ctx, movedStore, probedKey); written != "" {
+			t.Errorf("node-1 wrote %s = %q for web-1 after it moved to node-2", probedKey, written)
 		}
 	}
 }
@@ -432,6 +449,79 @@ func TestStatusWrittenOnlyAfterCommittedPublish(t *testing.T) {
 			for _, statusKey := range testCase.guardedStatusKeys {
 				if written := readFactValue(ctx, factStore, statusKey); written != "" {
 					t.Errorf("node-1 wrote %s = %q after its guarded publish failed (instance moved to node-2)", statusKey, written)
+				}
+			}
+		})
+	}
+}
+
+// targetOwnedFacts are facts node-2 published for web-1 after the move, which
+// a behind node-1 must leave as they are (M267 3e).
+var targetOwnedFacts = map[string]string{
+	types.KeyObservedInstanceStatusReason("web-1"):                     "running",
+	types.KeyObservedInstanceStartedAt("web-1"):                        "2026-11-23T12:00:00.5Z",
+	types.KeyObservedInstanceProbeState("web-1", types.ProbeReadiness): string(types.ReadinessProbeReady),
+	types.KeyObservedInstanceConfigHash("web-1"):                       "target-config-hash",
+	types.KeyObservedInstanceImage("web-1"):                            "nginx:1.27",
+	types.KeyObservedInstanceProbeProgress("web-1"):                    `{"readiness_failures":1,"readiness_threshold":3}`,
+	types.KeyObservedInstanceExitReason("web-1"):                       "target exit",
+	types.KeyObservedInstanceLastExit("web-1"):                         "target last exit",
+}
+
+// TestSourceWritesNothingAfterMove: review round 4 (B1-B4, Sg1). node-1
+// scanned web-1 before the move and is still in that cycle; each of its paths
+// below must neither write nor delete any of node-2's facts for web-1, nor add
+// a pull status of its own.
+func TestSourceWritesNothingAfterMove(t *testing.T) {
+	testCases := []struct {
+		name    string                                                                       // name is the finding and path
+		runPath func(context.Context, *Agent, *runtime.SimulatorRuntime, placedInstanceInfo) // runPath runs node-1's late path
+	}{
+		{name: "B1 pull failure", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.recordImagePullFailure(ctx, instanceInfo, "nginx:1.27", "registry unreachable")
+		}},
+		{name: "B2 start path", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.startInstanceAndPublishState(ctx, instanceInfo, "nginx:1.26", "source-config-hash",
+				runtime.Spec{ID: instanceInfo.id, ServiceName: instanceInfo.service, Image: "nginx:1.26"})
+		}},
+		{name: "B2 reconcile desired instance", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.reconcileDesiredInstance(ctx, instanceInfo)
+		}},
+		{name: "B3 exit reason", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.recordInstanceExit(ctx, instanceInfo, sourceAgent.ensureCrashLoopBackoffEntry(instanceInfo.id),
+				runtime.Status{ID: instanceInfo.id, ExitCode: 1, Error: "source exit"})
+			sourceAgent.recordInstanceStartFailure(ctx, instanceInfo, "source start failure")
+		}},
+		{name: "B4 probe progress delete", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.probeScheduler.publishProbeProgress(ctx, instanceInfo, &probeConfig{failureThreshold: 3}, nil, nil,
+				&instanceProbeState{startup: &probeTracker{consecutiveSuccesses: 1}})
+		}},
+		{name: "secret wait", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.recordSecretDeliveryWait(ctx, instanceInfo, serviceSecretRequirements{}, errors.New("secret API unreachable"))
+		}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			factStore, sourceRuntime, sourceAgent := setupProbeTestAgent("node-1")
+			defer factStore.Close()
+			ctx := context.Background()
+			setupInstanceInStore(ctx, factStore, "web", "web-1", "node-1", "127.0.0.1")
+			sourceScannedInfo := scannedInstanceInfo(t, ctx, sourceAgent, "web-1")
+			_ = types.DeletePlacement(ctx, factStore, "node-1", "web-1")
+			types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "web-1", NodeID: "node-2"})
+			for key, value := range targetOwnedFacts {
+				_, _ = factStore.Put(ctx, key, []byte(value))
+			}
+
+			testCase.runPath(ctx, sourceAgent, sourceRuntime, sourceScannedInfo)
+			for key, wantValue := range targetOwnedFacts {
+				if gotValue := readFactValue(ctx, factStore, key); gotValue != wantValue {
+					t.Errorf("node-1 changed %s from %q to %q after web-1 moved to node-2", key, wantValue, gotValue)
+				}
+			}
+			for _, sourceOnlyKey := range []string{types.KeyObservedInstancePullStatus("web-1"), types.KeyObservedInstanceSecretWait("web-1")} {
+				if written := readFactValue(ctx, factStore, sourceOnlyKey); written != "" {
+					t.Errorf("node-1 wrote %s = %q after web-1 moved to node-2", sourceOnlyKey, written)
 				}
 			}
 		})
