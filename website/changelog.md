@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.93.0-beta <Badge type="tip" text="latest" /> {#v1-93-0-beta}
+## v1.94.0-beta <Badge type="tip" text="latest" /> {#v1-94-0-beta}
+
+**2026-11-23** — Scheduler Ignores Resource Requests.
+
+- **Scheduler Ignores Resource Requests** (M243) — Bug fix (found in the M241 testbed check): resource requests written with units (`500m`, `64Gi`) were read by the scheduler as 0, so placement never checked node capacity, nodes were overcommitted and a capacity shortage was never reported. Requests are now parsed with one shared rule (Kubernetes notation; a value finer than 1m or 1 byte is rounded up), and a value that cannot be parsed is refused at apply and by `cca lint`; a stored unreadable value blocks only new placements (`invalid_resource_request`). An instance no node can fit stays unplaced with `insufficient_capacity` (shown in rollout reasons and `cca status`), and preemption stops a lower-priority instance only when that alone makes room. The scheduler no longer rewrites unchanged unplaced facts in a loop. **BREAKING:** a bare CPU number now means cores and a bare memory number means bytes, for `resources` requests and limits and for `scale vertical` bounds (before, the scheduler read them as millicores and MiB); re-apply such configurations with units (`500m`, `512Mi`). `cca apply` warns about a bare CPU value of 64 or more. Vertical scaling now works (its bounds were read as 0), so configurations that declare it get resized. Recommendations stored without a unit are migrated when a server becomes leader. Known limits: CPU and memory limits are stored but not applied by the runtimes (M254); `cca server` does not yet turn a shortage into a node request (M260); resource changes restart instances outside the rollout (M239).
+
+---
+
+## v1.93.0-beta {#v1-93-0-beta}
 
 **2026-11-18** — Rollout Correctness.
 
