@@ -720,5 +720,9 @@ The review rounds for M267 are complete. What remains is the closing runs (3.4).
   of that log). Not counted: 45375028560 (5adf58d, before 3i to 3k).
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
   `instance-rebalancing`), release with `scripts/release.sh`.
-- [ ] 3.6 Note: the ctrl agent logged `etcd watch event dropped (channel buffer full)` during the loop. After the fix,
+- [x] 3.6 Note: the ctrl agent logged `etcd watch event dropped (channel buffer full)` during the loop. After the fix,
   check whether it still appears in the closing run's logs; if it does, record it as its own milestone.
+  Result (2026-11-24): it does not appear. Command: `journalctl -u cca-agent -u cca-server --since today | grep -c
+  "watch event dropped"` on cca-deploy-ctrl, worker-1 and worker-2 gives 0, 0, 0. That covers the journals of today's
+  runs on 429807f, including the closing runs and run 45406906503, which was in progress on the same commit. Not in
+  either closing run's workflow log either. No milestone needed.

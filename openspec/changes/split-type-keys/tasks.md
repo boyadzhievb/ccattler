@@ -250,8 +250,12 @@ scenario tests to write first; group 1 records the baseline that the move is che
     change.
   - Placement is not enforced by a test: accepted in the design (M259).
   Suggestions 2 and 3 are fixed (see 4.2); suggestion 4 is rejected (see 4.2).
-- [ ] 4.4 One full Deploy Testbed run on the release commit or its parent (job summary says `full run`); record the
+- [x] 4.4 One full Deploy Testbed run on the release commit or its parent (job summary says `full run`); record the
   run ID. A pure move cannot change runtime behaviour, but CLAUDE.md (M231) requires the closing run.
+  Result (2026-11-24): run 45402096299 on 429807f, success, RUN_KIND full (workloads airflow, whoami,
+  whoami-multiport and gate-tls; no check group skipped; adversarial replay with all cases). 429807f contains the
+  whole M275 change (8d43699..aea6f90) and later M267 commits; what follows it up to the release commit is docs,
+  milestones and OpenSpec records only, no Go code. It was also the first of M267's two closing runs.
 
 ## Workflow follow-up
 
