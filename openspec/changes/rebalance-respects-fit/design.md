@@ -156,6 +156,12 @@ the publish (marker, service, `ip`, `network/allocation/{id}`) and deletes readi
 transaction (at most 5 changes beside state and node, no host ports), so "a move can never land between the state
 and the IP" (3c.6) holds on the overflow path too (R8-1). No requirement or spec scenario changed.
 
+Change during apply, recorded 2026-11-24 (user decision on round 9, option b; implemented by the lead-developer
+subagent in rework 3j): on the overflow path the final publish filters its facts again after the `starting` publish,
+so it does not re-put what `starting` committed and "etcd sees no extra writes" above holds there too (S1). An empty
+or unresolved IP (no `ip` put, the source's IP stays) is its own bug milestone, M278. No requirement or spec
+scenario changed.
+
 ## Failure cases
 
 | Case | What happens |

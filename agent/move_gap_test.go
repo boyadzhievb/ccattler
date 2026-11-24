@@ -457,15 +457,15 @@ func TestStatusWrittenOnlyAfterCommittedPublish(t *testing.T) {
 // targetOwnedFacts are facts node-2 published for web-1 after the move, which
 // a behind node-1 must leave as they are (M267 3e).
 var targetOwnedFacts = map[string]string{
-	types.KeyObservedInstanceStatusReason("web-1"):                     "running",
-	types.KeyObservedInstanceStartedAt("web-1"):                        "2026-11-23T12:00:00.5Z",
-	types.KeyObservedInstanceProbeState("web-1", types.ProbeReadiness): string(types.ReadinessProbeReady),
-	types.KeyObservedInstanceConfigHash("web-1"):                       "target-config-hash",
-	types.KeyObservedInstanceImage("web-1"):                            "nginx:1.27",
-	types.KeyObservedInstanceProbeProgress("web-1"):                    `{"readiness_failures":1,"readiness_threshold":3}`,
-	types.KeyObservedInstanceExitReason("web-1"):                       "target exit",
-	types.KeyObservedInstanceLastExit("web-1"):                         "target last exit",
-	types.KeyObservedInstanceHostPortForPort("web-1", 9000):            "31000", // node-1's runtime maps 30000 (3g.5)
+	types.KeyObservedInstanceStatusReason("web-1"):                           "running",
+	types.KeyObservedInstanceStartedAt("web-1"):                              "2026-11-23T12:00:00.5Z",
+	types.KeyObservedInstanceProbeState("web-1", types.ProbeReadiness):       string(types.ReadinessProbeReady),
+	types.KeyObservedInstanceConfigHash("web-1"):                             "target-config-hash",
+	types.KeyObservedInstanceImage("web-1"):                                  "nginx:1.27",
+	types.KeyObservedInstanceProbeProgress("web-1"):                          `{"readiness_failures":1,"readiness_threshold":3}`,
+	types.KeyObservedInstanceExitReason("web-1"):                             "target exit",
+	types.KeyObservedInstanceLastExit("web-1"):                               "target last exit",
+	types.KeyObservedInstanceHostPortForPort("web-1", fakeContainerPortBase): "31000", // node-1's runtime maps fakeHostPortBase (3g.5)
 }
 
 // snapshotInstanceFacts returns every observed/instance/{id} fact (marker and

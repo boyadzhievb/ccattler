@@ -20,8 +20,20 @@ import (
 // holds together with the state publish (review round 5 B1).
 const manyHostPortsTestPortCount = 130
 
+// The fake runtime's host-port mapping (manyHostPortsRuntime): container port
+// fakeContainerPortBase+i maps to host port fakeHostPortBase+i (3j R9-dup).
+const (
+	fakeContainerPortBase = 9000  // fakeContainerPortBase is the first container port mapped.
+	fakeHostPortBase      = 30000 // fakeHostPortBase is the host port of the first container port.
+)
+
+// fakeHostPortFor returns the host port manyHostPortsRuntime maps containerPort to.
+func fakeHostPortFor(containerPort int) int {
+	return containerPort - fakeContainerPortBase + fakeHostPortBase
+}
+
 // manyHostPortsRuntime is a simulator runtime that maps every container port
-// 9000..9000+count-1 to a host port.
+// from fakeContainerPortBase on (count of them) to fakeHostPortFor.
 type manyHostPortsRuntime struct {
 	*runtime.SimulatorRuntime     // SimulatorRuntime runs the containers.
 	portCount                 int // portCount is how many ports every instance maps.
@@ -31,7 +43,7 @@ type manyHostPortsRuntime struct {
 func (portRuntime *manyHostPortsRuntime) HostPortsForInstance(_ string) map[int]int {
 	portMappings := make(map[int]int, portRuntime.portCount)
 	for portIndex := 0; portIndex < portRuntime.portCount; portIndex++ {
-		portMappings[9000+portIndex] = 30000 + portIndex
+		portMappings[fakeContainerPortBase+portIndex] = fakeHostPortFor(fakeContainerPortBase + portIndex)
 	}
 	return portMappings
 }
@@ -55,8 +67,8 @@ func TestStartPublishesInstanceWithManyHostPorts(t *testing.T) {
 		t.Errorf("state = %q with %d host ports, want running", gotState, manyHostPortsTestPortCount)
 	}
 	for portIndex := 0; portIndex < manyHostPortsTestPortCount; portIndex++ {
-		if readFactValue(ctx, factStore, types.KeyObservedInstanceHostPortForPort("web-1", 9000+portIndex)) == "" {
-			t.Fatalf("host port of container port %d not stored (of %d)", 9000+portIndex, manyHostPortsTestPortCount)
+		if readFactValue(ctx, factStore, types.KeyObservedInstanceHostPortForPort("web-1", fakeContainerPortBase+portIndex)) == "" {
+			t.Fatalf("host port of container port %d not stored (of %d)", fakeContainerPortBase+portIndex, manyHostPortsTestPortCount)
 		}
 	}
 }

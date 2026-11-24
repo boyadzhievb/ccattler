@@ -609,6 +609,57 @@ does not count for M267 3.4.
   (2026-11-24): `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without
   tests; `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.0 s, 6.7 s, 10.9 s, 1.4 s);
   `openspec validate rebalance-respects-fit` valid.
+## 3j. Review round 9 (2026-11-24, on a21b462..599db1e; code-reviewer Opus high + Codex job review-mwukk9ho-30rr2e: approve)
+
+No bugs. 3i.1 is red on a21b462 (15 subtests) and 3i.2 red by mutation. Green on 599db1e, `-count=3 -race` ok. The
+Codex stop-time check flagged S1 too. The main session checked S1 and R9-4 in the code (agent.go:2226-2232 and
+2248). User decision 2026-11-24: fix S1, T1/T2 and the duplication now (option b); R9-4 becomes its own bug
+milestone, M278.
+
+| # | Finding | Resolution |
+|---|---|---|
+| S1 | `instanceFacts` is filtered once, before the `starting` publish, so on the overflow path the final publish re-puts marker, service, ip (and allocation) that `starting` just wrote: unchanged puts, new revisions and watch events, against D4 "etcd sees no extra writes" | **fix** 3j.1 |
+| T1 | The intermediate-`starting` check's fixed key set lets marker/service change without checking values | **fix** 3j.2 (allowed keys and values from the committed `starting` publish) |
+| T2 | Any committed put of `state=starting` counts as the intermediate publish (gives false failures only) | **fix** 3j.2 |
+| R9-dup | The fake runtime's 9000→30000 mapping is hardcoded in 4 places (CLAUDE.md: 3+ places means a shared helper) | **fix** 3j.3 |
+| R9-4 | Empty or unresolved IP: no `ip` put, so the source's IP stays next to the target's state | **own milestone M278** (user, 2026-11-24) |
+| — | Readiness reset on a running-path overflow | **accepted**: only after a partly failed overflow, while `starting` (not serving); the next probe restores it |
+| Codex | "The sweep never checks the `starting` publish when the final commits" | **rejected**: the reviewer removed the readiness delete and 5 move-target subtests failed |
+
+- [x] 3j.1 S1: on the overflow path, the final publish drops identity facts the `starting` publish already
+  committed (filter again after the overflow step). Red first on 599db1e: a test counting committed puts of
+  unchanged values in the final publish on the 130-port path, then green.
+  Result: `finalPublishChangesAfterOverflow` (was `inlineHostPortsAfterWritingOverflow`) returns the final publish's
+  changes and, after the `starting` publish and the overflow, filters the facts again (`dropNoOpChanges`). The audit
+  decorator records, per committed write, the puts of values already stored; `checkNoUnchangedPuts` (every sweep
+  case; state and node excepted, they are the publish's compare) fails on any. Red on 599db1e (worktree
+  `scratchpad/rework3j-red`, log `scratchpad/red-3j1.log`): 9 leaf subtests fail, all 130 ports (no fault, fail
+  write 4, lose compare 4, fail state read 1, for start, running and move target): `write 3 put 2 unchanged values,
+  first observed/instance/web-1/ip`. Green after.
+- [x] 3j.2 T1/T2: derive the allowed keys and values of the intermediate check from the committed `starting`
+  publish itself, and identify it by the transaction, not by any `state=starting` put. Show red by mutation, then
+  green.
+  Result: `startingPublishWriteNumber` identifies the intermediate publish as the committed `state=starting` put whose
+  next attempted transaction is host-port-only (the overflow); `TestStartingPublishIdentifiedByItsTransaction`
+  (followed by the overflow → write 1; a final starting publish → none). Allowed changes are those the starting
+  write and the overflow after it committed (`isAllowedChange`: same value, or deleted); `checkStartingPublish`
+  checks each change of the starting write against the key and value it must have (state, node, marker "",
+  service "web", this node's ip and allocation, readiness delete). Red by mutation (`starting` also puts
+  service = "mutated"; log `scratchpad/red-3j2.log`): the 599db1e check passes (`ok`), the new one fails 15
+  subtests with `the starting publish (write 1) wrote observed/instance/web-1/service = "mutated"`. Green on the
+  unmutated code (62 PASS lines for the sweep, the identification test and the audit control).
+- [x] 3j.3 R9-dup: one shared helper or constant for the fake runtime's host-port mapping, used in all 4 places.
+  Result: `fakeContainerPortBase`, `fakeHostPortBase` and `fakeHostPortFor` (move_gap_round5_test.go) used by
+  `manyHostPortsRuntime`, the 130-port test, the sweep's stale-port setup and port check, `targetOwnedFacts` and the
+  new identification test; `isRuntimeHostPortFact` removed (allowed values now come from the committed writes).
+- [x] 3j.4 Docs (D4 and INSTANCE_LIFECYCLE_GRAPH:320 "no extra writes" stay true; Flow 35 notes M278 for the
+  empty-IP case) and the checks as in 3.1.
+  Result: D4 dated note (2026-11-24: S1, "no extra writes" holds on the overflow path; M278 for the empty IP); Flow
+  35 rule bullet (final publish leaves out what `starting` committed, M278 limit, sweep checks); INSTANCE_LIFECYCLE
+  and CALL graphs (rename, refilter step, line numbers), OBSERVABILITY_GRAPH line numbers. Checks (2026-11-24):
+  `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
+  `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.1 s, 6.6 s, 10.6 s, 1.4 s);
+  `openspec validate rebalance-respects-fit` valid.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing

@@ -1036,17 +1036,18 @@ func (nodeAgent *Agent) hostPortChangesIfSupported(instanceID string) []store.Op
 // publishInstanceStateUnlessStopped adds to a state publish.
 const publishStateAndNodeChangeCount = 2
 
-// inlineHostPortsAfterWritingOverflow returns the host-port changes that fit in
-// the state publish beside its publishFactCount changes. The rest it writes
-// first, after publishing starting with node and identityFacts, readiness
-// deleted (3h R7-1, 3i R8-1); false when a step failed: no final publish.
-func (nodeAgent *Agent) inlineHostPortsAfterWritingOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op,
-	identityFacts []store.Op, publishFactCount int) ([]store.Op, bool) {
+// finalPublishChangesAfterOverflow returns the final publish's changes: the
+// facts and the host ports that fit. Ports beyond the limit it writes first,
+// after a starting publish of identityFacts (3h R7-1, 3i R8-1), and then drops
+// what that committed (3j S1); false when a step failed: no final publish.
+func (nodeAgent *Agent) finalPublishChangesAfterOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op,
+	identityFacts []store.Op, otherFacts []store.Op) ([]store.Op, bool) {
+	publishFacts := append(slices.Clone(identityFacts), otherFacts...)
 	effectiveHostPortChanges := dropNoOpChanges(ctx, nodeAgent.store, hostPortChanges)
-	inlineCount := min(len(effectiveHostPortChanges), max(0, maxInstanceFactChangesPerTransaction-publishStateAndNodeChangeCount-publishFactCount))
+	inlineCount := min(len(effectiveHostPortChanges), max(0, maxInstanceFactChangesPerTransaction-publishStateAndNodeChangeCount-len(publishFacts)))
 	overflowChanges := effectiveHostPortChanges[inlineCount:]
 	if len(overflowChanges) == 0 {
-		return effectiveHostPortChanges, true
+		return append(publishFacts, effectiveHostPortChanges...), true
 	}
 	// At most 4 identity changes and the readiness delete: far under the limit, no host ports in it.
 	startingFacts := append(slices.Clone(identityFacts), dropNoOpChanges(ctx, nodeAgent.store,
@@ -1060,7 +1061,7 @@ func (nodeAgent *Agent) inlineHostPortsAfterWritingOverflow(ctx context.Context,
 		logging.Default().Info("host-port overflow not all written, instance left starting", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
 		return nil, false
 	}
-	return effectiveHostPortChanges[:inlineCount], true
+	return append(dropNoOpChanges(ctx, nodeAgent.store, publishFacts), effectiveHostPortChanges[:inlineCount]...), true
 }
 
 // cleanupStoppedStaleInstance removes a container that has already exited and
@@ -2224,12 +2225,12 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	hostPortChanges []store.Op, sameCycleFacts ...store.Op) bool {
 	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceInfo.id, runtimeIP)
 	identityFacts := dropNoOpChanges(ctx, nodeAgent.store, instanceIdentityChanges(instanceInfo, publishedContainerIP, ipFromNetworkProvider))
-	instanceFacts := append(slices.Clone(identityFacts), dropNoOpChanges(ctx, nodeAgent.store, sameCycleFacts)...)
-	inlineHostPortChanges, hostPortsWritten := nodeAgent.inlineHostPortsAfterWritingOverflow(ctx, instanceInfo, hostPortChanges, identityFacts, len(instanceFacts))
+	finalPublishChanges, hostPortsWritten := nodeAgent.finalPublishChangesAfterOverflow(ctx, instanceInfo, hostPortChanges, identityFacts,
+		dropNoOpChanges(ctx, nodeAgent.store, sameCycleFacts))
 	if !hostPortsWritten {
 		return false
 	}
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, append(instanceFacts, inlineHostPortChanges...)) {
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, finalPublishChanges) {
 		return false
 	}
 	nodeAgent.createInstanceCreatedAtOnce(ctx, instanceInfo)
