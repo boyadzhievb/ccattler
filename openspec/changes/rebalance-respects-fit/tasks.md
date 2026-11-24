@@ -707,6 +707,13 @@ The review rounds for M267 are complete. What remains is the closing runs (3.4).
 
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
+  Run 1 of 2: 45402872073 on 429807f (workflow_dispatch, 2026-11-24): success, RUN_KIND full; workloads
+  airflow, whoami, whoami-multiport and gate-tls; no check group skipped; adversarial replay with all cases. Deploy and
+  replay both succeeded. whoami churn: "4 distinct whoami instance IDs seen, bound 6 (4 from the test's steps +
+  margin 2)", so 0 unexplained; the backend-churn traffic test PASSED. 3.6: "etcd watch event dropped" does not
+  appear in the workflow log (0 lines).
+  Run 2 of 2: pending.
+  Not counted: 45375028560 (5adf58d, before 3i to 3k).
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
   `instance-rebalancing`), release with `scripts/release.sh`.
 - [ ] 3.6 Note: the ctrl agent logged `etcd watch event dropped (channel buffer full)` during the loop. After the fix,
