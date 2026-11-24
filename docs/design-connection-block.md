@@ -232,7 +232,7 @@ assembles the URL, and writes it to the mount path.
 | AST | `lang/ast.go` | `ConnectionDecl` struct; `Connections` field on `ServiceDecl`; top-level `ConnectionBlock` on `File` |
 | Parser | `lang/parser.go` | `parseConnectionBlock()` for top-level; `parseConnectionReference()` inside service; add to `parseServiceField` switch |
 | Compiler | `lang/compiler.go` | `compileConnectionBlock()` → JSON fact; `compileServiceConnectionFacts()` → mount path facts |
-| Fact keys | `types/keys.go` | `KeyDesiredConnection`, `ScanDesiredConnections`, `KeyDesiredServiceConnection`, `ScanDesiredServiceConnections` |
+| Fact keys | `types/keys_service.go` | `KeyDesiredConnection`, `ScanDesiredConnections`, `KeyDesiredServiceConnection`, `ScanDesiredServiceConnections` |
 | Agent | `agent/agent.go` | `materializeConnectionFiles()` — retrieve secret, assemble URL, write to mount path (parallel to `materializeSecretFiles`) |
 | Tests | `lang/parser_test.go`, `lang/compiler_test.go` | Parse and compile round-trip tests |
 

@@ -82,6 +82,14 @@ every file for no reader benefit. Under the import, a comment lists each `keys_*
 table above, one line each). Declarations keep their original relative order within each file. Separator comments
 (`// ---`) and floating section comments are dropped: the file name replaces them.
 
+Changed during apply, 2026-11-24 (main session, after the implementer's report; the user can reopen it):
+- **Floating comments are kept.** Every floating comment except the `// ----` separator lines is kept unchanged.
+  Each goes right before the base declaration it preceded, in whatever file that declaration lands. The first
+  version of D2 would have dropped 34 lines, among them real documentation: the key layouts (`Pattern:
+  desired/service/{name}/probe/{probeType}/{field}` and 11 more), the probe types, and the connection,
+  utilization, telemetry and init-step explanations. Only the 10 separator lines are removed.
+- **The file map goes under `package types`.** `keys.go` uses no `fmt` and has no import.
+
 ### D3. Proof of a pure move: the line-multiset check
 Every non-blank line of the base `keys.go` must still exist, the same number of times, across the new
 `types/keys*.go` files, apart from the explained header and comment lines:
@@ -94,8 +102,8 @@ diff \
 ```
 
 Allowed differences, each listed in tasks.md: per new file, the copyright and SPDX lines, `package types` and
-`import "fmt"` (only where `fmt` is used); the file map comment; the dropped separator and floating section
-comments. Any other line in the diff means a changed body, doc comment or name, and fails the task. `go build ./...`
+`import "fmt"` (only where `fmt` is used); the file map comment; the dropped `// ----` separator lines (D2 as
+changed on 2026-11-24: floating comments are kept, so they are not an allowed difference). Any other line in the diff means a changed body, doc comment or name, and fails the task. `go build ./...`
 then proves that no declaration was lost or duplicated and that no caller needs a change. `git diff --stat` must
 show only `types/keys*.go` and the docs.
 

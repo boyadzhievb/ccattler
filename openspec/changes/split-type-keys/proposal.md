@@ -41,7 +41,8 @@ line-multiset check) and tasks.md.
 
 ## Impact
 
-- `types/keys.go` and 14 new `types/keys_*.go` files; no other Go code.
+- `types/keys.go` and 15 new `types/keys_*.go` files; no other Go code. (Corrected 2026-11-24 during apply: the
+  draft said 14, but the D1 table always listed 15.)
 - `integration/doc_crosscheck_test.go` (`TestDocCrossCheckFactPrefixesExist`) reads `types/keys.go` for the layer
   prefixes; they stay there, so the test is unchanged.
 - Graphs: `AUDIT_GRAPH.md`, `STATEFUL_SERVICES_GRAPH.md`, `OBSERVABILITY_GRAPH.md` (line references).

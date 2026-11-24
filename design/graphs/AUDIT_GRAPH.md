@@ -545,8 +545,8 @@ watchPrefixWithReconnect (reconnect path)                      :80
 | types/eventlog.go:125 | EventLog.Since — filter by timestamp |
 | types/eventlog.go:150 | EventLog.ForTarget — filter by target substring |
 | types/eventlog.go:184 | trimOldEvents — delete oldest beyond maxEvents |
-| types/keys.go:46 | PrefixEvent ("event") |
-| types/keys.go:63 | PrefixAudit ("audit") |
+| types/keys.go:65 | PrefixEvent ("event") |
+| types/keys.go:82 | PrefixAudit ("audit") |
 | cmd/cca/command_audit.go:33 | CLI: cca audit query/follow |
 | cmd/cca/command_server.go:334 | Wiring: audit log + event log + projector + API |
 | cmd/cca/helpers.go:312 | AuditLogGCController registration in coreControllers |

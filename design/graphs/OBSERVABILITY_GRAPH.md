@@ -385,7 +385,7 @@ uses. An unreadable chosen value returns 0 (no limit), logged once via
 
 `observed/telemetry/` is separated from `observed/instance/` so high-frequency
 CPU/memory updates don't trigger controllers watching `observed/instance/`.
-Defined at `types/keys.go:65`: `PrefixObservedTelemetry = PrefixObserved + "/telemetry"`.
+Defined at `types/keys.go:87`: `PrefixObservedTelemetry = PrefixObserved + "/telemetry"`.
 
 ---
 

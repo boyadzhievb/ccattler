@@ -251,17 +251,17 @@ findMovableInstances(instances, placementConstraints, ...)
 
 ## 7. Key Functions Reference
 
-### types/keys.go
+### types/keys_service.go, keys_instance.go, keys_network.go, keys_volume.go
 
 | Function | Line | Key Pattern |
 |---|---|---|
-| `KeyDesiredServiceStateful(name)` | :800 | `desired/service/{name}/stateful` |
-| `KeyEffectiveServiceStateful(name)` | :807 | `effective/service/{name}/stateful` |
-| `KeyObservedInstanceOrdinal(id)` | :566 | `observed/instance/{id}/ordinal` |
-| `KeyNetworkDNSInstance(id)` | — | `network/dns/instance/{id}` |
-| `KeyDesiredVolume(name)` | — | `desired/volume/{name}` |
-| `KeyDesiredVolumeSize(name)` | — | `desired/volume/{name}/size` |
-| `KeyDesiredVolumePersistent(name)` | — | `desired/volume/{name}/persistent` |
+| `KeyDesiredServiceStateful(name)` | `keys_service.go:146` | `desired/service/{name}/stateful` |
+| `KeyEffectiveServiceStateful(name)` | `keys_service.go:153` | `effective/service/{name}/stateful` |
+| `KeyObservedInstanceOrdinal(id)` | `keys_instance.go:114` | `observed/instance/{id}/ordinal` |
+| `KeyNetworkDNSInstance(id)` | `keys_network.go:49` | `network/dns/instance/{id}` |
+| `KeyDesiredVolume(name)` | `keys_volume.go:10` | `desired/volume/{name}` |
+| `KeyDesiredVolumeSize(name)` | `keys_volume.go:16` | `desired/volume/{name}/size` |
+| `KeyDesiredVolumePersistent(name)` | `keys_volume.go:22` | `desired/volume/{name}/persistent` |
 
 ---
 
@@ -349,7 +349,7 @@ t=32s  Scheduler → places postgres-1 on healthy node
 | `lang/ast.go:74` | `ServiceDecl.Stateful` | AST field |
 | `lang/parser.go:303` | `case "stateful"` | Parser keyword |
 | `lang/compiler.go:357–362` | emit desired + effective | Compiler fact emission |
-| `types/keys.go:800,807,566` | `KeyDesiredServiceStateful`, `KeyEffectiveServiceStateful`, `KeyObservedInstanceOrdinal` | Key functions |
+| `types/keys_service.go:146,153`, `types/keys_instance.go:114` | `KeyDesiredServiceStateful`, `KeyEffectiveServiceStateful`, `KeyObservedInstanceOrdinal` | Key functions |
 | `controllers/instance.go:310` | `parseEffectiveServiceFacts` | Reads stateful flag |
 | `controllers/instance.go:420` | `createNextStatefulInstance` | Ordered startup, ordinal ID |
 | `controllers/instance.go:465` | `stopHighestOrdinalInstances` | Reverse scale-down |
