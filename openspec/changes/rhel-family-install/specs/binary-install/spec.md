@@ -17,14 +17,27 @@ gid 0) with mode 0755, never by the user who ran the script, because systemd uni
 - **THEN** the installed file is owned by uid 0 and gid 0 with mode 0755, and no step leaves it owned by the user
 - Test: `TestInstallScriptInstallsRootOwnedBinary`; check `install-host:rhel-family` (`ls -ln /usr/local/bin/cca`)
 
-#### Scenario: Installed into a directory others can write
-- **GIVEN** an install directory the user can write (so the binary is not owned by uid 0), or one that is not
-  root-owned or is group- or world-writable while the binary is root-owned (extended 2026-11-24: R4-8)
+#### Scenario: Installed where others can change it
+- **GIVEN** a binary not owned by uid 0, or an install directory or any parent up to `/` that is not root-owned or
+  is group- or world-writable (a sticky parent counts as safe only when root owns its child on the path)
 - **WHEN** `install.sh` finishes on Linux
-- **THEN** it warns that whoever owns the binary or can write its directory can change what systemd and `sudo` run
-  as root, and that the directory must be writable only by root. Every path in the warning is quoted. (Added during
-  apply, 2026-11-24: review round 4.)
-- Test: `TestInstallScriptWarnsWhenBinaryNotRootOwned`
+- **THEN** it warns that whoever can change that path can change what systemd and `sudo` run as root, names the first
+  unsafe directory (quoted), and says to install into a directory writable only by root along its whole path, such
+  as `/usr/local/bin`, with the guide's link. It prints no `chown`, `chmod` or other privileged command. (Changed
+  during apply, 2026-11-24, user decision on review round 5, option A2: the printed `chmod 0755` would have removed
+  `/tmp`'s sticky bit.)
+- Test: `TestInstallScriptWarnsWhenBinaryNotRootOwned` (subcases: user-owned binary, group-writable dir, user-owned
+  dir, user-owned parent, sticky world-writable dir such as `/tmp`; each asserts no `chown`/`chmod` in the output)
+
+### Requirement: install.sh refuses an install path it cannot use
+`install.sh` SHALL stop with an error naming the given path when that path is `-`, contains a newline, or cannot
+be entered, instead of installing somewhere else. (Added during apply, 2026-11-24: review round 5.)
+
+#### Scenario: Unusable install path
+- **GIVEN** `INSTALL_PATH` set to `-`, to a value containing a newline, or to a directory the user cannot enter
+- **WHEN** `install.sh` runs
+- **THEN** it exits non-zero, installs nothing, and the error contains the given path
+- Test: `TestInstallScriptRefusesUnusableInstallPath`
 
 ### Requirement: The installed binary carries the system label on SELinux hosts
 When SELinux is enabled on the host (`selinuxenabled` succeeds), `install.sh` SHALL give the installed `cca` binary
@@ -86,7 +99,8 @@ apply, 2026-11-24, user decision on review round 3, option a: three rounds found
 - Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcases for each case)
 
 #### Scenario: Install directory on secure_path, or not Linux
-- **GIVEN** sudo's `secure_path` includes the install directory, or the host is macOS
+- **GIVEN** sudo's `secure_path` includes the install directory, as given or as resolved through symlinks (as on
+  rpm-ostree hosts, where `/usr/local` links to `/var/usrlocal`), or the host is macOS
 - **WHEN** `install.sh` finishes
 - **THEN** no `secure_path` warning is printed
-- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcases `on path`, `macOS`)
+- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcases `on path`, `symlinked dir on path`, `macOS`)

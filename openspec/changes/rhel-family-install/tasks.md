@@ -325,6 +325,42 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   root-only advice and quoted paths; the binary check comes first. Green 31/31 under sh and bash; shellcheck sh and
   dash clean; next-step quoting unchanged. Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test
   -count=1 ./... exit 0, -race ok.
+  Round 5 (2026-11-24, on cdaccc9..25581cc; both on Opus high):
+  - **code-reviewer (Codex included): request changes.** R4-1 to R4-8 fixed otherwise. Red reproduced on cdaccc9;
+    green 54/54 under dash and 31/31 under bash.
+  - **security-audit: adequate, one MEDIUM.** Quoting holds (`'`, spaces, `$`, backticks, inner newlines); every
+    unsafe ownership case warns.
+
+  The main session checked R5-1 in the code (`install.sh:206` always prints `sudo chown root:root '<dir>' && sudo
+  chmod 0755 '<dir>'`).
+
+  | # | Finding | Resolution |
+  |---|---|---|
+  | R5-1 | The printed `chmod 0755` advice removes the sticky bit of `/tmp` (1777) and chowns a home directory to root (security MEDIUM, reproduced on GNU chmod) | **fix** 3r.1, structural (user decision A2: no privileged command printed) |
+  | R5-2 | Parent directories not checked: a root-owned `~/bin` under a user-owned home can be swapped (security LOW-MEDIUM, code-review suggestion) | **fix** 3r.1 (A2: detection walks every parent) |
+  | R5-3 | The secure_path check compares only the resolved path: false warning when secure_path lists the symlink spelling (rpm-ostree `/usr/local` → `/var/usrlocal`); both reviewers and Codex, reproduced | **fix** 3r.2 (compare both spellings); spec scenario extended |
+  | R5-4 | Normalization failure prints an empty path ("Cannot enter the install directory .") | **fix** 3r.2; new requirement "install.sh refuses an install path it cannot use" |
+  | R5-5 | `INSTALL_PATH=-` (cd to `$OLDPWD`) and paths with a newline (security LOW) | **fix** 3r.2 (refused, same requirement) |
+  | R5-6 | Test gaps: no subcase for a path containing `'`, none for a failed normalization | **fix** 3r.3 |
+  | R5-7 | `$(shell_quoted "${INSTALL_PATH}/cca")` built in 4 places; the raw-string `installPathForm`; the no-op `installed_owner=${installed_owner%% *}` | **fix** 3r.3 |
+  | Codex | "Single-value leading-zero subcases fail the test" | **rejected**: they are refused earlier by `parseEtcdClientCIDRs` (command_init.go:128), whose error quotes the raw value. The union error printing canonical forms is cosmetic |
+
+- [ ] 3r.1 R5-1 and R5-2 (design.md "No privileged commands printed by install.sh"):
+  - the ownership check walks the install directory and each parent up to `/` (resolved path; a sticky parent is
+    safe only if root owns its child);
+  - it warns with the first unsafe directory and the root-only advice plus the guide link;
+  - it prints no `chown`, `chmod` or sudoers command.
+
+  Red first: the `TestInstallScriptWarnsWhenBinaryNotRootOwned` subcases from the spec, each asserting no
+  `chown`/`chmod`, among them a sticky world-writable dir like `/tmp` and a user-owned parent.
+- [ ] 3r.2 R5-3 to R5-5:
+  - the secure_path check accepts the given or the resolved spelling (subcase `symlinked dir on path`);
+  - `TestInstallScriptRefusesUnusableInstallPath` covers `-`, a newline and a directory that cannot be entered (the
+    error names the given path).
+
+  Red first.
+- [ ] 3r.3 R5-6 and R5-7: a subcase for a path with `'`; one variable for the quoted binary path; a typed constant
+  for `installPathForm`; drop the no-op. Run the checks as in 3.1.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

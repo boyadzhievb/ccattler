@@ -38,6 +38,20 @@ key is read or written differently, so there are no writers to fence and no chan
 
 ## Decisions
 
+**No privileged commands printed by install.sh, 2026-11-24 (user decision on review round 5, option A2).**
+- **Why:** computed privileged advice went wrong again. Rounds 1–3 found it in the sudoers text, rounds 4–5 in the
+  `chown`/`chmod` advice: the printed `sudo chmod 0755 '<dir>'` would remove `/tmp`'s sticky bit, and would hand a
+  home directory to root.
+- **What install.sh does now:**
+  - it detects an unsafe path: a binary not owned by uid 0, or the install directory or any parent up to `/` that is
+    not root-owned or is group- or world-writable (a sticky parent is safe only when root owns its child);
+  - it warns, naming the first unsafe directory, and says to use a directory writable only by root along its whole
+    path, such as `/usr/local/bin`, with the guide's link;
+  - it prints no `chown`, `chmod` or sudoers command. Detection can only add or miss a warning, never cause harm.
+- **Rejected:**
+  - (A1) checking only the install directory: it misses a root-owned `~/bin` under a user-owned home;
+  - (B) patching the printed commands a third time.
+
 **Structural changes after review round 3, 2026-11-24 (user decisions, options a and ii).** This was the third round
 with findings of the same class (the openspec/config.yaml rework limit).
 - **The secure_path advice** (rounds 1, 2 and 3):
