@@ -77,9 +77,7 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 			continue
 		}
 		if existingState == string(types.InitStepRunning) {
-			nodeAgent.writeInstanceFacts(ctx, instanceInfo,
-				store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), Value: []byte(string(types.InitStepFailed))},
-				store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), Value: []byte("agent restarted during execution")})
+			nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, initStepChanges(instanceInfo.id, stepDefinition.index, types.InitStepFailed, "agent restarted during execution")...)
 		}
 
 		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition, image, len(stepDefinitions))
@@ -111,9 +109,7 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 	}
 
 	if backoffEntry.attemptCount >= maxAttempts {
-		nodeAgent.writeInstanceFacts(ctx, instanceInfo,
-			store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), Value: []byte(string(types.InitStepFailed))},
-			store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), Value: []byte("max retries exceeded")})
+		nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, initStepChanges(instanceInfo.id, stepDefinition.index, types.InitStepFailed, "max retries exceeded")...)
 		return false
 	}
 
@@ -123,7 +119,7 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 
 	nodeAgent.publishInitProgress(ctx, instanceInfo, stepDefinition.index, totalSteps, backoffEntry.attemptCount, maxAttempts, stepLabel, "")
 
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), Value: []byte(string(types.InitStepRunning))})
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, initStepChanges(instanceInfo.id, stepDefinition.index, types.InitStepRunning, "")...)
 
 	var stepError error
 	if stepDefinition.connection != "" {
@@ -133,7 +129,7 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 	}
 
 	if stepError == nil {
-		nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), Value: []byte(string(types.InitStepSucceeded))})
+		nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, initStepChanges(instanceInfo.id, stepDefinition.index, types.InitStepSucceeded, "")...)
 		logging.Default().Info("init step succeeded",
 			"agent", nodeAgent.nodeID,
 			"step", fmt.Sprintf("%d", stepDefinition.index),
@@ -163,6 +159,16 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 	return false
 }
 
+// initStepChanges returns the put of an init step's state and, when reason is
+// not empty, of its reason, for a guarded write (M267 3f S1).
+func initStepChanges(instanceID string, stepIndex int, stepState types.InitStepState, reason string) []store.Op {
+	changes := []store.Op{{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepState(instanceID, stepIndex), Value: []byte(string(stepState))}}
+	if reason != "" {
+		changes = append(changes, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitStepReason(instanceID, stepIndex), Value: []byte(reason)})
+	}
+	return changes
+}
+
 // publishInitProgress writes the current init step progress to the store as a
 // JSON fact so the CLI and API can display convergence status.
 func (nodeAgent *Agent) publishInitProgress(ctx context.Context, instanceInfo placedInstanceInfo, stepIndex int, totalSteps int, attempt int, maxAttempts int, stepLabel string, lastError string) {
@@ -184,14 +190,14 @@ func (nodeAgent *Agent) publishInitProgress(ctx context.Context, instanceInfo pl
 	} else {
 		statusReason = fmt.Sprintf("init:%d/%d %s", stepIndex, totalSteps, stepLabel)
 	}
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo,
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo,
 		store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceInitProgress(instanceInfo.id), Value: progressJSON},
 		statusReasonChange(instanceInfo.id, statusReason))
 }
 
 // clearInitProgress removes the init progress fact (guarded) after all steps complete.
 func (nodeAgent *Agent) clearInitProgress(ctx context.Context, instanceInfo placedInstanceInfo) {
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceInitProgress(instanceInfo.id)})
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceInitProgress(instanceInfo.id)})
 }
 
 // runInitCommand executes the init step's command via the runtime's ExecInit

@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -367,5 +368,17 @@ func TestGCGroupsChangesPerInstance(t *testing.T) {
 		if change.Group != "gc-old-abc" {
 			t.Errorf("expected group 'gc-old-abc', got %q for key %s", change.Group, change.Key)
 		}
+	}
+}
+
+// TestGCDeletesNetworkAllocationWithInstance: M267 review round 5 B3. The
+// instance tree GC deletes includes network/allocation/{id}: an agent leaves it
+// while the instance is placed on another node, so only GC removes it.
+func TestGCDeletesNetworkAllocationWithInstance(t *testing.T) {
+	deletionChanges := buildInstanceDeletionChanges("old-abc", nil, map[string]string{"old-abc": "node02"})
+	if !slices.ContainsFunc(deletionChanges, func(change Change) bool {
+		return change.Type == store.OpDelete && change.Key == types.KeyNetworkAllocation("old-abc")
+	}) {
+		t.Errorf("instance GC does not delete %s with the instance tree", types.KeyNetworkAllocation("old-abc"))
 	}
 }

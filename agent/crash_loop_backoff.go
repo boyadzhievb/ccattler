@@ -230,7 +230,7 @@ func (nodeAgent *Agent) incrementRestartCountInStore(ctx context.Context, instan
 		logging.Default().Error("failed to read restart count", "instance", instanceID, "error", getError.Error())
 		return
 	}
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpPut, Key: restartKey, Value: []byte(strconv.Itoa(restartCount + 1))})
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, store.Op{Type: store.OpPut, Key: restartKey, Value: []byte(strconv.Itoa(restartCount + 1))})
 }
 
 // cleanupStaleCrashLoopBackoffs drops the back-off state of instances that are

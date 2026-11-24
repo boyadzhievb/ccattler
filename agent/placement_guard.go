@@ -13,10 +13,24 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// The rule (M267 3e): every agent write or delete under observed/instance/{id}/
-// goes through writeGuardedInstanceFacts (or the guarded publish transaction of
-// publishInstanceStateUnlessStopped), so nothing reaches an instance that moved
-// off this node. Exceptions: TestAgentInstanceWritesAreGuarded lists them.
+// The rule (M267 3e, 3f): the agent writes and deletes observed/instance/{id}/*
+// only through instanceFactWriter or the guarded publish transaction of
+// publishInstanceStateUnlessStopped. TestAgentInstanceWritesAreGuarded checks
+// the closed world: every store Transaction is on its list with a reason, and
+// every Put/Delete key is a direct non-instance types.Key* call.
+
+// maxInstanceFactChangesPerTransaction caps the changes of one guarded write,
+// well under the 128 operations etcd and the memory store allow together with
+// the compare; larger writes (many host ports) are split (review round 5 B1).
+const maxInstanceFactChangesPerTransaction = 100
+
+// instanceFactWriter is the agent's one writer of per-instance observed facts:
+// every write compares the placement the agent's scan read, so nothing lands
+// on an instance that moved off this node.
+type instanceFactWriter struct {
+	factStore store.StateStore // factStore is the store written.
+	nodeID    string           // nodeID is this agent's node, whose placement guards each write.
+}
 
 // placementGuard returns the compare that keeps an agent's write about an
 // instance from landing after the instance moved off nodeID: the revision of
@@ -47,59 +61,49 @@ func dropNoOpChanges(ctx context.Context, factStore store.StateStore, changes []
 	return effectiveChanges
 }
 
-// writeGuardedInstanceFacts commits the changes about one instance in one
-// transaction guarded by placementGuard, without its no-op changes (none left:
-// no write). A lost guard (the instance moved off nodeID) writes nothing; store
-// errors are logged as errors. Returns true when committed or nothing to do.
-func writeGuardedInstanceFacts(ctx context.Context, factStore store.StateStore, nodeID string, instanceInfo placedInstanceInfo, changes []store.Op) bool {
-	effectiveChanges := dropNoOpChanges(ctx, factStore, changes)
-	if len(effectiveChanges) == 0 {
-		return true
+// writeGuarded commits the changes about one instance, without no-ops, in
+// transactions of at most maxInstanceFactChangesPerTransaction, each guarded
+// by placementGuard. A lost guard (moved off this node) stops; store errors are
+// logged and stop too (callers write the same facts again next cycle).
+func (instanceFactWriter instanceFactWriter) writeGuarded(ctx context.Context, instanceInfo placedInstanceInfo, changes ...store.Op) {
+	effectiveChanges := dropNoOpChanges(ctx, instanceFactWriter.factStore, changes)
+	for len(effectiveChanges) > 0 {
+		chunk := effectiveChanges[:min(len(effectiveChanges), maxInstanceFactChangesPerTransaction)]
+		effectiveChanges = effectiveChanges[len(chunk):]
+		swapped, transactionError := instanceFactWriter.factStore.Transaction(ctx,
+			placementGuard(instanceFactWriter.nodeID, instanceInfo), chunk, nil)
+		if transactionError != nil {
+			logging.Default().Error("failed to write instance facts", "instance", instanceInfo.id, "error", transactionError.Error())
+			return
+		}
+		if !swapped {
+			logging.Default().Info("instance moved off this node, not writing its facts", "agent", instanceFactWriter.nodeID, "instance", instanceInfo.id)
+			return
+		}
 	}
-	swapped, transactionError := factStore.Transaction(ctx, placementGuard(nodeID, instanceInfo), effectiveChanges, nil)
-	if transactionError != nil {
-		logging.Default().Error("failed to write instance facts", "instance", instanceInfo.id, "error", transactionError.Error())
-		return false
-	}
-	if !swapped {
-		logging.Default().Info("instance moved off this node, not writing its facts", "agent", nodeID, "instance", instanceInfo.id)
-	}
-	return swapped
 }
 
-// putGuardedInstanceFact writes one fact about an instance through
-// writeGuardedInstanceFacts: never after the instance moved off nodeID.
-func putGuardedInstanceFact(ctx context.Context, factStore store.StateStore, nodeID string, instanceInfo placedInstanceInfo, key string, value []byte) {
-	writeGuardedInstanceFacts(ctx, factStore, nodeID, instanceInfo, []store.Op{{Type: store.OpPut, Key: key, Value: value}})
-}
-
-// deleteGuardedInstanceFact deletes one fact about an instance through
-// writeGuardedInstanceFacts: never after the instance moved off nodeID.
-func deleteGuardedInstanceFact(ctx context.Context, factStore store.StateStore, nodeID string, instanceInfo placedInstanceInfo, key string) {
-	writeGuardedInstanceFacts(ctx, factStore, nodeID, instanceInfo, []store.Op{{Type: store.OpDelete, Key: key}})
-}
-
-// currentPlacementInfo returns the instance as placed on nodeID right now, for
+// currentPlacement returns the instance as placed on this node right now, for
 // writers without a placement scan (telemetry of a running container): false
 // when it is not placed here (moved, removed) or the read fails.
-func currentPlacementInfo(ctx context.Context, factStore store.StateStore, nodeID string, instanceID string) (placedInstanceInfo, bool) {
-	placementFact, readError := factStore.Get(ctx, types.KeyPlacementNodeInstance(nodeID, instanceID))
+func (instanceFactWriter instanceFactWriter) currentPlacement(ctx context.Context, instanceID string) (placedInstanceInfo, bool) {
+	placementFact, readError := instanceFactWriter.factStore.Get(ctx, types.KeyPlacementNodeInstance(instanceFactWriter.nodeID, instanceID))
 	if readError != nil {
 		return placedInstanceInfo{}, false
 	}
 	return placedInstanceInfo{id: instanceID, placementRevision: placementFact.Revision}, true
 }
 
-// deleteFactsUnlessPlacedElsewhere is the cleanup of an instance that left this
+// deleteUnlessPlacedElsewhere is the cleanup of an instance that left this
 // node's desired set: it deletes keys unless placement/instance/{id} names
 // another node (they may be the target's, M267 B2), in one transaction on that
 // placement's revision (0: still absent). Read errors leave everything.
-func deleteFactsUnlessPlacedElsewhere(ctx context.Context, factStore store.StateStore, nodeID string, instanceID string, keys ...string) {
+func (instanceFactWriter instanceFactWriter) deleteUnlessPlacedElsewhere(ctx context.Context, instanceID string, keys ...string) {
 	placementKey := types.KeyPlacementInstance(instanceID)
 	var placementRevision int64 // 0: the placement must still not exist
-	placementFact, readError := factStore.Get(ctx, placementKey)
+	placementFact, readError := instanceFactWriter.factStore.Get(ctx, placementKey)
 	switch {
-	case readError == nil && string(placementFact.Value) != nodeID:
+	case readError == nil && string(placementFact.Value) != instanceFactWriter.nodeID:
 		return // placed on another node: the facts may already be the target's
 	case readError == nil:
 		placementRevision = placementFact.Revision
@@ -111,11 +115,11 @@ func deleteFactsUnlessPlacedElsewhere(ctx context.Context, factStore store.State
 	for _, key := range keys {
 		deletes = append(deletes, store.Op{Type: store.OpDelete, Key: key})
 	}
-	effectiveDeletes := dropNoOpChanges(ctx, factStore, deletes)
+	effectiveDeletes := dropNoOpChanges(ctx, instanceFactWriter.factStore, deletes)
 	if len(effectiveDeletes) == 0 {
 		return
 	}
-	if _, transactionError := factStore.Transaction(ctx,
+	if _, transactionError := instanceFactWriter.factStore.Transaction(ctx,
 		[]store.Compare{{Key: placementKey, Revision: placementRevision}}, effectiveDeletes, nil); transactionError != nil {
 		logging.Default().Error("failed to delete instance facts", "instance", instanceID, "error", transactionError.Error())
 	}

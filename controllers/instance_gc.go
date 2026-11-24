@@ -183,7 +183,7 @@ func parsePlacementFacts(facts []store.Fact) map[string]string {
 
 // buildInstanceDeletionChanges produces Delete changes for every fact key
 // belonging to the given instance: observed/instance/{id}/*, derived/instance/{id}/*,
-// placement/instance/{id}, and placement/node/{nodeID}/{id}.
+// network/allocation/{id}, placement/instance/{id}, and placement/node/{nodeID}/{id}.
 func buildInstanceDeletionChanges(instanceID string, facts []store.Fact, placementByInstanceID map[string]string) []Change {
 	observedPrefix := types.ScanObservedInstances + instanceID + "/"
 	derivedPrefix := types.ScanDerivedInstances + instanceID + "/"
@@ -199,7 +199,9 @@ func buildInstanceDeletionChanges(instanceID string, facts []store.Fact, placeme
 		}
 	}
 
-	// Delete placement facts.
+	// Delete placement facts and the network allocation, keyed by instance ID
+	// only: an agent leaves it while the instance is placed elsewhere (M267 3f B3).
+	changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyNetworkAllocation(instanceID)})
 	changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyPlacementInstance(instanceID)})
 	if nodeID, hasPlacement := placementByInstanceID[instanceID]; hasPlacement && nodeID != "" {
 		changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyPlacementNodeInstance(nodeID, instanceID)})

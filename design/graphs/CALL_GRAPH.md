@@ -50,10 +50,11 @@ executeReconciliationCycle
 │       ├── replaceContainerOnAnotherImage       [observed image ≠ recorded → stop; next cycle starts it (M241 2e.1)]
 │       ├── detectConfigChange                   [if changed → stop+restart]
 │       ├── reconcileResourceChanges
-│       └── publishRunningInstance               [M267 3e]
+│       └── publishRunningInstance               [M267 3e, 3f]
+│           ├── instanceFacts.writeGuarded(hostPortChangesIfSupported)  [own chunked guarded writes, 3f B1]
 │           ├── observeInstanceState             [running | starting, never failed (M238)]
-│           └── publishInstanceStateToStore(state, ip, hostPortChangesIfSupported + DELETE exit-reason)
-│               [one guarded transaction]
+│           └── publishInstanceStateToStore(state, ip, uncommittedStartFacts[id] + DELETE exit-reason)
+│               [one guarded transaction; committed → uncommittedStartFacts entry dropped, 3f B2]
 │
 ├── cleanup: remove containers not in desired set
 │   ├── running → cleanupUndesiredInstance       [pre_stop hook, graceful stop]
@@ -61,13 +62,14 @@ executeReconciliationCycle
 │   └── both → teardownStaleInstance(id, removeContainer), M267 D2/D4:
 │       ├── FIRST isInstanceMovedToAnotherNode (→ isControllerStopped)
 │       │   read error → return untouched (WARN); the next cycle retries the whole cleanup
-│       ├── deleteFactsUnlessPlacedElsewhere(pull-status)  (kept while placed on another node: keyed by ID, B2)
+│       ├── instanceFactWriter.deleteUnlessPlacedElsewhere(pull-status)  (kept while placed on another node: keyed by ID, B2)
 │       ├── then remove (token, volumes, removeContainer = hook/stop, instance data)
 │       ├── publishRemovedInstanceState: moved (placement/instance/{id} names another
 │       │   node, no controller_stopped = true) → markMovedInstancePending (TXN on node +
 │       │   state revisions: state = pending, readiness deleted, only while node = this
-│       │   node); otherwise stopped
-│       └── releaseStaleInstanceNetwork: ReleaseIP; deleteFactsUnlessPlacedElsewhere(network/allocation/{id})
+│       │   node); otherwise stopped, in a TXN on the placement/instance/{id} revision
+│       │   the move check read (a move during pre_stop/grace → no stopped, 3f P2)
+│       └── releaseStaleInstanceNetwork: ReleaseIP; instanceFactWriter.deleteUnlessPlacedElsewhere(network/allocation/{id})
 │
 ├── sweepSecretMaterial                          [M174: remove tmpfs material of instances neither placed nor running]
 │
@@ -168,9 +170,10 @@ reconcileDesiredInstance(instanceInfo)
     ├── retryBridgeAttachmentIfNeeded
     ├── executeLifecycleHook(post_start)
     ├── runtime.Status → get IP
+    ├── instanceFacts.writeGuarded(hostPortChangesIfSupported → hostPortChanges)  [own chunked writes, 3f B1]
     └── publishInstanceStateToStore(state, ip, start facts) — ONE guarded transaction (M267 3e):
-        host ports (hostPortChangesIfSupported → hostPortChanges), started_at (M241 D10),
-        DELETE probe/readiness (M241 B4), image, config-hash, status "running" (if running)
+        started_at (M241 D10), DELETE probe/readiness (M241 B4), image, config-hash, status "running"
+        (if running); not committed → uncommittedStartFacts[id], carried by publishRunningInstance (3f B2)
 ```
 
 ## Server Side (controllers/runner.go)
@@ -238,11 +241,14 @@ executeReconciliationCycle(controller, deltaEvents)
 ### Writes (agent)
 
 **Rule (M267 3e):** every agent write or delete under `observed/instance/{id}/` goes through
-`writeGuardedInstanceFacts` (placement_guard.go: placementGuard on the scanned `placement/node/{self}/{id}`
+`instanceFactWriter.writeGuarded` (placement_guard.go: placementGuard on the scanned `placement/node/{self}/{id}`
 revision, no-op changes dropped) or the guarded publish transaction (`publishInstanceStateToStore`'s
-sameCycleFacts). Exceptions: `publishRemovedInstanceState` (stopped, after the move check),
-`markMovedInstancePending` (guarded by observed node + state revisions), `deleteFactsUnlessPlacedElsewhere`
-(cleanup of an instance that left the desired set). Enforced by `TestAgentInstanceWritesAreGuarded`.
+sameCycleFacts). Exceptions: `publishRemovedInstanceState` (stopped, on the `placement/instance/{id}` revision the move check read, 3f P2),
+`markMovedInstancePending` (guarded by observed node + state revisions), `instanceFactWriter.deleteUnlessPlacedElsewhere`
+(cleanup of an instance that left the desired set). `TestAgentInstanceWritesAreGuarded` checks the closed world
+(3f T1): every store Transaction in agent production code is on its list with a reason (instance writers and the
+non-instance vxlan, alive-state and volume-home transactions), every Put/Delete/PutWithLease key is a direct
+non-instance `types.Key*` call, no store method is taken as a value, no other `types` writer is called.
 
 | Key Pattern | Where Written |
 |---|---|
@@ -250,18 +256,18 @@ sameCycleFacts). Exceptions: `publishRemovedInstanceState` (stopped, after the m
 | `observed/instance/{id}/service`, `/ip`, marker | publishInstanceStateToStore (guarded publish transaction, when changed, M267 3c.6) |
 | `observed/instance/{id}/node` | publishInstanceStateUnlessStopped (same transaction as the state, M267 D4); read by markMovedInstancePending |
 | `observed/instance/{id}/created-at` | createInstanceCreatedAtOnce (create-only, placementGuard) |
-| `network/allocation/{id}` | publishInstanceStateToStore (with a network provider; guarded publish transaction); DELETE by releaseStaleInstanceNetwork → deleteFactsUnlessPlacedElsewhere |
-| `observed/instance/{id}/image`, `/config-hash` | instanceImageChange / instanceConfigHashChange in the start publish (startInstanceAndPublishState), the failed publish, or writeInstanceFacts (process start failure) |
+| `network/allocation/{id}` | publishInstanceStateToStore (with a network provider; guarded publish transaction); DELETE by releaseStaleInstanceNetwork → instanceFactWriter.deleteUnlessPlacedElsewhere |
+| `observed/instance/{id}/image`, `/config-hash` | instanceImageChange / instanceConfigHashChange in the start publish (startInstanceAndPublishState), the failed publish, or instanceFacts.writeGuarded (process start failure) |
 | `observed/instance/{id}/started_at` | start publish of startInstanceAndPublishState (every start; read by the rollout controller, M241 D10) |
 | `observed/instance/{id}/host_port/{port}` | hostPortChanges in the start publish and the running-path publish |
 | `observed/instance/{id}/probe/readiness` | DELETE in the start publish (M241 B4) and by markMovedInstancePending (M267 D4); PUT by the probe scheduler through writeInstanceFact (guarded, M267 R3-S1) |
 | `observed/instance/{id}/last_exit`, `/exit-reason` | crash-loop publish of beginCrashLoopWait (exitReasonChanges / exitReasonChange); exit-reason DELETE in the running-path publish |
-| `observed/instance/{id}/restarts` | incrementRestartCountInStore → writeInstanceFacts |
-| `observed/instance/{id}/status_reason` | statusReasonChange in the publishes; publishStatusReason → writeInstanceFacts ("waiting for volumes", "starting") |
-| `observed/instance/{id}/pull_status` | pull-backoff publish of recordImagePullFailure; DELETE clearPullStatusFromStore (guarded) or deleteFactsUnlessPlacedElsewhere (cleanup) |
+| `observed/instance/{id}/restarts` | incrementRestartCountInStore → instanceFacts.writeGuarded |
+| `observed/instance/{id}/status_reason` | statusReasonChange in the publishes; publishStatusReason → instanceFacts.writeGuarded ("waiting for volumes", "starting") |
+| `observed/instance/{id}/pull_status` | pull-backoff publish of recordImagePullFailure; DELETE clearPullStatusFromStore (guarded) or instanceFactWriter.deleteUnlessPlacedElsewhere (cleanup) |
 | `observed/instance/{id}/secret-wait` | waiting-for-secrets publish of recordSecretDeliveryWait; DELETE clearSecretDeliveryWait (guarded) / clearLeftSecretDeliveryWait (cleanup) |
-| `observed/instance/{id}/init/{step}/state`, `/reason`, `init_progress` | executeInitStep, executeInitializationSteps, publishInitProgress, clearInitProgress → writeInstanceFacts |
-| `observed/instance/{id}/cpu`, `/memory`, `/oom_kills` | reportWorkloadTelemetry → currentPlacementInfo + writeGuardedInstanceFacts |
+| `observed/instance/{id}/init/{step}/state`, `/reason`, `init_progress` | executeInitStep, executeInitializationSteps, publishInitProgress, clearInitProgress → instanceFacts.writeGuarded |
+| `observed/instance/{id}/cpu`, `/memory`, `/oom_kills` | reportWorkloadTelemetry → instanceFactWriter.currentPlacement + instanceFactWriter.writeGuarded |
 | `observed/node/{nodeID}/heartbeat` | WriteHeartbeat |
 | `observed/node/{nodeID}/state` | PublishAliveState |
 
@@ -285,12 +291,11 @@ sameCycleFacts). Exceptions: `publishRemovedInstanceState` (stopped, after the m
 | `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState`, `handleInstanceStartError`, `beginCrashLoopWait`, `recordSecretDeliveryWait`, pull paths; returns true when committed, and the status reason, last exit and secret-wait status follow only then (M267 R3-S2) |
 | `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state and on the scanned `placement/node/{self}/{id}` revision, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4, R2-1) |
 | `resolvePublishedContainerIP` | `publishInstanceStateToStore` (before any write, M267 3c.6) |
-| `placementGuard` | `publishInstanceStateUnlessStopped`, `writeGuardedInstanceFacts`, `createInstanceCreatedAtOnce` (placement_guard.go; M267 R2-1, R3-S1, 3e) |
-| `writeGuardedInstanceFacts` | `Agent.writeInstanceFacts`, `putGuardedInstanceFact`, `deleteGuardedInstanceFact`, `reportWorkloadTelemetry` (M267 3e) |
-| `putGuardedInstanceFact` / `deleteGuardedInstanceFact` | `ProbeScheduler.writeInstanceFact` / `publishProbeProgress` (probe states, health, progress; M267 R3-S1, B4) |
-| `dropNoOpChanges` | `publishInstanceStateToStore`, `writeGuardedInstanceFacts`, `deleteFactsUnlessPlacedElsewhere` (unchanged puts and missing deletes dropped, M266) |
-| `deleteFactsUnlessPlacedElsewhere` | `teardownStaleInstance` (pull status), `releaseStaleInstanceNetwork` (allocation), pull-backoff sweep in `executeReconciliationCycle`, `clearLeftSecretDeliveryWait` (M267 3e) |
-| `currentPlacementInfo` | `reportWorkloadTelemetry` (M267 3e) |
+| `placementGuard` | `publishInstanceStateUnlessStopped`, `instanceFactWriter.writeGuarded`, `createInstanceCreatedAtOnce` (placement_guard.go; M267 R2-1, R3-S1, 3e) |
+| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish: `Agent.instanceFacts`, `ProbeScheduler.instanceFacts` (probe states, health, progress put and delete), `NodeReporter.instanceFacts` (telemetry); split into transactions of at most `maxInstanceFactChangesPerTransaction` (100, host ports, 3f B1) |
+| `dropNoOpChanges` | `publishInstanceStateToStore`, `instanceFactWriter.writeGuarded`, `instanceFactWriter.deleteUnlessPlacedElsewhere` (unchanged puts and missing deletes dropped, M266) |
+| `instanceFactWriter.deleteUnlessPlacedElsewhere` | `teardownStaleInstance` (pull status), `releaseStaleInstanceNetwork` (allocation), pull-backoff sweep in `executeReconciliationCycle`, `clearLeftSecretDeliveryWait` (M267 3e) |
+| `instanceFactWriter.currentPlacement` | `reportWorkloadTelemetry` (M267 3e) |
 | `createInstanceCreatedAtOnce` | `publishInstanceStateToStore` (after a commit) |
 | `exitReasonChanges` / `exitReasonChange` | `recordInstanceExit` / `recordInstanceStartFailure` (into the crash-loop publish, M267 3e) |
 | `handleInstanceStartError` | `startInstanceAndPublishState` (runtime.Start error) |
@@ -304,7 +309,7 @@ sameCycleFacts). Exceptions: `publishRemovedInstanceState` (stopped, after the m
 | `teardownStaleInstance` | `cleanupUndesiredInstance`, `cleanupStoppedStaleInstance` (each passes its container stop; M267 S1) |
 | `isInstanceMovedToAnotherNode` | `teardownStaleInstance` (first, before any removal; reads `placement/instance/{id}`, then `isControllerStopped`; M267 D2) |
 | `isControllerStopped` | `isInstanceMovedToAnotherNode`, `isInstanceMarkedForSkip` (value "true"; M267 S3) |
-| `publishRemovedInstanceState` | `teardownStaleInstance` (after the removal; M267 D2) |
+| `publishRemovedInstanceState` | `teardownStaleInstance` (after the removal, with the placement revision `isInstanceMovedToAnotherNode` read; M267 D2, 3f P2) |
 | `markMovedInstancePending` | `publishRemovedInstanceState` (moved; M267 D4) |
 | `releaseStaleInstanceNetwork` | `teardownStaleInstance` (M267 B2) |
 | `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs), `teardownStaleInstance` (not moved) |

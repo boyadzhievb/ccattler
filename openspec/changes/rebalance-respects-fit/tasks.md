@@ -342,21 +342,67 @@ red on 44b6998. Verified by the main session:
 | D1 | INSTANCE_LIFECYCLE_GRAPH:835 callers list stale; flows overclaim the enforcement test | **fix** 3f.7 |
 | Codex | "Guard failure after IP allocation leaks network allocation" | **rejected**: not new (allocation already preceded the transaction), simulator-only provider keyed by instance ID, released by teardown, no reader |
 
-- [ ] 3f.1 B1: host ports written by their own guarded call(s), chunked under the transaction limit, not inside the
+  Red runs below: the new tests copied into a detached worktree of 92feee5 (code without the 3f fixes),
+  `go test -count=1 ./agent/ ./api/ ./controllers/ -run …`; green: the same tests in the working tree.
+- [x] 3f.1 B1: host ports written by their own guarded call(s), chunked under the transaction limit, not inside the
   state transaction; red test with 130 exposed ports → instance published running with all ports stored.
-- [ ] 3f.2 B2: start facts that did not commit are kept in memory per instance and carried in the next
+  Result: `instanceFactWriter.writeGuarded` splits into transactions of ≤ `maxInstanceFactChangesPerTransaction`
+  (100) changes + the guard; `startInstanceAndPublishState` and `publishRunningInstance` write
+  `hostPortChangesIfSupported` through it before the state publish. Red
+  (`TestStartPublishesInstanceWithManyHostPorts`, 130 ports): `transaction too large: 138 operations exceeds limit
+  of 128`, `state = "pending" with 130 host ports, want running`, `host port of container port 9000 not stored`;
+  passes after.
+- [x] 3f.2 B2: start facts that did not commit are kept in memory per instance and carried in the next
   `publishRunningInstance` until they commit (dropped when the instance leaves this node); red test with a store error
   on the start publish → next cycle stores config-hash, image, started_at and clears readiness.
-- [ ] 3f.3 B3: instance GC (and `api/handler_gc.go`) delete `network/allocation/{id}` with the instance tree; test.
-- [ ] 3f.4 T1: closed-world scan: every `Transaction` call in agent production code is on an allow-list (instance
+  Result: `Agent.uncommittedStartFacts[id]` set when the start publish does not commit, carried (cloned) in the next
+  `publishRunningInstance`, deleted on commit and in `teardownStaleInstance`. Red
+  (`TestStartFactsCarriedAfterStoreError`, store wrapper fails the start publish once with `etcd: request timed
+  out`): config-hash `""` want `config-hash-1`, image `""` want `nginx:1.27`, readiness `"ready"` want `""`,
+  `started_at not stored after the next cycle`; passes after.
+- [x] 3f.3 B3: instance GC (and `api/handler_gc.go`) delete `network/allocation/{id}` with the instance tree; test.
+  Result: `buildInstanceDeletionChanges` and `collectInstanceFactKeys` add `KeyNetworkAllocation(id)`; the API GC
+  ignores `ErrKeyNotFound` on its per-key Deletes (the key is usually absent). Red:
+  `TestGCDeletesNetworkAllocationWithInstance` `instance GC does not delete network/allocation/old-abc with the
+  instance tree`; `TestGCInstanceKeysIncludeNetworkAllocation` `collectInstanceFactKeys [placement/instance/old-abc
+  placement/node/node02/old-abc] lacks network/allocation/old-abc`; both pass after.
+- [x] 3f.4 T1: closed-world scan: every `Transaction` call in agent production code is on an allow-list (instance
   writers + the listed non-instance transactions, each with a reason), and every Put/Delete/PutWithLease key is a
   direct `types.Key*` call that is not `KeyObservedInstance*`; anything else fails. Control test feeds the 8 bypass
   patterns from the review and expects each to fail. Fix the flows wording.
-- [ ] 3f.5 T2: compare `Scan("observed/instance/web-1/")` plus `network/allocation/web-1` before/after each path;
+  Result: `TestAgentInstanceWritesAreGuarded` now checks `transactionWriters` (9 entries with reasons, stale entries
+  fail), direct non-instance `types.Key*` keys for Put/Delete/PutWithLease, store methods used as values and
+  `types.Write*/Delete*` other than `WriteObservedVolume`; package-level code is scanned too. Two volume-attachment
+  key variables in agent.go inlined to satisfy it. Control `TestInstanceWriteScanDetectsBypasses` (op builders in a
+  Transaction, `op.Key` Put, `var` key, local key helper, Put wrapper with key param, string concatenation,
+  package-level func literal, method value): red against the 92feee5 scan, 8 of 8 `bypass … not detected`; green
+  now. Flow 35 rule and D4 name what the scan checks and what it cannot see (other packages, reflection).
+- [x] 3f.5 T2: compare `Scan("observed/instance/web-1/")` plus `network/allocation/web-1` before/after each path;
   add subcases for restart count, init step and progress, telemetry, running path.
-- [ ] 3f.6 S1 init-step op helper; P1 fold the forwarding layer or make its result used; P2 guard on the
+  Result: `snapshotInstanceFacts` compares `observed/instance/web-1/`, `observed/telemetry/instance/web-1/` (added:
+  telemetry keys live there, without it the telemetry subcase checked nothing), the marker and
+  `network/allocation/web-1`, before/after, both directions; 4 new subcases. These paths were already guarded in 3e,
+  so the red is a mutation on 92feee5: `placementGuard` returning nil, the guard dropped in
+  `writeGuardedInstanceFacts` and the telemetry placement check bypassed → all 10 subcases fail (restart count
+  `wrote …/restarts = "1"`, init `wrote …/init/step/0/state = "succeeded"`, telemetry `wrote
+  observed/telemetry/instance/web-1/cpu = "0"`, running path `changed …/state from "pending" to "running"`); the
+  old key-list test, under the guard drop alone, failed 2 of its 6 subcases. All 10 pass in the working tree.
+- [x] 3f.6 S1 init-step op helper; P1 fold the forwarding layer or make its result used; P2 guard on the
   `placement/instance/{id}` revision.
-- [ ] 3f.7 D1 docs; checks as in 3.1.
+  Result: S1 `initStepChanges` (4 call sites in init.go). P1 `writeInstanceFacts`, `putGuardedInstanceFact`,
+  `deleteGuardedInstanceFact` removed; `instanceFactWriter` (held by Agent, ProbeScheduler, NodeReporter) with
+  `writeGuarded` (no return value: no caller used it), `deleteUnlessPlacedElsewhere`, `currentPlacement`; probes
+  keep one level (`writeInstanceFact`). P2 `isInstanceMovedToAnotherNode` returns the placement revision it read
+  and `publishRemovedInstanceState` writes `stopped` in a transaction comparing it. Red
+  (`TestStoppedNotWrittenWhenPlacementChangesDuringStop`, runtime moves the placement during the stop): `node-1
+  wrote stopped for web-1, which was placed on node-2 during its stop`; passes after.
+- [x] 3f.7 D1 docs; checks as in 3.1.
+  Result: INSTANCE_LIFECYCLE_GRAPH reverse index (`instanceFactWriter.writeGuarded`, `publishInstanceStateToStore`
+  callers, `initStepChanges`), start/running/cleanup trees, line numbers re-checked against agent.go; CALL_GRAPH,
+  CONTROLLER_DATA_FLOW_GRAPH (GC writes), OBSERVABILITY_GRAPH line numbers; Flow 35 rule. Checks (2026-11-24):
+  `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
+  `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (29.7 s, 6.8 s, 10.6 s, 1.4 s);
+  `openspec validate rebalance-respects-fit` valid. `executeReconciliationCycle` still 111 lines (known, M259).
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing

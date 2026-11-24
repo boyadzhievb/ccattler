@@ -272,15 +272,15 @@ func (nodeAgent *Agent) clearSecretDeliveryWait(ctx context.Context, instanceInf
 		return
 	}
 	delete(nodeAgent.secretDeliveryWaits, instanceInfo.id)
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceSecretWait(instanceInfo.id)})
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceSecretWait(instanceInfo.id)})
 }
 
 // clearLeftSecretDeliveryWait is clearSecretDeliveryWait for an instance that
 // left this node's desired set: the status fact goes only while it is not
-// placed on another node (deleteFactsUnlessPlacedElsewhere, M267 3e).
+// placed on another node (instanceFactWriter.deleteUnlessPlacedElsewhere, M267 3e).
 func (nodeAgent *Agent) clearLeftSecretDeliveryWait(ctx context.Context, instanceID string) {
 	delete(nodeAgent.secretDeliveryWaits, instanceID)
-	deleteFactsUnlessPlacedElsewhere(ctx, nodeAgent.store, nodeAgent.nodeID, instanceID, types.KeyObservedInstanceSecretWait(instanceID))
+	nodeAgent.instanceFacts.deleteUnlessPlacedElsewhere(ctx, instanceID, types.KeyObservedInstanceSecretWait(instanceID))
 }
 
 // buildInstanceSecretMounts writes connection files and returns the read-only

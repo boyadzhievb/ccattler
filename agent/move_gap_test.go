@@ -468,10 +468,33 @@ var targetOwnedFacts = map[string]string{
 	types.KeyObservedInstanceLastExit("web-1"):                         "target last exit",
 }
 
-// TestSourceWritesNothingAfterMove: review round 4 (B1-B4, Sg1). node-1
-// scanned web-1 before the move and is still in that cycle; each of its paths
-// below must neither write nor delete any of node-2's facts for web-1, nor add
-// a pull status of its own.
+// snapshotInstanceFacts returns every observed/instance/{id} fact (marker and
+// tree), its telemetry (observed/telemetry/instance/{id}/) and
+// network/allocation/{id}, key to value.
+func snapshotInstanceFacts(t *testing.T, ctx context.Context, factStore store.StateStore, instanceID string) map[string]string {
+	t.Helper()
+	snapshot := make(map[string]string)
+	for _, instancePrefix := range []string{types.ScanObservedInstances + instanceID + "/", types.ScanObservedTelemetryInstances + instanceID + "/"} {
+		instanceFacts, scanError := factStore.Scan(ctx, instancePrefix)
+		if scanError != nil {
+			t.Fatal(scanError)
+		}
+		for _, fact := range instanceFacts {
+			snapshot[fact.Key] = string(fact.Value)
+		}
+	}
+	for _, singleKey := range []string{types.KeyObservedInstance(instanceID), types.KeyNetworkAllocation(instanceID)} {
+		if fact, getError := factStore.Get(ctx, singleKey); getError == nil {
+			snapshot[singleKey] = string(fact.Value)
+		}
+	}
+	return snapshot
+}
+
+// TestSourceWritesNothingAfterMove: review rounds 4 and 5 (B1-B4, Sg1, T2).
+// node-1 scanned web-1 before the move and is still in that cycle; each of its
+// paths below leaves every observed/instance/web-1 fact and the network
+// allocation exactly as node-2 left them (no write, no delete).
 func TestSourceWritesNothingAfterMove(t *testing.T) {
 	testCases := []struct {
 		name    string                                                                       // name is the finding and path
@@ -499,6 +522,19 @@ func TestSourceWritesNothingAfterMove(t *testing.T) {
 		{name: "secret wait", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
 			sourceAgent.recordSecretDeliveryWait(ctx, instanceInfo, serviceSecretRequirements{}, errors.New("secret API unreachable"))
 		}},
+		{name: "restart count", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.incrementRestartCountInStore(ctx, instanceInfo)
+		}},
+		{name: "init step and progress", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.executeInitStep(ctx, instanceInfo, initStepDefinition{index: 0, exec: "migrate"}, "nginx:1.27", 1)
+			sourceAgent.clearInitProgress(ctx, instanceInfo)
+		}},
+		{name: "telemetry", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.nodeReporter.reportWorkloadTelemetry(ctx, []runtime.Status{{ID: instanceInfo.id, Running: true}})
+		}},
+		{name: "running path", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+			sourceAgent.publishRunningInstance(ctx, instanceInfo, "10.100.1.9")
+		}},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -513,15 +549,20 @@ func TestSourceWritesNothingAfterMove(t *testing.T) {
 				_, _ = factStore.Put(ctx, key, []byte(value))
 			}
 
+			if startError := sourceRuntime.Start(ctx, runtime.Spec{ID: "web-1", ServiceName: "web", Image: "nginx:1.27"}); startError != nil {
+				t.Fatal(startError)
+			}
+			factsBefore := snapshotInstanceFacts(t, ctx, factStore, "web-1")
 			testCase.runPath(ctx, sourceAgent, sourceRuntime, sourceScannedInfo)
-			for key, wantValue := range targetOwnedFacts {
-				if gotValue := readFactValue(ctx, factStore, key); gotValue != wantValue {
-					t.Errorf("node-1 changed %s from %q to %q after web-1 moved to node-2", key, wantValue, gotValue)
+			factsAfter := snapshotInstanceFacts(t, ctx, factStore, "web-1")
+			for key, valueBefore := range factsBefore {
+				if valueAfter, stillThere := factsAfter[key]; !stillThere || valueAfter != valueBefore {
+					t.Errorf("node-1 changed %s from %q to %q (present %v) after web-1 moved to node-2", key, valueBefore, valueAfter, stillThere)
 				}
 			}
-			for _, sourceOnlyKey := range []string{types.KeyObservedInstancePullStatus("web-1"), types.KeyObservedInstanceSecretWait("web-1")} {
-				if written := readFactValue(ctx, factStore, sourceOnlyKey); written != "" {
-					t.Errorf("node-1 wrote %s = %q after web-1 moved to node-2", sourceOnlyKey, written)
+			for key, valueAfter := range factsAfter {
+				if _, existedBefore := factsBefore[key]; !existedBefore {
+					t.Errorf("node-1 wrote %s = %q after web-1 moved to node-2", key, valueAfter)
 				}
 			}
 		})

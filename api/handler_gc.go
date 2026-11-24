@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -110,7 +111,7 @@ func (apiServer *Server) executeInstanceGarbageCollection(ctx context.Context) (
 
 		keysToDelete := collectInstanceFactKeys(instanceID, observedFacts, derivedFacts, placementMap)
 		for _, factKey := range keysToDelete {
-			if deleteError := apiServer.factStore.Delete(ctx, factKey); deleteError != nil {
+			if deleteError := apiServer.factStore.Delete(ctx, factKey); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
 				logging.Default().Warn("gc: failed to delete fact", "key", factKey, "error", deleteError.Error())
 			}
 		}
@@ -186,7 +187,7 @@ func gcEffectiveState(fields map[string]string) string {
 }
 
 // collectInstanceFactKeys returns all store keys belonging to the given
-// instance across observed, derived, and placement prefixes.
+// instance across observed, derived, network allocation and placement prefixes.
 func collectInstanceFactKeys(instanceID string, observedFacts []store.Fact, derivedFacts []store.Fact, placementMap map[string]string) []string {
 	observedPrefix := types.ScanObservedInstances + instanceID
 	derivedPrefix := types.ScanDerivedInstances + instanceID
@@ -203,6 +204,7 @@ func collectInstanceFactKeys(instanceID string, observedFacts []store.Fact, deri
 		}
 	}
 
+	keysToDelete = append(keysToDelete, types.KeyNetworkAllocation(instanceID)) // left by agents while placed elsewhere (M267 3f B3)
 	keysToDelete = append(keysToDelete, types.KeyPlacementInstance(instanceID))
 	if nodeID, hasPlacement := placementMap[instanceID]; hasPlacement && nodeID != "" {
 		keysToDelete = append(keysToDelete, types.KeyPlacementNodeInstance(nodeID, instanceID))

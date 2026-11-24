@@ -556,7 +556,7 @@ NetworkController.Reconcile(ctx, facts)                      :88
 See INSTANCE_LIFECYCLE_GRAPH.md §8 for full call tree.
 
 **Watch:** `observed/instance/`, `derived/instance/`, `effective/service/`, `placement/instance/`
-**Writes:** DELETE `observed/instance/{id}/*`, DELETE `derived/instance/{id}/*`, DELETE `placement/instance/{id}`, DELETE `placement/node/{nodeID}/{id}`
+**Writes:** DELETE `observed/instance/{id}/*`, DELETE `derived/instance/{id}/*`, DELETE `network/allocation/{id}` (M267 3f B3), DELETE `placement/instance/{id}`, DELETE `placement/node/{nodeID}/{id}`
 
 ---
 
@@ -641,7 +641,7 @@ SortControllersByDependency(controllers)                     :164
 | `cron` | `desired/job/`, `derived/cronjob/` |
 | `stateful-dns` | `network/dns/instance/` |
 | `stateful-volume` | `desired/volume/` |
-| `instance-gc` | DELETE `observed/instance/`, `derived/instance/`, `placement/` |
+| `instance-gc` | DELETE `observed/instance/`, `derived/instance/`, `network/allocation/`, `placement/` |
 | `credential-broker` | `derived/credential/` |
 
 ---

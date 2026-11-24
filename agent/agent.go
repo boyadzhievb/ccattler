@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -103,6 +104,7 @@ const stoppedContainerWarningThreshold = 10
 type Agent struct {
 	nodeID                   string                               // nodeID is the unique identifier for the node this agent manages.
 	store                    store.StateStore                     // store is the fact store used to read desired state and write observed state.
+	instanceFacts            instanceFactWriter                   // instanceFacts is the only writer of observed/instance/{id}/* outside the publish (M267 3e).
 	runtime                  runtime.Runtime                      // runtime is the pluggable container/process runtime adapter.
 	networkProvider          network.NetworkProvider              // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
 	storageProvider          storage.StorageProvider              // storageProvider manages volume attach/detach; nil means no volume support.
@@ -124,6 +126,7 @@ type Agent struct {
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
 	crashLoopBackoffs        map[string]*crashLoopBackoffEntry    // crashLoopBackoffs tracks per-instance in-place restart back-off (M233).
+	uncommittedStartFacts    map[string][]store.Op                // uncommittedStartFacts are start facts a store error kept out, carried until committed (M267 3f B2).
 	crashLoopBaseDelay       time.Duration                        // crashLoopBaseDelay is the wait after the first exit; tests set a short value.
 	crashLoopMaxDelay        time.Duration                        // crashLoopMaxDelay caps the wait between restarts; tests set a short value.
 	crashLoopResetPeriod     time.Duration                        // crashLoopResetPeriod is the run time after which the back-off starts over; tests set a short value.
@@ -142,12 +145,14 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 	return &Agent{
 		nodeID:                   nodeID,
 		store:                    stateStore,
+		instanceFacts:            instanceFactWriter{factStore: stateStore, nodeID: nodeID},
 		runtime:                  runtimeAdapter,
 		interval:                 defaultAgentReconcileInterval,
 		heartbeatFrequency:       heartbeatInterval,
 		appliedInstanceResources: make(map[string]appliedResourceAllocation),
 		imagePullBackoffs:        make(map[string]*imagePullBackoffEntry),
 		crashLoopBackoffs:        make(map[string]*crashLoopBackoffEntry),
+		uncommittedStartFacts:    make(map[string][]store.Op),
 		crashLoopBaseDelay:       crashLoopBaseDelay,
 		crashLoopMaxDelay:        crashLoopMaxDelay,
 		crashLoopResetPeriod:     crashLoopResetPeriod,
@@ -611,7 +616,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	for backoffInstanceID := range nodeAgent.imagePullBackoffs {
 		if !desiredByID[backoffInstanceID] {
 			delete(nodeAgent.imagePullBackoffs, backoffInstanceID)
-			deleteFactsUnlessPlacedElsewhere(ctx, nodeAgent.store, nodeAgent.nodeID, backoffInstanceID, types.KeyObservedInstancePullStatus(backoffInstanceID))
+			nodeAgent.instanceFacts.deleteUnlessPlacedElsewhere(ctx, backoffInstanceID, types.KeyObservedInstancePullStatus(backoffInstanceID))
 		}
 	}
 
@@ -885,23 +890,16 @@ func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo
 		statusReasonChange(instanceInfo.id, statusReason))
 }
 
-// writeInstanceFacts writes changes about an instance placed on this node
-// through writeGuardedInstanceFacts: never after it moved off this node
-// (M267 3e). Returns true when committed or nothing changed.
-func (nodeAgent *Agent) writeInstanceFacts(ctx context.Context, instanceInfo placedInstanceInfo, changes ...store.Op) bool {
-	return writeGuardedInstanceFacts(ctx, nodeAgent.store, nodeAgent.nodeID, instanceInfo, changes)
-}
-
 // publishStatusReason writes a human-readable status reason (guarded) so the
 // CLI and API can show why an instance is in its current state.
 func (nodeAgent *Agent) publishStatusReason(ctx context.Context, instanceInfo placedInstanceInfo, reason string) {
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo, statusReasonChange(instanceInfo.id, reason))
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, statusReasonChange(instanceInfo.id, reason))
 }
 
 // clearPullStatusFromStore removes the pull-status fact (guarded) after a
 // successful or unneeded pull.
 func (nodeAgent *Agent) clearPullStatusFromStore(ctx context.Context, instanceInfo placedInstanceInfo) {
-	nodeAgent.writeInstanceFacts(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstancePullStatus(instanceInfo.id)})
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstancePullStatus(instanceInfo.id)})
 }
 
 // buildRuntimeSpecForInstance resolves the complete runtime specification for an
@@ -961,19 +959,26 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		runtimeIP = runtimeStatus.IP
 	}
 
-	// One guarded transaction with the state: started_at (a controller that sees
-	// running also sees when this start happened, M241 D10), the readiness reset
-	// (a result from before this start no longer holds, review B4), host ports,
-	// image and config hash (M267 3e). An instant exit is observed as starting.
+	// Host ports first, in their own guarded writes (any number of ports, M267 3f
+	// B1). Then one guarded transaction with the state: started_at (a controller
+	// that sees running also sees when this start happened, M241 D10), the
+	// readiness reset (review B4), image and config hash (M267 3e). Start facts a
+	// store error kept out are carried by the next running publish (3f B2).
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, nodeAgent.hostPortChangesIfSupported(instanceInfo.id)...)
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-	startFacts := append(nodeAgent.hostPortChangesIfSupported(instanceInfo.id),
-		store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceStartedAt(instanceInfo.id), Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
-		store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness)},
-		instanceImageChange(instanceInfo.id, image), instanceConfigHashChange(instanceInfo.id, configHashBeforeBuild))
+	startFacts := []store.Op{
+		{Type: store.OpPut, Key: types.KeyObservedInstanceStartedAt(instanceInfo.id), Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
+		{Type: store.OpDelete, Key: types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness)},
+		instanceImageChange(instanceInfo.id, image), instanceConfigHashChange(instanceInfo.id, configHashBeforeBuild),
+	}
 	if observedState == types.InstanceRunning {
 		startFacts = append(startFacts, statusReasonChange(instanceInfo.id, "running"))
 	}
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, startFacts...)
+	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, startFacts...) {
+		delete(nodeAgent.uncommittedStartFacts, instanceInfo.id)
+	} else {
+		nodeAgent.uncommittedStartFacts[instanceInfo.id] = startFacts
+	}
 	nodeAgent.recordInstanceStarted(instanceInfo.id)
 	return true
 }
@@ -990,7 +995,7 @@ func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceIn
 	var runtimeStartError *runtime.StartError
 	if errors.As(startError, &runtimeStartError) && runtimeStartError.ProcessFailed {
 		// The stored hash is what a config change during the wait is compared with.
-		nodeAgent.writeInstanceFacts(ctx, instanceInfo, instanceImageChange(instanceInfo.id, image),
+		nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, instanceImageChange(instanceInfo.id, image),
 			instanceConfigHashChange(instanceInfo.id, configHashBeforeBuild))
 		processError := runtimeStartError.ProcessError
 		if processError == "" {
@@ -1044,7 +1049,7 @@ func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanc
 // the instance moved (M267 D2): on a read error it touches nothing and the next
 // cycle retries; after a move it keeps the facts keyed by instance ID only.
 func (nodeAgent *Agent) teardownStaleInstance(ctx context.Context, instanceID string, removeContainer func()) {
-	movedElsewhere, readError := nodeAgent.isInstanceMovedToAnotherNode(ctx, instanceID)
+	movedElsewhere, checkedPlacementRevision, readError := nodeAgent.isInstanceMovedToAnotherNode(ctx, instanceID)
 	if readError != nil {
 		logging.Default().Warn("cannot read where the stale instance is placed, leaving its container until the next cycle",
 			"agent", nodeAgent.nodeID, "instance", instanceID, "error", readError.Error())
@@ -1052,8 +1057,9 @@ func (nodeAgent *Agent) teardownStaleInstance(ctx context.Context, instanceID st
 	}
 	delete(nodeAgent.appliedInstanceResources, instanceID)
 	delete(nodeAgent.imagePullBackoffs, instanceID)
+	delete(nodeAgent.uncommittedStartFacts, instanceID)
 	// Keyed by ID only: kept while placed on another node, maybe the target's (M267 B2).
-	deleteFactsUnlessPlacedElsewhere(ctx, nodeAgent.store, nodeAgent.nodeID, instanceID, types.KeyObservedInstancePullStatus(instanceID))
+	nodeAgent.instanceFacts.deleteUnlessPlacedElsewhere(ctx, instanceID, types.KeyObservedInstancePullStatus(instanceID))
 	if nodeAgent.secretAPIServer != nil {
 		nodeAgent.secretAPIServer.RevokeInstanceToken(instanceID)
 	}
@@ -1062,7 +1068,7 @@ func (nodeAgent *Agent) teardownStaleInstance(ctx context.Context, instanceID st
 	}
 	removeContainer()
 	nodeAgent.removeInstanceDataIfSupported(ctx, instanceID)
-	nodeAgent.publishRemovedInstanceState(ctx, instanceID, movedElsewhere)
+	nodeAgent.publishRemovedInstanceState(ctx, instanceID, movedElsewhere, checkedPlacementRevision)
 	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 	nodeAgent.releaseStaleInstanceNetwork(ctx, instanceID)
 }
@@ -1077,20 +1083,26 @@ func (nodeAgent *Agent) releaseStaleInstanceNetwork(ctx context.Context, instanc
 	if releaseError := nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID); releaseError != nil {
 		logging.Default().Error("failed to release IP for stale instance", "instance", instanceID, "error", releaseError.Error())
 	}
-	deleteFactsUnlessPlacedElsewhere(ctx, nodeAgent.store, nodeAgent.nodeID, instanceID, types.KeyNetworkAllocation(instanceID))
+	nodeAgent.instanceFacts.deleteUnlessPlacedElsewhere(ctx, instanceID, types.KeyNetworkAllocation(instanceID))
 }
 
-// publishRemovedInstanceState writes observed state stopped for an instance
-// whose container this agent removed. A moved instance is marked pending
-// instead (M267 D2, D4): stopped is final and would keep the target agent from
-// publishing running, so the instance controller would replace the instance.
-func (nodeAgent *Agent) publishRemovedInstanceState(ctx context.Context, instanceID string, movedElsewhere bool) {
+// publishRemovedInstanceState writes stopped for an instance whose container
+// this agent removed, only while placement/instance/{id} still has the revision
+// the move check read (it may move during pre_stop and grace, 3f P2). A moved
+// instance is marked pending instead: stopped is final (M267 D2, D4).
+func (nodeAgent *Agent) publishRemovedInstanceState(ctx context.Context, instanceID string, movedElsewhere bool, checkedPlacementRevision int64) {
 	if movedElsewhere {
 		nodeAgent.markMovedInstancePending(ctx, instanceID)
 		return
 	}
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
-		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", putError.Error())
+	swapped, transactionError := nodeAgent.store.Transaction(ctx,
+		[]store.Compare{{Key: types.KeyPlacementInstance(instanceID), Revision: checkedPlacementRevision}},
+		[]store.Op{{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstanceStopped))}}, nil)
+	switch {
+	case transactionError != nil:
+		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", transactionError.Error())
+	case !swapped:
+		logging.Default().Info("placement changed during the removal, not publishing stopped", "agent", nodeAgent.nodeID, "instance", instanceID)
 	}
 }
 
@@ -1142,24 +1154,25 @@ func (nodeAgent *Agent) markMovedInstancePending(ctx context.Context, instanceID
 }
 
 // isInstanceMovedToAnotherNode reports whether placement/instance/{id} names
-// another node and no controller stopped the instance (a rebalance move). No
-// placement, a placement on this node or a controller stop are not a move.
-func (nodeAgent *Agent) isInstanceMovedToAnotherNode(ctx context.Context, instanceID string) (bool, error) {
+// another node and no controller stopped the instance (a rebalance move), and
+// the placement's revision it read (0: absent). No placement, a placement on
+// this node or a controller stop are not a move.
+func (nodeAgent *Agent) isInstanceMovedToAnotherNode(ctx context.Context, instanceID string) (bool, int64, error) {
 	placementFact, placementError := nodeAgent.store.Get(ctx, types.KeyPlacementInstance(instanceID))
 	if errors.Is(placementError, store.ErrKeyNotFound) {
-		return false, nil
+		return false, 0, nil
 	}
 	if placementError != nil {
-		return false, placementError
+		return false, 0, placementError
 	}
 	if string(placementFact.Value) == nodeAgent.nodeID {
-		return false, nil
+		return false, placementFact.Revision, nil
 	}
 	controllerStopped, stopMarkerError := nodeAgent.isControllerStopped(ctx, instanceID)
 	if stopMarkerError != nil {
-		return false, stopMarkerError
+		return false, 0, stopMarkerError
 	}
-	return !controllerStopped, nil
+	return !controllerStopped, placementFact.Revision, nil
 }
 
 // isControllerStopped reports whether derived/instance/{id}/controller_stopped
@@ -1995,8 +2008,7 @@ func (nodeAgent *Agent) attachSharedVolumeForInstance(ctx context.Context, volum
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedVolumeAccess(volumeName), []byte(types.VolumeAccessShared)); putError != nil {
 		return fmt.Errorf("recording shared access for volume %s: %w", volumeName, putError)
 	}
-	attachmentKey := types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID)
-	if _, putError := nodeAgent.store.Put(ctx, attachmentKey, []byte(mountPath)); putError != nil {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID), []byte(mountPath)); putError != nil {
 		return fmt.Errorf("recording attachment for volume %s: %w", volumeName, putError)
 	}
 	return nil
@@ -2089,8 +2101,7 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 // detachSharedVolumeForInstance deletes this instance's attachment fact and
 // detaches the volume from this node once no other instance here uses it.
 func (nodeAgent *Agent) detachSharedVolumeForInstance(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string, instanceID string) {
-	attachmentKey := types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID)
-	if deleteError := nodeAgent.store.Delete(ctx, attachmentKey); deleteError != nil {
+	if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID)); deleteError != nil {
 		logging.Default().Error("failed to delete volume attachment", "volume", volumeName, "instance", instanceID, "error", deleteError.Error())
 		return
 	}
@@ -2189,14 +2200,17 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	return true
 }
 
-// publishRunningInstance publishes a running container's observed state each
-// cycle with its host ports (endpoints and remote DNAT need them) and deletes
-// the exit reason (it runs again, Flow 33), in one guarded publish (M267 3e).
+// publishRunningInstance publishes a running container's host ports (endpoints
+// and remote DNAT need them, own guarded writes) and its state with the exit
+// reason deleted (Flow 33) and any start facts a store error kept out (3f B2).
 func (nodeAgent *Agent) publishRunningInstance(ctx context.Context, instanceInfo placedInstanceInfo, runtimeIP string) {
+	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, nodeAgent.hostPortChangesIfSupported(instanceInfo.id)...)
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP,
-		append(nodeAgent.hostPortChangesIfSupported(instanceInfo.id),
-			store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceExitReason(instanceInfo.id)})...)
+	runningFacts := append(slices.Clone(nodeAgent.uncommittedStartFacts[instanceInfo.id]),
+		store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceExitReason(instanceInfo.id)})
+	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, runningFacts...) {
+		delete(nodeAgent.uncommittedStartFacts, instanceInfo.id)
+	}
 }
 
 // createInstanceCreatedAtOnce writes observed/instance/{id}/created-at only if

@@ -19,10 +19,11 @@ import (
 // It collects resource utilization data for the node and its workloads, publishes
 // heartbeats and alive state, and writes observed facts back to the store.
 type NodeReporter struct {
-	nodeID           string           // nodeID is the unique identifier for the node this reporter manages.
-	factStore        store.StateStore // factStore is the fact store used to write observed telemetry and state facts.
-	runtimeAdapter   runtime.Runtime  // runtimeAdapter is the pluggable container/process runtime adapter for querying workload stats.
-	advertiseAddress string           // advertiseAddress is this node's LAN-routable IP published for cross-host communication.
+	nodeID           string             // nodeID is the unique identifier for the node this reporter manages.
+	factStore        store.StateStore   // factStore is the fact store used to write observed telemetry and state facts.
+	instanceFacts    instanceFactWriter // instanceFacts writes per-instance telemetry, guarded by placement (M267 3e).
+	runtimeAdapter   runtime.Runtime    // runtimeAdapter is the pluggable container/process runtime adapter for querying workload stats.
+	advertiseAddress string             // advertiseAddress is this node's LAN-routable IP published for cross-host communication.
 }
 
 // NewNodeReporter creates a new NodeReporter wired to the provided state store
@@ -31,6 +32,7 @@ func NewNodeReporter(nodeID string, factStore store.StateStore, runtimeAdapter r
 	return &NodeReporter{
 		nodeID:           nodeID,
 		factStore:        factStore,
+		instanceFacts:    instanceFactWriter{factStore: factStore, nodeID: nodeID},
 		runtimeAdapter:   runtimeAdapter,
 		advertiseAddress: advertiseAddress,
 	}
@@ -164,8 +166,8 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 		}
 		// Only for a container whose instance is placed here now: after a move the
 		// source's samples never land on the target's instance (M267 3e).
-		if placedInfo, placedHere := currentPlacementInfo(ctx, nodeReporter.factStore, nodeReporter.nodeID, workloadStatus.ID); placedHere {
-			writeGuardedInstanceFacts(ctx, nodeReporter.factStore, nodeReporter.nodeID, placedInfo, telemetryFacts)
+		if placedInfo, placedHere := nodeReporter.instanceFacts.currentPlacement(ctx, workloadStatus.ID); placedHere {
+			nodeReporter.instanceFacts.writeGuarded(ctx, placedInfo, telemetryFacts...)
 		}
 
 		if resourceStats.OOMKillCount > 0 {

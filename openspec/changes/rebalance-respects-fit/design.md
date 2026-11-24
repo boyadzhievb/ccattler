@@ -96,12 +96,16 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   health and progress writes compare the same placement revision (`placementGuard`), so an in-flight source probe
   cannot write `ready` after the move (R3-S1, R3-S2).
 - **The rule (review round 4, 3e): all per-instance observed writes are guarded by placement.** Every agent write
-  or delete under `observed/instance/{id}/` goes through `writeGuardedInstanceFacts` (the scanned placement
+  or delete under `observed/instance/{id}/` goes through `instanceFactWriter.writeGuarded` (the scanned placement
   revision, no-op changes dropped) or the guarded publish transaction, which carries the facts of the same publish
   (status reason, start facts, last exit, exit reason, pull and secret-wait status). Telemetry reads the placement
-  first. Exceptions: the `stopped` write after the move check, the source's `pending` after a move (its own node and
-  state guard), and cleanup of an instance that left the desired set (only while it is not placed on another node).
-  A source scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`) enforces it. Store errors
+  first. Exceptions: the `stopped` write (on the `placement/instance/{id}` revision the move check read, round 5 P2),
+  the source's `pending` after a move (its own node and state guard), and cleanup of an instance that left the
+  desired set (only while it is not placed on another node; instance GC deletes `network/allocation/{id}` with the
+  tree, B3). Host ports are written in their own guarded, chunked writes (B1); start facts a store error kept out are
+  carried by the next running publish (B2). A closed-world scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`,
+  T1) checks every store Transaction against a list with reasons and every Put/Delete key for a direct non-instance
+  `types.Key*` call; it cannot see writes through other packages or reflection. Store errors
   in these transactions are logged as errors with the error, not as "changed meanwhile" (R2-3).
 - **A failed target startup never looks healthy.** The target publishes `image_pull_backoff` (pull failure) or
   `failed` (start failure, replaced by the failure controller) with `node` = target. A dead target agent publishes
@@ -116,6 +120,11 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   shifts the cooldown by at most the skew (a move time in the future lengthens it); accepted, no code (R2-4).
 - **Removal is never evidence of the new placement running.** Only the target's own publish (`running` with
   `node` = target, then readiness) brings the instance back into endpoints.
+
+Change during apply, recorded 2026-11-24 (main session): in rework 3f, the "all per-instance observed writes are
+guarded" bullet was updated to describe the round-5 fixes (B1 chunked host ports, B2 carried start facts, B3
+allocation GC, T1 closed-world scan, P2 `stopped` on the placement revision), as 3e.3 did for round 4. It describes
+fixes already decided in the tasks.md round-5 table. No requirement or spec scenario changed.
 
 ## Failure cases
 

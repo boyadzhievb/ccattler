@@ -42,6 +42,7 @@ const (
 type ProbeScheduler struct {
 	nodeID          string                         // nodeID is the unique identifier for the node this scheduler runs on.
 	factStore       store.StateStore               // factStore is the fact store used to read probe config and write probe results.
+	instanceFacts   instanceFactWriter             // instanceFacts writes probe results, guarded by placement (M267 R3-S1).
 	runtimeAdapter  runtime.Runtime                // runtimeAdapter is the runtime used for exec-type probes.
 	probeStates     map[string]*instanceProbeState // probeStates tracks probe execution state per instance ID.
 	lastHealthCheck map[string]time.Time           // lastHealthCheck tracks when each instance was last health-checked.
@@ -55,6 +56,7 @@ func NewProbeScheduler(nodeID string, factStore store.StateStore, runtimeAdapter
 	return &ProbeScheduler{
 		nodeID:          nodeID,
 		factStore:       factStore,
+		instanceFacts:   instanceFactWriter{factStore: factStore, nodeID: nodeID},
 		runtimeAdapter:  runtimeAdapter,
 		probeStates:     make(map[string]*instanceProbeState),
 		lastHealthCheck: make(map[string]time.Time),
@@ -641,7 +643,7 @@ func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, 
 	}
 
 	if !hasProgress {
-		deleteGuardedInstanceFact(ctx, probeScheduler.factStore, probeScheduler.nodeID, instanceInfo, types.KeyObservedInstanceProbeProgress(instanceInfo.id))
+		probeScheduler.instanceFacts.writeGuarded(ctx, instanceInfo, store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceProbeProgress(instanceInfo.id)})
 		return
 	}
 
@@ -660,9 +662,9 @@ func (probeScheduler *ProbeScheduler) writeProbeState(ctx context.Context, insta
 
 // writeInstanceFact writes one probe or health fact of the instance unless it
 // is unchanged or the instance moved off this node since the probe pass read
-// its placement (putGuardedInstanceFact, M267 R3-S1).
+// its placement (instanceFactWriter.writeGuarded, M267 R3-S1).
 func (probeScheduler *ProbeScheduler) writeInstanceFact(ctx context.Context, instanceInfo placedInstanceInfo, key string, value string) {
-	putGuardedInstanceFact(ctx, probeScheduler.factStore, probeScheduler.nodeID, instanceInfo, key, []byte(value))
+	probeScheduler.instanceFacts.writeGuarded(ctx, instanceInfo, store.Op{Type: store.OpPut, Key: key, Value: []byte(value)})
 }
 
 // lookupExposedPorts reads all exposed port declarations for the given service

@@ -295,7 +295,7 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   ├── START FAILED → handleInstanceStartError(ctx, instanceInfo, image, err)
     │   │   ├── revoke token
     │   │   ├── StartError.ProcessFailed (workload's process could not start, M238):
-    │   │   │   ├── writeInstanceFacts(image, config-hash(configHashBeforeBuild))  [guarded; compared during the wait]
+    │   │   │   ├── instanceFacts.writeGuarded(image, config-hash(configHashBeforeBuild))  [guarded; compared during the wait]
     │   │   │   └── recordInstanceStartFailure(ProcessError, else Reason) [section 12b] → return true (attempt counted)
     │   │   └── otherwise (image, CNI, netns, create container, cgroup/seccomp/shim):
     │   │       ├── publishInstanceStateToStore(failed, image, status "start failed: {err}")  [one guarded TXN]
@@ -306,12 +306,15 @@ reconcileDesiredInstance(instanceInfo)                        :736
     ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1441
     ├── runtime.Status(id) → get IP
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
+    ├── instanceFacts.writeGuarded(hostPortChangesIfSupported)  → PUT observed/instance/{id}/hostport/{port}
+    │   [own guarded writes, chunked by maxInstanceFactChangesPerTransaction (100): any number of ports, 3f B1]
     ├── start facts, all in the publish transaction below (M267 3e):
-    │   hostPortChangesIfSupported → PUT observed/instance/{id}/host_port/{port}
     │   PUT observed/instance/{id}/started_at = now (RFC 3339, fractions)  [every start; min_healthy_time, M241 D10]
     │   DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
     │   PUT image, PUT config-hash = configHashBeforeBuild, PUT status_reason = "running" (running only)
     ├── publishInstanceStateToStore(ctx, instanceInfo, state, runtimeIP, start facts…)
+    │   not committed (store error, lost CAS) → uncommittedStartFacts[id] = start facts,
+    │   carried by publishRunningInstance until they commit; dropped in teardownStaleInstance (3f B2)
     │   ├── resolvePublishedContainerIP: networkProvider.AllocateIP (also → network/allocation)
     │   │   else a valid runtime IP, else none — resolved BEFORE anything is written (M267 3c.6)
     │   ├── dropNoOpChanges(marker, service, ip, allocation, sameCycleFacts): Get each, keep the changed ones
@@ -367,12 +370,13 @@ executeReconciliationCycle                                   :539
     ├── reconcileResourceChanges(ctx, instanceInfo)
     │   └── live resize CPU/memory if supported
     │
-    └── publishRunningInstance(ctx, info, ip)                [M267 3e]
+    └── publishRunningInstance(ctx, info, ip)                [M267 3e, 3f]
+        ├── instanceFacts.writeGuarded(hostPortChangesIfSupported)  [every cycle for endpoints/DNAT; own chunked writes]
         ├── observeInstanceState(id)
         │   ├── Running: true  → InstanceRunning
         │   └── otherwise      → InstanceStarting   [exited after List: next cycle records it, Flow 33, M238 D4]
-        └── publishInstanceStateToStore(ctx, info, state, ip, host ports, DELETE exit-reason)
-            [one guarded TXN, never over stopped: 2i.1; host ports every cycle for endpoints/DNAT]
+        └── publishInstanceStateToStore(ctx, info, state, ip, uncommittedStartFacts[id], DELETE exit-reason)
+            [one guarded TXN, never over stopped: 2i.1; committed → uncommittedStartFacts entry dropped]
 ```
 
 ### ProbeScheduler.Run → independent goroutine (5s tick)
@@ -384,7 +388,7 @@ ProbeScheduler.Run(ctx, findInstances)                       [probes.go:99]
 │       │   └── writeInstanceFact observed/instance/{id}/health = "healthy"|"unhealthy"
 │       │
 │       │   EVERY probe/health/progress PUT below goes through writeInstanceFact [probes.go:664]
-│       │   → putGuardedInstanceFact [placement_guard.go]: unchanged → no write; else TXN
+│       │   → instanceFactWriter.writeGuarded [placement_guard.go]: unchanged → no write; else TXN
 │       │     comparing the pass's placement/node/{self}/{id} revision (placementGuard), so
 │       │     an in-flight source probe never writes ready/healthy after a move (M267 R3-S1)
 │       └── executeProbesForInstance(ctx, info)              [probes.go:131]
@@ -599,10 +603,11 @@ InstanceGCController.Reconcile(ctx, facts)                   :74
 ├── sort candidates by instanceID
 │
 └── FOR EACH candidate (max 4 per cycle):
-    └── buildInstanceDeletionChanges(id, facts, placements)  :175
+    └── buildInstanceDeletionChanges(id, facts, placements)  :187
         ├── DELETE observed/instance/{id}           (marker)
         ├── DELETE observed/instance/{id}/*         (all sub-keys)
         ├── DELETE derived/instance/{id}/*          (all markers)
+        ├── DELETE network/allocation/{id}          (agents leave it while placed elsewhere, M267 3f B3)
         ├── DELETE placement/instance/{id}
         └── DELETE placement/node/{nodeID}/{id}
 ```
@@ -717,7 +722,7 @@ reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerE
 ├── reconcileDesiredInstance → attempted bool       [section 3; false on any bail-out or a start error published failed]
 │   ├── started (startInstanceAndPublishState) → recordInstanceStarted   [entry.waiting = false, startFailed = false, lastStartedAt = now]
 │   ├── process could not start (handleInstanceStartError, StartError.ProcessFailed, M238)
-│   │   ├── writeInstanceFacts(image, config-hash)              [so hasConfigChangedSinceStart compares with this attempt]
+│   │   ├── instanceFacts.writeGuarded(image, config-hash)              [so hasConfigChangedSinceStart compares with this attempt]
 │   │   └── recordInstanceStartFailure(processError)          [runc `exec: "…": …`]
 │   │       ├── ensureCrashLoopBackoffEntry
 │   │       ├── beginCrashLoopWait(processError, exitReasonChange(processError))  [reset from the previous lastStartedAt]
@@ -726,7 +731,7 @@ reconcileInstanceWithoutRunningContainer(instanceInfo, runtimeStatus, containerE
 │       cycle retries without recording a new exit; the bail-out's own state and reason
 │       (image-pull-backoff, waiting-for-secrets, init, volumes) stay visible
 └── attempted && (containerExited || retryAfterStartFailure)
-    → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1, writeInstanceFacts (guarded)]
+    → incrementRestartCountInStore   [observed/instance/{id}/restarts, read +1, instanceFacts.writeGuarded (guarded)]
 
 beginCrashLoopWait(instanceInfo, entry, exitDescription, exitFacts…)  [crash_loop_backoff.go:164]
 ├── now - lastStartedAt >= crashLoopResetPeriod → attempts = 0
@@ -756,43 +761,44 @@ cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance im
 | Init failure | Before BAIL | agent.go:732 |
 | Volume attach failure | Before BAIL | agent.go:745 |
 | Start failure | In handleInstanceStartError (both outcomes) | agent.go |
-| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1046 |
+| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1051 |
 
 Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
 
 ### Agent cleanup of a container that left the node (M267 D2, D4)
 ```
 executeReconciliationCycle: container not in this node's desired set
-├── running → cleanupUndesiredInstance(id)                  agent.go:1226
+├── running → cleanupUndesiredInstance(id)                  agent.go:1239
 │             removeContainer = pre_stop hook + stopInstanceWithGracePeriod
-└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1033
+└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1038
               removeContainer = runtime.Stop (no hook, container already dead)
-    both: teardownStaleInstance(id, removeContainer)        agent.go:1046
+    both: teardownStaleInstance(id, removeContainer)        agent.go:1051
     ├── FIRST, before anything is removed:
-    │   isInstanceMovedToAnotherNode(id)                    agent.go:1147
+    │   isInstanceMovedToAnotherNode(id) → (moved, rev, err) agent.go:1160
     │   ├── GET placement/instance/{id}: not found → false; error → error; this node → false
-    │   └── isControllerStopped(id)                         agent.go:1168
+    │   └── isControllerStopped(id)                         agent.go:1181
     │       GET derived/instance/{id}/controller_stopped: not found → false; error → error;
     │       value "true" → true (controller stop → not a move); else moved
     ├── read error → RETURN: container, local state and store untouched, WARN "cannot read
     │                where the stale instance is placed, leaving its container until the next
     │                cycle"; the container is still stale next cycle, so the whole cleanup retries
-    ├── drop local resource/backoff tracking; deleteFactsUnlessPlacedElsewhere(pull-status)
+    ├── drop local resource/backoff tracking and uncommittedStartFacts[id]; instanceFactWriter.deleteUnlessPlacedElsewhere(pull-status)
     │   (TXN on placement/instance/{id}'s revision; kept while placed on another node: keyed by ID, M267 B2, 3e)
     ├── revoke token, detach volumes, removeContainer(), removeInstanceDataIfSupported
-    ├── publishRemovedInstanceState(id, moved)              agent.go:1087
-    │   ├── moved     → markMovedInstancePending(id)        agent.go:1101
+    ├── publishRemovedInstanceState(id, moved, rev)         agent.go:1093
+    │   ├── moved     → markMovedInstancePending(id)        agent.go:1113
     │   │   GET observed/instance/{id}/node: missing or another node → nothing (the target
     │   │     published); GET state: stopped → nothing (final)
     │   │   TXN compare node revision + state revision → PUT state = pending,
     │   │     DELETE observed/instance/{id}/probe/readiness; lost → nothing (target won)
     │   │   (no backend during the gap; stopped is final since M241 and would make the
     │   │    instance controller replace a moved instance)
-    │   └── not moved → PUT observed/instance/{id}/state = stopped (scale-down, controller
-    │                   stop, no placement)
+    │   └── not moved → TXN compare placement/instance/{id} revision the move check read
+    │                   (0: absent) → PUT state = stopped (scale-down, controller stop, no
+    │                   placement); lost → nothing (placed elsewhere during pre_stop/grace, 3f P2)
     ├── probe cleanup
     └── releaseStaleInstanceNetwork(id)
-        ReleaseIP (node-local); deleteFactsUnlessPlacedElsewhere(network/allocation/{id},
+        ReleaseIP (node-local); instanceFactWriter.deleteUnlessPlacedElsewhere(network/allocation/{id},
         kept while placed on another node: keyed by ID only, M267 B2, 3e)
 ```
 
@@ -828,11 +834,13 @@ executeReconciliationCycle: container not in this node's desired set
 | `handleInstanceStartError` | startInstanceAndPublishState |
 | `instanceConfigHashChange` / `instanceImageChange` | startInstanceAndPublishState (start publish), handleInstanceStartError (M267 3e) |
 | `replaceContainerOnAnotherImage` | executeReconciliationCycle (running path, before detectConfigChange; M241 2e.1) |
-| `writeInstanceFacts` | every agent write of observed/instance/{id}/* outside a publish (→ writeGuardedInstanceFacts, M267 3e) |
+| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish (Agent, ProbeScheduler, NodeReporter each hold an instanceFactWriter; M267 3e, 3f) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |
-| `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState, handleInstanceStartError, beginCrashLoopWait, recordSecretDeliveryWait (returns committed; status writes follow only then, M267 R3-S2) |
+| `publishInstanceStateToStore` | publishRunningInstance (running path), startInstanceAndPublishState, handleInstanceStartError, beginCrashLoopWait, recordSecretDeliveryWait, recordImagePullFailure, ensureImageAvailable (pulling), prepareInstanceSecretMaterial (pending) — every caller passes the facts of the same publish as sameCycleFacts; returns true when committed (M267 3e) |
+| `publishRunningInstance` | executeReconciliationCycle (running path, M267 3e) |
+| `initStepChanges` | executeInitializationSteps, executeInitStep (M267 3f S1) |
 
 ---
 
