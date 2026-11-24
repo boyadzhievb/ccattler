@@ -691,6 +691,20 @@ a host port at whatever value committed). User decision 2026-11-24: fix 1–4 fi
   `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
   `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.1 s, 6.6 s, 10.3 s, 1.4 s);
   `openspec validate rebalance-respects-fit` valid.
+## 3l. Review round 11 (2026-11-24, on 0f723c8..e6f602f; code-reviewer Opus high + Codex: approve, no findings)
+
+- **Production:** the change is the rename only (`preparePublishChangesWithHostPorts`, its doc comment, one local), +7/-7, and the graphs match.
+- **R10-1:** red confirmed by the reviewer's own mutation (every overflow value "1": 0f723c8 gives 13 FAILs, HEAD
+  22; the extra 9 are the fault cases).
+- **R10-2:** red confirmed (an unchanged node put in a non-state transaction: 0f723c8 passes, HEAD fails 24).
+- **Green:** `go test -race ./agent/` ok; `-count=3 -race` on the sweep and audit tests ok.
+- **Codex** (`--base 0f723c8`): approve, no material findings.
+- **Scope note, not a finding:** `markMovedInstancePending` also compares the state key, so it would fall under the
+  unchanged-put exception if the sweep ever ran it; recorded for R7-2 (audit in all agent tests, M269/M270).
+- **Logs:** scratchpad/review11-*.log.
+
+The review rounds for M267 are complete. What remains is the closing runs (3.4).
+
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
