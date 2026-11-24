@@ -128,27 +128,39 @@ log_ok "Checksum verified"
 
 tar -xzf "${temp_dir}/${archive_name}" -C "$temp_dir"
 
+# shell_quoted prints $1 in single quotes, so a printed path stays one word when pasted.
+shell_quoted() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 # --- Install binary ---
-if [ ! -d "$INSTALL_PATH" ]; then
-    if mkdir -p "$INSTALL_PATH" 2>/dev/null; then
+# requested_install_path keeps the value as given, for messages and the secure_path check.
+requested_install_path=$INSTALL_PATH
+line_break='
+'
+case "$requested_install_path" in
+    - | *"$line_break"*)
+        # cd would read '-' as the previous directory; a newline breaks every printed path.
+        log_error "Refusing the install directory $(shell_quoted "$requested_install_path"): '-' and newlines are not allowed."
+        exit 1
+        ;;
+esac
+if [ ! -d "$requested_install_path" ]; then
+    if mkdir -p -- "$requested_install_path" 2>/dev/null; then
         :
     else
-        log_info "Creating ${INSTALL_PATH} requires elevated permissions."
-        sudo mkdir -p "$INSTALL_PATH"
+        log_info "Creating ${requested_install_path} requires elevated permissions."
+        sudo mkdir -p -- "$requested_install_path"
     fi
 fi
 
 # Normalize once: absolute, no trailing or double slash, symlinks resolved, so every
-# comparison and printed path below uses the directory's one real name.
-if ! INSTALL_PATH=$(CDPATH='' cd -P -- "$INSTALL_PATH" && pwd -P); then
-    log_error "Cannot enter the install directory ${INSTALL_PATH}."
+# check and printed path below uses the directory's one real name.
+if ! INSTALL_PATH=$(CDPATH='' cd -P -- "$requested_install_path" && pwd -P); then
+    log_error "Cannot enter the install directory $(shell_quoted "$requested_install_path")."
     exit 1
 fi
-
-# shell_quoted prints $1 in single quotes, so a printed command stays one word when pasted.
-shell_quoted() {
-    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
+installed_binary_quoted=$(shell_quoted "${INSTALL_PATH}/cca")
 
 # run_as_installer runs a command with sudo when the install directory needed it.
 use_sudo="no"
@@ -176,35 +188,43 @@ if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled \
     && command -v restorecon >/dev/null 2>&1; then
     if ! run_as_installer restorecon "${INSTALL_PATH}/cca"; then
         log_warn "Could not restore the SELinux label of ${INSTALL_PATH}/cca; systemd cannot start it until you run:"
-        log_warn "  sudo restorecon $(shell_quoted "${INSTALL_PATH}/cca")"
+        log_warn "  sudo restorecon ${installed_binary_quoted}"
     fi
 fi
 
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
 
 # --- Ownership (Linux): systemd and sudo run cca as root, so only root may be able to change it ---
-# Both the binary and its directory count: whoever can write the directory can replace the binary.
+# find_first_unsafe_install_path sets unsafe_install_path to the binary, or to the first
+# directory from INSTALL_PATH up to /, that is not root-owned or that others can write.
+# Nothing privileged is printed (review round 5): detection only adds or misses a warning.
+find_first_unsafe_install_path() {
+    unsafe_install_path=""
+    checked_path="${INSTALL_PATH}/cca"
+    while :; do
+        owner_and_mode=$(stat -c '%u %a' "$checked_path" 2>/dev/null) || owner_and_mode="unknown 777"
+        checked_mode=${owner_and_mode##* }
+        # A sticky directory keeps others from replacing entries they do not own, and every
+        # entry below it on this path was already found root-owned, so its write bits are safe.
+        if [ "${owner_and_mode%% *}" != "0" ] \
+            || { [ $((0${checked_mode} & 022)) -ne 0 ] && [ $((0${checked_mode} & 01000)) -eq 0 ]; }; then
+            unsafe_install_path=$checked_path
+            return 0
+        fi
+        if [ "$checked_path" = "/" ]; then
+            return 0
+        fi
+        checked_path=${checked_path%/*}
+        [ -n "$checked_path" ] || checked_path=/
+    done
+}
+
 if [ "$operating_system" = "linux" ]; then
-    install_directory_quoted=$(shell_quoted "$INSTALL_PATH")
-    installed_owner=$(stat -c '%u' "${INSTALL_PATH}/cca" 2>/dev/null || echo unknown)
-    installed_owner=${installed_owner%% *}
-    directory_owner_and_mode=$(stat -c '%u %a' "$INSTALL_PATH" 2>/dev/null || echo "unknown 777")
-    directory_owner=${directory_owner_and_mode%% *}
-    directory_mode=${directory_owner_and_mode##* }
-    ownership_problem=""
-    if [ "$installed_owner" != "0" ]; then
-        ownership_problem="$(shell_quoted "${INSTALL_PATH}/cca") is owned by uid ${installed_owner}, not root."
-    elif [ "$directory_owner" != "0" ]; then
-        ownership_problem="${install_directory_quoted} is owned by uid ${directory_owner}, not root."
-    elif [ $((0${directory_mode} & 022)) -ne 0 ]; then
-        ownership_problem="${install_directory_quoted} is group- or world-writable (mode ${directory_mode})."
-    fi
-    if [ -n "$ownership_problem" ]; then
-        log_warn "$ownership_problem"
-        log_warn "Whoever owns it or can write ${install_directory_quoted} can change what systemd and sudo run as root,"
-        log_warn "so that directory must be writable only by root:"
-        log_warn "  sudo chown root:root ${install_directory_quoted} && sudo chmod 0755 ${install_directory_quoted}"
-        log_warn "Then run this install again."
+    find_first_unsafe_install_path
+    if [ -n "$unsafe_install_path" ]; then
+        log_warn "$(shell_quoted "$unsafe_install_path") can be changed by someone other than root, and whoever can change it"
+        log_warn "can change what systemd and sudo run as root. Use a directory writable only by root along its whole path,"
+        log_warn "such as /usr/local/bin: https://ccattler.org/installation#quick-install"
     fi
 fi
 
@@ -217,12 +237,13 @@ if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1; then
     # -n never prompts; without cached credentials sudo's PATH cannot be read.
     if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
         log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path: call"
-        log_info "  sudo $(shell_quoted "${INSTALL_PATH}/cca"), or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
+        log_info "  sudo ${installed_binary_quoted}, or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
     else
         case ":${sudo_path}:" in
-            *":${INSTALL_PATH}:"*) ;;
+            # As given or as resolved (rpm-ostree links /usr/local to /var/usrlocal).
+            *":${INSTALL_PATH}:"* | *":${requested_install_path}:"* | *":${requested_install_path%/}:"*) ;;
             *)
-                sudo_cca=$(shell_quoted "${INSTALL_PATH}/cca")
+                sudo_cca=$installed_binary_quoted
                 log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path."
                 log_warn "Call sudo ${sudo_cca}, or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
                 ;;

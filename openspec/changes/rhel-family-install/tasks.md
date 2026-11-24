@@ -345,7 +345,7 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   | R5-7 | `$(shell_quoted "${INSTALL_PATH}/cca")` built in 4 places; the raw-string `installPathForm`; the no-op `installed_owner=${installed_owner%% *}` | **fix** 3r.3 |
   | Codex | "Single-value leading-zero subcases fail the test" | **rejected**: they are refused earlier by `parseEtcdClientCIDRs` (command_init.go:128), whose error quotes the raw value. The union error printing canonical forms is cosmetic |
 
-- [ ] 3r.1 R5-1 and R5-2 (design.md "No privileged commands printed by install.sh"):
+- [x] 3r.1 R5-1 and R5-2 (design.md "No privileged commands printed by install.sh"):
   - the ownership check walks the install directory and each parent up to `/` (resolved path; a sticky parent is
     safe only if root owns its child);
   - it warns with the first unsafe directory and the root-only advice plus the guide link;
@@ -353,14 +353,32 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 
   Red first: the `TestInstallScriptWarnsWhenBinaryNotRootOwned` subcases from the spec, each asserting no
   `chown`/`chmod`, among them a sticky world-writable dir like `/tmp` and a user-owned parent.
-- [ ] 3r.2 R5-3 to R5-5:
+  Result: red on bc650be: TestInstallScriptWarnsWhenBinaryNotRootOwned subcases user-owned binary (+ with a space),
+  group-writable dir, user-owned dir, user-owned parent, sticky world-writable dir such as /tmp, user-owned dir in a
+  sticky parent (chown/chmod printed, no parent walk); `root-owned dir in a sticky parent` stays quiet. Every subcase
+  asserts no `chown`/`chmod` in the output. Fix: `find_first_unsafe_install_path` walks the binary, the resolved
+  directory and each parent to / (`stat -c '%u %a'`; unsafe if not uid 0, or 022 bits without the sticky bit; a
+  sticky directory is reached only when everything below it is root-owned); the warning names the first unsafe path
+  (quoted), "writable only by root along its whole path, such as /usr/local/bin" and
+  https://ccattler.org/installation#quick-install. No chown, chmod or sudoers text in install.sh.
+- [x] 3r.2 R5-3 to R5-5:
   - the secure_path check accepts the given or the resolved spelling (subcase `symlinked dir on path`);
   - `TestInstallScriptRefusesUnusableInstallPath` covers `-`, a newline and a directory that cannot be entered (the
     error names the given path).
 
   Red first.
-- [ ] 3r.3 R5-6 and R5-7: a subcase for a path with `'`; one variable for the quoted binary path; a typed constant
+  Result: red on bc650be: `symlinked dir on path` (false warning); TestInstallScriptRefusesUnusableInstallPath dash,
+  newline, cannot be entered (the latter asserts the path is in install.sh's own error after the log_error marker,
+  since dash's cd message alone already named it). Fix: `requested_install_path` keeps the given value; `-` and
+  newlines refused before mkdir (`mkdir -p --`); the cd failure names the given path; secure_path matches the
+  resolved, given and trailing-slash-stripped spellings.
+- [x] 3r.3 R5-6 and R5-7: a subcase for a path with `'`; one variable for the quoted binary path; a typed constant
   for `installPathForm`; drop the no-op. Run the checks as in 3.1.
+  Result: subcase `path with a quote` (`it's install`, expected via shellQuotedForTest); `installed_binary_quoted` set
+  once and used for restorecon, secure_path and next steps; typed `installPathSpelling` constants; the no-op
+  `installed_owner=${installed_owner%% *}` removed with the old check. Checks: 41/41 install tests under /bin/sh (dash)
+  and bash; shellcheck sh and dash clean; gofmt clean; golangci-lint ./... 0 issues; go vet; go test -count=1 ./...
+  exit 0; -race ok.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

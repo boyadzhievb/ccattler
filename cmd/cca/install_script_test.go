@@ -127,21 +127,32 @@ type installScriptRun struct {
 	workDir    string   // temp directory holding every test file
 }
 
+// installPathSpelling is how a test spells INSTALL_PATH for the same directory.
+type installPathSpelling string
+
+const (
+	installPathPlain         installPathSpelling = ""               // the directory as created
+	installPathTrailingSlash installPathSpelling = "trailing slash" // "<dir>/"
+	installPathDoubleSlash   installPathSpelling = "double slash"   // "<work>//<name>"
+)
+
 // installScriptOptions selects which fakes exist and how they behave.
 type installScriptOptions struct {
-	withRestorecon     bool              // put fake restorecon and selinuxenabled on PATH
-	selinuxDisabled    bool              // make the fake selinuxenabled exit 1
-	statTable          map[string]string // "uid mode" stat reports per path ({work}, {install}, {home}); others "0 755"
-	symlinkInstallDir  bool              // make the install directory a symlink to {work}/userdir
-	unameSystem        string            // kernel name from uname -s; "" means Linux
-	relativeInstall    bool              // pass INSTALL_PATH as the relative directory name
-	installDirName     string            // install directory name under {work}; "" means "install"
-	installPathForm    string            // INSTALL_PATH spelling: "trailing slash", "double slash" or "" (plain)
-	writableInstallDir bool              // leave the install directory writable, as for a root run (no sudo)
-	restoreconFails    bool              // make the fake restorecon exit 1
-	sudoSecurePath     string            // PATH that commands run through sudo see; {install} is the install dir
-	sudoPromptsForPass bool              // make "sudo -n" fail as if a password were needed
-	cniPluginDirectory string            // CNI directory (one of installScriptCNIDirectories) given a bridge plugin, "" for none
+	withRestorecon     bool                // put fake restorecon and selinuxenabled on PATH
+	selinuxDisabled    bool                // make the fake selinuxenabled exit 1
+	statTable          map[string]string   // "uid mode" stat reports per path ({work}, {install}, {home}); others "0 755"
+	symlinkInstallDir  bool                // make the install directory a symlink to {work}/userdir
+	unameSystem        string              // kernel name from uname -s; "" means Linux
+	relativeInstall    bool                // pass INSTALL_PATH as the relative directory name
+	installDirName     string              // install directory name under {work}; "" means "install"
+	installPathForm    installPathSpelling // how INSTALL_PATH spells the install directory
+	installPathValue   string              // raw INSTALL_PATH ({work} expanded); overrides the directory spellings
+	unenterableDir     bool                // create {work}/locked with mode 000 (a directory that cannot be entered)
+	writableInstallDir bool                // leave the install directory writable, as for a root run (no sudo)
+	restoreconFails    bool                // make the fake restorecon exit 1
+	sudoSecurePath     string              // PATH that commands run through sudo see; {install} is the install dir
+	sudoPromptsForPass bool                // make "sudo -n" fail as if a password were needed
+	cniPluginDirectory string              // CNI directory (one of installScriptCNIDirectories) given a bridge plugin, "" for none
 }
 
 // writeFakeExecutable writes an executable shell script into directory.
@@ -232,6 +243,13 @@ func prepareInstallScriptBin(t *testing.T, workDirectory string, options install
 			t.Fatalf("mkdir: %v", mkdirError)
 		}
 	}
+	if options.unenterableDir {
+		lockedDirectory := filepath.Join(workDirectory, "locked")
+		if mkdirError := os.Mkdir(lockedDirectory, 0o000); mkdirError != nil {
+			t.Fatalf("mkdir: %v", mkdirError)
+		}
+		t.Cleanup(func() { _ = os.Chmod(lockedDirectory, 0o750) }) // #nosec G302 -- restore so TempDir cleanup can remove it
+	}
 	if options.symlinkInstallDir {
 		if linkError := os.Symlink(realInstallDirectory, installDirectory); linkError != nil {
 			t.Fatalf("symlink: %v", linkError)
@@ -282,9 +300,11 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 	switch {
 	case options.relativeInstall:
 		installPathValue = filepath.Base(installDirectory)
-	case options.installPathForm == "trailing slash":
+	case options.installPathValue != "":
+		installPathValue = expandInstallTestPaths(options.installPathValue, workDirectory, installDirectory)
+	case options.installPathForm == installPathTrailingSlash:
 		installPathValue = installDirectory + "/"
-	case options.installPathForm == "double slash":
+	case options.installPathForm == installPathDoubleSlash:
 		installPathValue = workDirectory + "//" + filepath.Base(installDirectory)
 	}
 	command.Env = []string{
@@ -468,11 +488,14 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 			statTable: map[string]string{"{work}/userdir": userOwned}}, wantNotice: true, wantWarning: true},
 		{name: "relative path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", relativeInstall: true}, wantNotice: true, wantWarning: true},
 		{name: "macOS", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true, unameSystem: "Darwin"}},
-		{name: "trailing slash on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", installPathForm: "trailing slash"}},
-		{name: "double slash", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installPathForm: "double slash"},
+		{name: "trailing slash on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", installPathForm: installPathTrailingSlash}},
+		{name: "double slash", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installPathForm: installPathDoubleSlash},
 			wantNotice: true, wantWarning: true},
 		{name: "path with a space", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installDirName: "my install"},
 			wantNotice: true, wantWarning: true},
+		{name: "path with a quote", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installDirName: "it's install"},
+			wantNotice: true, wantWarning: true},
+		{name: "symlinked dir on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", symlinkInstallDir: true}},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -492,7 +515,7 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 			wantedNextStep := "4. sudo cca status"
 			if testCase.wantWarning {
 				// The path is normalized (symlinks resolved) and quoted in the printed command.
-				wantedNextStep = "4. sudo '" + physicalPath(t, run.installDir) + "/cca' status"
+				wantedNextStep = "4. sudo " + shellQuotedForTest(physicalPath(t, run.installDir)+"/cca") + " status"
 				if !strings.Contains(run.output, "secure_path step: "+installScriptSecurePathGuideLink) {
 					t.Errorf("warning does not name the guide's secure_path step; output:\n%s", run.output)
 				}
@@ -514,26 +537,40 @@ func physicalPath(t *testing.T, path string) string {
 	return resolvedPath
 }
 
+// shellQuotedForTest single-quotes text as install.sh's shell_quoted does.
+func shellQuotedForTest(text string) string {
+	return "'" + strings.ReplaceAll(text, "'", `'\''`) + "'"
+}
+
+// installScriptGuideQuickInstallLink is the guide section the ownership warning links.
+const installScriptGuideQuickInstallLink = "https://ccattler.org/installation#quick-install"
+
 // TestInstallScriptWarnsWhenBinaryNotRootOwned: on Linux, when the binary is not owned
-// by uid 0, or its directory is not root-owned or is group- or world-writable (old
-// Debian root:staff 2775), install.sh warns that whoever owns the binary or can write
-// its directory can change what systemd and sudo run as root, and that the directory
-// must be writable only by root; every path in the warning is quoted.
+// by uid 0, or the install directory or a parent up to / is not root-owned or is group-
+// or world-writable (a sticky parent is safe when root owns its child on the path),
+// install.sh warns naming the first unsafe path (quoted), says to use a directory
+// writable only by root along its whole path, such as /usr/local/bin, and links the
+// guide. It never prints chown, chmod or another privileged command.
 func TestInstallScriptWarnsWhenBinaryNotRootOwned(t *testing.T) {
+	userOwned := "1000 755"
 	for _, testCase := range []struct {
 		name           string            // subcase name
 		installDirName string            // install directory name, "" for "install"
 		statTable      map[string]string // owner and mode stat reports; unlisted paths are root-owned 0755
-		wantFirstLine  string            // what the warning names first; {dir} is the quoted directory; "" for none
+		wantUnsafePath string            // first unsafe path ({install}, {work}); "" for no warning
 	}{
 		{name: "root-owned"},
-		{name: "user-owned", statTable: map[string]string{"{install}/cca": "1000 755"}, wantFirstLine: "{cca} is owned by uid 1000"},
-		{name: "user-owned, path with a space", installDirName: "my install",
-			statTable: map[string]string{"{install}/cca": "1000 755"}, wantFirstLine: "{cca} is owned by uid 1000"},
-		{name: "root-owned binary, group-writable dir", statTable: map[string]string{"{install}": "0 2775"},
-			wantFirstLine: "{dir} is group- or world-writable"},
-		{name: "root-owned binary, user-owned dir", statTable: map[string]string{"{install}": "1000 755"},
-			wantFirstLine: "{dir} is owned by uid 1000"},
+		{name: "user-owned binary", statTable: map[string]string{"{install}/cca": userOwned}, wantUnsafePath: "{install}/cca"},
+		{name: "user-owned binary, path with a space", installDirName: "my install",
+			statTable: map[string]string{"{install}/cca": userOwned}, wantUnsafePath: "{install}/cca"},
+		{name: "group-writable dir", statTable: map[string]string{"{install}": "0 2775"}, wantUnsafePath: "{install}"},
+		{name: "user-owned dir", statTable: map[string]string{"{install}": userOwned}, wantUnsafePath: "{install}"},
+		{name: "user-owned parent", statTable: map[string]string{"{work}": userOwned}, wantUnsafePath: "{work}"},
+		{name: "sticky world-writable dir such as /tmp", statTable: map[string]string{"{install}": "0 1777", "{install}/cca": userOwned},
+			wantUnsafePath: "{install}/cca"},
+		{name: "root-owned dir in a sticky parent", statTable: map[string]string{"{work}": "0 1777"}},
+		{name: "user-owned dir in a sticky parent", statTable: map[string]string{"{work}": "0 1777", "{install}": userOwned},
+			wantUnsafePath: "{install}"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			run := runInstallScriptWithFakes(t, installScriptOptions{sudoSecurePath: "/usr/bin:{install}", writableInstallDir: true,
@@ -541,21 +578,57 @@ func TestInstallScriptWarnsWhenBinaryNotRootOwned(t *testing.T) {
 			if run.exitError != nil {
 				t.Fatalf("install.sh failed: %v\n%s", run.exitError, run.output)
 			}
-			quotedDirectory := "'" + physicalPath(t, run.installDir) + "'"
-			quotedBinary := "'" + physicalPath(t, run.installDir) + "/cca'"
-			wantWarning := testCase.wantFirstLine != ""
-			wantedParts := []string{
-				"can write " + quotedDirectory,
-				"writable only by root",
-				"sudo chown root:root " + quotedDirectory + " && sudo chmod 0755 " + quotedDirectory,
+			if strings.Contains(run.output, "chown") || strings.Contains(run.output, "chmod") {
+				t.Errorf("install.sh printed a chown or chmod command:\n%s", run.output)
 			}
+			wantWarning := testCase.wantUnsafePath != ""
+			wantedParts := []string{"writable only by root along its whole path", "/usr/local/bin", installScriptGuideQuickInstallLink}
 			if wantWarning {
-				wantedParts = append(wantedParts,
-					strings.NewReplacer("{dir}", quotedDirectory, "{cca}", quotedBinary).Replace(testCase.wantFirstLine))
+				unsafePath := expandInstallTestPaths(testCase.wantUnsafePath, physicalPath(t, run.workDir), physicalPath(t, run.installDir))
+				wantedParts = append(wantedParts, shellQuotedForTest(unsafePath)+" can be changed by someone other than root")
 			}
 			for _, wantedPart := range wantedParts {
 				if hasPart := strings.Contains(run.output, wantedPart); hasPart != wantWarning {
 					t.Errorf("warning part %q present = %v, want %v; output:\n%s", wantedPart, hasPart, wantWarning, run.output)
+				}
+			}
+		})
+	}
+}
+
+// installScriptErrorMarker starts every line install.sh's log_error prints.
+const installScriptErrorMarker = "\033[1;31m==>"
+
+// TestInstallScriptRefusesUnusableInstallPath: INSTALL_PATH "-", a value with a
+// newline, or a directory that cannot be entered stops install.sh with an error
+// containing the given path, and nothing is installed.
+func TestInstallScriptRefusesUnusableInstallPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can enter a mode-000 directory")
+	}
+	for _, testCase := range []struct {
+		name    string               // subcase name
+		options installScriptOptions // the INSTALL_PATH under test
+	}{
+		{name: "dash", options: installScriptOptions{installPathValue: "-"}},
+		{name: "newline", options: installScriptOptions{installPathValue: "{work}/new\nline"}},
+		{name: "cannot be entered", options: installScriptOptions{installPathValue: "{work}/locked", unenterableDir: true}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			testCase.options.sudoSecurePath = "/usr/bin"
+			run := runInstallScriptWithFakes(t, testCase.options)
+			if run.exitError == nil {
+				t.Errorf("install.sh accepted INSTALL_PATH %q; output:\n%s", testCase.options.installPathValue, run.output)
+			}
+			givenPath := expandInstallTestPaths(testCase.options.installPathValue, run.workDir, run.installDir)
+			// The path must be in install.sh's own error (log_error's red marker), not only in a shell message.
+			errorIndex := strings.Index(run.output, installScriptErrorMarker)
+			if errorIndex < 0 || !strings.Contains(run.output[errorIndex:], givenPath) {
+				t.Errorf("install.sh error does not contain the given path %q; output:\n%s", givenPath, run.output)
+			}
+			for _, toolCall := range run.toolCalls {
+				if strings.HasPrefix(toolCall, "install ") || strings.HasPrefix(toolCall, "sudo install ") {
+					t.Errorf("installed although the path is unusable: %s", toolCall)
 				}
 			}
 		})
