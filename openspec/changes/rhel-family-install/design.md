@@ -1,0 +1,137 @@
+# Design
+
+## Context
+
+See proposal.md (Why) for the Rocky 9.8 findings. The code paths involved, checked on 2026-11-24:
+
+- **`scripts/install.sh:69`** installs `cca` from a `mktemp -d` directory with `sudo install -m 755`. On the Rocky VM
+  the file kept `user_tmp_t`; `restorecon -v` relabelled it to `bin_t`, and the units started. The install directory
+  defaults to `/usr/local/bin` (`CCA_INSTALL_DIR`).
+- **`cmd/cca/command_init.go`** builds `setup.sh` as a string.
+  - The etcd step (:316-340) clears `/etc/default/etcd`, finds `ETCD_BIN=$(command -v etcd)` and writes only the
+    drop-in `etcd.service.d/tls.conf` (`ExecStart=` override plus TLS and listen environment).
+  - The firewall step (:276-290) opens 4789/udp and the API port in ufw or firewalld.
+  - The data directory variable (:263) is used only for `mkdir`, `chown` and `chmod` (:411-415). It is never passed
+    to etcd.
+- **Debian's `etcd-server` unit** (deploy controller, 2026-11-24) sets `ETCD_DATA_DIR=/var/lib/etcd/default`,
+  `ETCD_NAME=%H`, `User=etcd` and `EnvironmentFile=-/etc/default/%p`. The existing drop-in works there only because
+  of these settings.
+- **`runtime/containerd.go:54,685`:** `cniPluginDirectory = "/opt/cni/bin"`, passed as a one-element list to
+  `gocni.WithPluginDir`, which accepts several directories.
+- **The documentation sources:** `website/installation.md`, "Prepare a fresh Debian or Ubuntu host", steps 1–3, and
+  "Set up a cluster by hand".
+
+No flow in `design/runtime-invariant-flows.md` changes: host setup and binary install are not runtime flows. No store
+key is read or written differently, so there are no writers to fence and no change budget to state.
+
+## Goals / Non-Goals
+
+**Goals:**
+- `website/installation.md`, followed literally, works on a fresh RHEL-family host with SELinux enforcing and firewalld
+  on, and on Debian/Ubuntu as before.
+- Each fix is in the product where the product is wrong, not only worked around in the doc.
+
+**Non-Goals:**
+- An RPM, a dnf repository for CCattler, CI on RHEL (M276 part A covers packaging later).
+- Multi-node RHEL tests.
+- Changing the default install directory.
+
+## Decisions
+
+### D1. Relabel after install, don't change how install.sh copies
+`install.sh` runs `sudo restorecon "${INSTALL_DIR}/cca"` (or without sudo when it installed without sudo) when
+`command -v restorecon` succeeds, after the copy. `restorecon` applies the policy's label for the path, so it is
+right for any `CCA_INSTALL_DIR`.
+
+Alternatives:
+- `install -Z`: needs a coreutils built with SELinux support, which not every distribution has.
+- Downloading straight into the install directory: leaves a half-written binary on failure.
+
+### D2. Warn about secure_path; don't edit sudoers
+`install.sh` reads sudo's effective `secure_path` (`sudo -l` prints it, without a password once sudo was used, or from
+`sudo sh -c 'echo $PATH'`). If the install directory is missing from it, it prints one warning and the drop-in
+command from the doc. It does not write `/etc/sudoers.d` itself: changing sudo policy is the administrator's
+decision, and a broken sudoers file locks them out.
+
+Alternatives:
+- Installing into `/usr/bin` on RHEL: that directory belongs to the package manager.
+- A symlink in `/usr/bin`: the same objection.
+
+Kubernetes' kubeadm guide sidesteps this with packages that install to `/usr/bin`. CCattler has no packages yet (out
+of scope).
+
+### D3. setup.sh writes a full etcd unit only when none exists
+- **Finding etcd:** the etcd step looks in `$(command -v etcd)`, then `/usr/local/bin/etcd`, then `/usr/bin/etcd`.
+- **When `systemctl cat etcd.service` fails (no unit):**
+  - it creates the system user `etcd` (`useradd --system --home-dir /var/lib/etcd --shell /sbin/nologin`, or the
+    `/usr/sbin/nologin` that exists);
+  - it writes `/etc/systemd/system/etcd.service` with `Type=notify`, `User=etcd`, `ExecStart=<found binary>`,
+    `Environment=ETCD_DATA_DIR=/var/lib/etcd/default`, `Environment=ETCD_NAME=%H`, `Restart=on-failure` and
+    `LimitNOFILE=65536`.
+- **When a unit exists:** unchanged (the drop-in only).
+- **In both cases:** the TLS drop-in is written as today. It never sets `ETCD_DATA_DIR`, so an existing Debian
+  cluster keeps `/var/lib/etcd/default` (a review finding during this proposal: forcing `/var/lib/etcd` would have
+  started etcd on an empty directory).
+- **The `mkdir`/`chown` lines** create `/var/lib/etcd` as today; etcd creates `default` itself.
+
+Alternative: always write our own unit. Rejected: it would replace Debian's unit on existing clusters, a larger
+change than this bug needs.
+
+### D4. The etcd-missing message names real sources and exits non-zero
+- Debian/Ubuntu: `sudo apt install etcd-server`.
+- RHEL/AlmaLinux/Rocky: a pointer to the doc section that downloads the checksum-verified release binary.
+- `setup.sh` already runs with `set -eu`. The message path ends with `exit 1`; the old message appeared to exit 0
+  (seen through a pipe on the VM, so this is checked in the test).
+
+### D5. Open 2379/tcp next to the API port
+- firewalld: `--add-port=2379/tcp`.
+- ufw: `ufw allow 2379/tcp comment 'CCattler etcd clients'`.
+- Peer port 2380 is not opened: there is no HA etcd setup in `cca init` (see M184).
+
+### D6. CNI search path
+`cniPluginDirectories = []string{"/opt/cni/bin", "/usr/libexec/cni", "/usr/lib/cni"}`, passed to
+`gocni.WithPluginDir`. The CNI library takes the first directory that has the plugin, so `/opt/cni/bin` keeps
+priority and existing hosts behave the same.
+
+### D7. Documentation layout
+- The section becomes "Prepare a fresh host".
+- Steps 2 and 3 get two blocks each: **Debian/Ubuntu** (as today) and **RHEL, AlmaLinux, Rocky** (`dnf`).
+- RHEL containerd: Docker's repository with `dnf config-manager --add-repo
+  https://download.docker.com/linux/rhel/docker-ce.repo` and `containerd.io` (user decision 2026-11-24). It brings
+  `container-selinux`.
+- RHEL CNI: `dnf install containernetworking-plugins` (AppStream), possible after D6; the tarball stays as the
+  fallback.
+- etcd on RHEL: the release binary with `SHA256SUMS` verification, version pinned to the 3.5 line the deploy cluster
+  runs.
+- Architecture from `uname -m` (x86_64→amd64, aarch64→arm64) for both families.
+- Step 1 gets the "you already have sudo" variant of the passwordless drop-in, and a `secure_path` note.
+- A short "SELinux and firewalld" paragraph: both stay on; what `setup.sh` opens; `container-selinux` comes with
+  containerd.io.
+
+## Failure cases
+
+| Case | Behaviour |
+|---|---|
+| `restorecon` missing (Debian) | The step is skipped; no output |
+| `restorecon` fails | install.sh prints a warning with the command to run by hand; the install itself succeeded |
+| sudo needs a password while install.sh checks `secure_path` | It cannot read `secure_path` without prompting: it prints the general note instead of guessing |
+| etcd unit exists but is masked | `systemctl cat` succeeds, so no full unit is written; etcd fails to start as before, and the journal hint in the doc covers it |
+| `useradd` missing | It falls back to `adduser --system`; otherwise it stops with a message |
+| A host with both `/opt/cni/bin` and `/usr/libexec/cni` | `/opt/cni/bin` wins (first in the list) |
+| Rerun of setup.sh on a host where it wrote the unit | `systemctl cat` now succeeds, so it keeps that unit; same data directory |
+
+## Risks / Trade-offs
+
+- **[Debian path broken by the setup.sh change]** → mitigations:
+  - `TestSetupScriptKeepsDistributionEtcdUnit`;
+  - the guide rerun on the Debian docs host;
+  - the full Deploy Testbed run, Debian with `etcd-server`.
+- **[Docker's repository changes or drops RHEL]** → the doc names EPEL `containerd` as the alternative in one
+  sentence, with the CRB requirement.
+- **[A test of a shell script in Go is brittle]** → the install.sh tests run the real script with fake `sudo`,
+  `install`, `restorecon` and `curl` on `PATH` and a local release file. They assert calls, not wording.
+
+## Migration Plan
+
+No data migration. Existing Debian clusters see no change from rerunning `setup.sh` (D3). Rollback is a revert of the
+commit.
