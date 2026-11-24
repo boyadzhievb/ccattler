@@ -296,7 +296,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString(buildSetupScriptEtcdStep(advertiseAddress))
 
 	scriptBuilder.WriteString("echo '==> Writing etcd endpoints for CLI auto-detection'\n")
-	scriptBuilder.WriteString("echo 'https://127.0.0.1:2379' > /etc/ccattler/endpoints\n")
+	fmt.Fprintf(&scriptBuilder, "echo 'https://127.0.0.1:%s' > /etc/ccattler/endpoints\n", setupScriptEtcdClientPort)
 	scriptBuilder.WriteString("chmod 600 /etc/ccattler/endpoints\n\n")
 
 	scriptBuilder.WriteString("echo '==> Installing systemd units'\n")
@@ -316,7 +316,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("  --key /etc/ccattler/pki/node-key.pem \\\n")
 	scriptBuilder.WriteString("  --ca /etc/ccattler/pki/ca.pem \\\n")
 	scriptBuilder.WriteString("  --ca-key /etc/ccattler/pki/ca-key.pem \\\n")
-	scriptBuilder.WriteString("  --endpoints https://127.0.0.1:2379 \\\n")
+	fmt.Fprintf(&scriptBuilder, "  --endpoints https://127.0.0.1:%s \\\n", setupScriptEtcdClientPort)
 	scriptBuilder.WriteString("  --etcd-cert /etc/ccattler/pki/node.pem \\\n")
 	scriptBuilder.WriteString("  --etcd-key /etc/ccattler/pki/node-key.pem \\\n")
 	if vipCIDR != "" {
@@ -375,7 +375,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 
 	scriptBuilder.WriteString("# Verify etcd is healthy with TLS.\n")
 	scriptBuilder.WriteString("if command -v etcdctl >/dev/null 2>&1; then\n")
-	scriptBuilder.WriteString("    if etcdctl --endpoints=https://127.0.0.1:2379 \\\n")
+	fmt.Fprintf(&scriptBuilder, "    if etcdctl --endpoints=https://127.0.0.1:%s \\\n", setupScriptEtcdClientPort)
 	scriptBuilder.WriteString("        --cacert /etc/ccattler/pki/ca.pem \\\n")
 	scriptBuilder.WriteString("        --cert /etc/ccattler/pki/node.pem \\\n")
 	scriptBuilder.WriteString("        --key /etc/ccattler/pki/node-key.pem \\\n")
@@ -438,6 +438,9 @@ func buildSetupScriptEtcdStep(advertiseAddress string) string {
 	scriptBuilder.WriteString("# ETCD_BIN comes from the lookup above.\n")
 	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<ETCD_OVERRIDE\n")
 	scriptBuilder.WriteString("[Service]\n")
+	scriptBuilder.WriteString("# Drop the base unit's EnvironmentFile (Debian: /etc/default/etcd), whose\n")
+	scriptBuilder.WriteString("# variables would override the TLS settings below.\n")
+	scriptBuilder.WriteString("EnvironmentFile=\n")
 	scriptBuilder.WriteString("# Clear base unit ExecStart to prevent flag/env conflicts (RHEL ships\n")
 	scriptBuilder.WriteString("# etcd with --listen-client-urls flags; etcd 3.5+ rejects duplicate config).\n")
 	scriptBuilder.WriteString("ExecStart=\n")
@@ -517,5 +520,8 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 ETCD_UNIT
+    # Started at boot even if cca-server is not enabled; a distribution unit is enabled by its package.
+    systemctl daemon-reload
+    systemctl enable etcd.service
 fi
 `

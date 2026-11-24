@@ -148,16 +148,19 @@ run_as_installer() {
     fi
 }
 
-if [ ! -w "$INSTALL_PATH" ]; then
+if [ -w "$INSTALL_PATH" ]; then
+    install -m 0755 "${temp_dir}/cca" "${INSTALL_PATH}/cca"
+else
     log_info "Writing to ${INSTALL_PATH} requires elevated permissions."
     use_sudo="yes"
+    # root:root, so the installing user cannot replace what systemd and sudo run as root.
+    sudo install -o 0 -g 0 -m 0755 "${temp_dir}/cca" "${INSTALL_PATH}/cca"
 fi
-run_as_installer mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
-chmod +x "${INSTALL_PATH}/cca"
 
-# mv keeps the temp file's SELinux label (user_tmp_t), which systemd cannot
-# execute; restorecon applies the policy label for the install path.
-if command -v restorecon >/dev/null 2>&1; then
+# The copy keeps the temp file's SELinux label (user_tmp_t), which systemd
+# cannot execute; restorecon applies the policy label for the install path.
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled \
+    && command -v restorecon >/dev/null 2>&1; then
     if ! run_as_installer restorecon "${INSTALL_PATH}/cca"; then
         log_warn "Could not restore the SELinux label of ${INSTALL_PATH}/cca; systemd cannot start it until you run:"
         log_warn "  sudo restorecon ${INSTALL_PATH}/cca"
@@ -166,8 +169,24 @@ fi
 
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
 
-# --- sudo's secure_path: 'sudo cca' fails when INSTALL_PATH is not on it ---
-if command -v sudo >/dev/null 2>&1; then
+# install_path_is_safe_for_sudo: INSTALL_PATH is absolute, made of plain path
+# characters, root-owned and not group- or world-writable, so adding it to sudo's
+# secure_path does not let another user plant commands that sudo runs as root.
+install_path_is_safe_for_sudo() {
+    case "$INSTALL_PATH" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "$INSTALL_PATH" in
+        *[!A-Za-z0-9/._-]*) return 1 ;;
+    esac
+    owner_and_mode=$(stat -L -c '%u %a' "$INSTALL_PATH" 2>/dev/null) || return 1
+    [ "${owner_and_mode%% *}" = "0" ] || return 1
+    [ $((0${owner_and_mode##* } & 022)) -eq 0 ]
+}
+
+# --- sudo's secure_path (Linux): 'sudo cca' fails when INSTALL_PATH is not on it ---
+if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1 && install_path_is_safe_for_sudo; then
     # -n never prompts; without cached credentials sudo's PATH cannot be read.
     if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
         log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path:"
@@ -177,9 +196,10 @@ if command -v sudo >/dev/null 2>&1; then
             *":${INSTALL_PATH}:"*) ;;
             *)
                 log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path (${sudo_path})."
-                log_warn "Call 'sudo ${INSTALL_PATH}/cca', or add the directory with a sudoers drop-in:"
-                log_warn "  echo 'Defaults secure_path=\"${sudo_path}:${INSTALL_PATH}\"' | sudo tee /etc/sudoers.d/ccattler-secure-path"
-                log_warn "  sudo chmod 0440 /etc/sudoers.d/ccattler-secure-path && sudo visudo -cf /etc/sudoers.d/ccattler-secure-path"
+                log_warn "Call 'sudo ${INSTALL_PATH}/cca', or add the directory with a checked sudoers drop-in:"
+                log_warn "  sudoers_file=\$(mktemp)"
+                log_warn "  echo 'Defaults secure_path=\"${sudo_path}:${INSTALL_PATH}\"' > \"\$sudoers_file\""
+                log_warn "  sudo visudo -cf \"\$sudoers_file\" && sudo install -o 0 -g 0 -m 0440 \"\$sudoers_file\" /etc/sudoers.d/ccattler-secure-path"
                 ;;
         esac
     fi

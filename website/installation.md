@@ -53,21 +53,26 @@ from the table above (`su` asks for the root password; `su -` with the dash give
 
 ```bash
 su - -c "apt install -y sudo \
-  && echo 'USERNAME ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/USERNAME-nopasswd \
-  && chmod 0440 /etc/sudoers.d/USERNAME-nopasswd \
-  && visudo -cf /etc/sudoers.d/USERNAME-nopasswd"
+  && echo 'USERNAME ALL=(ALL) NOPASSWD: ALL' > /root/USERNAME-nopasswd \
+  && visudo -cf /root/USERNAME-nopasswd \
+  && install -o root -g root -m 0440 /root/USERNAME-nopasswd /etc/sudoers.d/USERNAME-nopasswd \
+  && rm /root/USERNAME-nopasswd"
 ```
 
 If you already have sudo (for example the first user on Ubuntu or Rocky), write the same file with it:
 
 ```bash
-echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/$USER-nopasswd
-sudo chmod 0440 /etc/sudoers.d/$USER-nopasswd
-sudo visudo -cf /etc/sudoers.d/$USER-nopasswd
+sudoers_file=$(mktemp)
+echo "$USER ALL=(ALL) NOPASSWD: ALL" > "$sudoers_file"
+sudo visudo -cf "$sudoers_file" \
+  && sudo install -o root -g root -m 0440 "$sudoers_file" "/etc/sudoers.d/$USER-nopasswd"
+rm "$sudoers_file"
 ```
 
-`visudo -cf` checks the syntax, because a broken sudoers file can lock you out of sudo. The file name must not contain
-a `.`, because sudo ignores such files. To remove it: `sudo rm /etc/sudoers.d/USERNAME-nopasswd`. Interactive installs
+Both write the rule to a file outside `/etc/sudoers.d` first and install it only after `visudo -cf` has checked the
+syntax, because a broken sudoers file can lock you out of sudo. The file name in `/etc/sudoers.d` must not contain a
+`.` (sudo silently ignores such files), so if your user name has one, use another file name, such as
+`first_last-nopasswd`. To remove it: `sudo rm /etc/sudoers.d/USERNAME-nopasswd`. Interactive installs
 do not need this.
 
 **`sudo cca` on RHEL, AlmaLinux and Rocky.** sudo there runs commands with its own `secure_path`
@@ -76,10 +81,11 @@ do not need this.
 the quick install warns when it is missing):
 
 ```bash
-echo 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"' \
-    | sudo tee /etc/sudoers.d/ccattler-secure-path
-sudo chmod 0440 /etc/sudoers.d/ccattler-secure-path
-sudo visudo -cf /etc/sudoers.d/ccattler-secure-path
+sudoers_file=$(mktemp)
+echo 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"' > "$sudoers_file"
+sudo visudo -cf "$sudoers_file" \
+  && sudo install -o root -g root -m 0440 "$sudoers_file" /etc/sudoers.d/ccattler-secure-path
+rm "$sudoers_file"
 ```
 
 Or call `cca` by its full path: `sudo /usr/local/bin/cca …`.
@@ -136,20 +142,27 @@ sudo systemctl enable --now containerd
 sudo dnf install -y containernetworking-plugins
 
 # Control-plane host only: etcd. No EL9 repository ships it, so install the release binary,
-# checked against the release's SHA256SUMS
+# checked against the SHA-256 pinned here (see below). Each step runs only if the one before succeeded.
 ETCD_VERSION=3.5.36
+case "$ARCH" in
+    amd64) ETCD_SHA256=2733753e388c044b178290dd35fb1263f919254b882f602425848b8c13b54e6d ;;
+    arm64) ETCD_SHA256=f1b93e5089b3f4b3e6d40b8377475e8ee675bbcc971de553daa9a79143441993 ;;
+esac
 ETCD_RELEASE="etcd-v${ETCD_VERSION}-linux-${ARCH}"
-cd "$(mktemp -d)"
-curl -fsSLO "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/${ETCD_RELEASE}.tar.gz"
-curl -fsSLO "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/SHA256SUMS"
-grep " ${ETCD_RELEASE}.tar.gz\$" SHA256SUMS | sha256sum -c -
-tar -xzf "${ETCD_RELEASE}.tar.gz"
-sudo install -m 755 "${ETCD_RELEASE}/etcd" "${ETCD_RELEASE}/etcdctl" /usr/local/bin/
-sudo restorecon /usr/local/bin/etcd /usr/local/bin/etcdctl   # SELinux label for systemd
-cd -
+cd "$(mktemp -d)" \
+  && curl -fsSLO "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/${ETCD_RELEASE}.tar.gz" \
+  && echo "${ETCD_SHA256}  ${ETCD_RELEASE}.tar.gz" | sha256sum -c - \
+  && tar -xzf "${ETCD_RELEASE}.tar.gz" \
+  && sudo install -o root -g root -m 0755 "${ETCD_RELEASE}/etcd" "${ETCD_RELEASE}/etcdctl" /usr/local/bin/ \
+  && sudo restorecon /usr/local/bin/etcd /usr/local/bin/etcdctl \
+  && cd -
 ```
 
-`sha256sum -c` must print `OK`; stop if it does not. If the CNI package is not available, the Debian tarball commands
+`sha256sum -c` must print `OK`; if it prints `FAILED`, nothing is installed. The two SHA-256 values are copied from the
+`SHA256SUMS` file of the [etcd v3.5.36 release](https://github.com/etcd-io/etcd/releases/tag/v3.5.36)
+(`https://github.com/etcd-io/etcd/releases/download/v3.5.36/SHA256SUMS`, read 2026-11-24); a different
+`ETCD_VERSION` needs the values from that version's file. `restorecon` gives the binaries the SELinux label systemd
+needs. If the CNI package is not available, the Debian tarball commands
 above work too (into `/opt/cni/bin`). If you cannot use Docker's repository, EPEL also ships `containerd`; EPEL needs
 the CRB repository enabled (`sudo dnf config-manager --set-enabled crb && sudo dnf install -y epel-release`).
 

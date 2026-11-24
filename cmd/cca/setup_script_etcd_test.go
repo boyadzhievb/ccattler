@@ -68,9 +68,9 @@ type setupScriptStepRun struct {
 }
 
 // readRootFile returns the content of a root-relative file, or "" when it does not exist.
-func (stepRun setupScriptStepRun) readRootFile(t *testing.T, rootRelativePath string) string {
+func (setupScriptStepRun setupScriptStepRun) readRootFile(t *testing.T, rootRelativePath string) string {
 	t.Helper()
-	content, readError := os.ReadFile(filepath.Join(stepRun.rootPath, rootRelativePath)) // #nosec G304 -- test temp file
+	content, readError := os.ReadFile(filepath.Join(setupScriptStepRun.rootPath, rootRelativePath)) // #nosec G304 -- test temp file
 	if readError != nil {
 		return ""
 	}
@@ -168,6 +168,9 @@ func TestSetupScriptWritesEtcdUnitWhenNoneExists(t *testing.T) {
 	if dropIn := stepRun.readRootFile(t, etcdDropInPath); !strings.Contains(dropIn, "ETCD_CERT_FILE") {
 		t.Errorf("TLS drop-in not written; content:\n%s", dropIn)
 	}
+	if !slices.Contains(stepRun.toolCalls, "systemctl enable etcd.service") {
+		t.Errorf("the written etcd.service is not enabled; calls:\n%s", strings.Join(stepRun.toolCalls, "\n"))
+	}
 }
 
 // TestSetupScriptKeepsDistributionEtcdUnit: when etcd.service exists, the etcd step
@@ -182,13 +185,17 @@ func TestSetupScriptKeepsDistributionEtcdUnit(t *testing.T) {
 		t.Errorf("distribution etcd.service was replaced:\n%s", unitContent)
 	}
 	for _, toolCall := range stepRun.toolCalls {
-		if strings.HasPrefix(toolCall, "useradd ") {
-			t.Errorf("etcd user created although the distribution unit exists: %s", toolCall)
+		if strings.HasPrefix(toolCall, "useradd ") || strings.HasPrefix(toolCall, "systemctl enable") {
+			t.Errorf("distribution unit exists, yet setup.sh ran: %s", toolCall)
 		}
 	}
 	dropIn := stepRun.readRootFile(t, etcdDropInPath)
 	if !strings.Contains(dropIn, "ETCD_CERT_FILE") {
 		t.Errorf("TLS drop-in not written; content:\n%s", dropIn)
+	}
+	// An empty EnvironmentFile= drops the base unit's files, which could override the TLS settings.
+	if !strings.Contains(dropIn, "\nEnvironmentFile=\n") {
+		t.Errorf("drop-in does not reset EnvironmentFile:\n%s", dropIn)
 	}
 	for _, forbiddenSetting := range []string{"ETCD_DATA_DIR", "ETCD_NAME"} {
 		if strings.Contains(dropIn, forbiddenSetting) {

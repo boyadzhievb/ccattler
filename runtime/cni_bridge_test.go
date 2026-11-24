@@ -6,6 +6,8 @@ package runtime
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -87,5 +89,24 @@ func TestContainerdRuntimeCNIPluginDirectories(t *testing.T) {
 	wantedDirectories := []string{"/opt/cni/bin", "/usr/libexec/cni", "/usr/lib/cni"}
 	if pluginDirectories := cniNetwork.GetConfig().PluginDirs; !slices.Equal(pluginDirectories, wantedDirectories) {
 		t.Errorf("CNI plugin directories = %v, want %v", pluginDirectories, wantedDirectories)
+	}
+}
+
+// installScriptCNILoopPattern matches the CNI directory loop in the root install.sh.
+var installScriptCNILoopPattern = regexp.MustCompile(`for cni_directory in ([^;]+); do`)
+
+// TestInstallScriptCNIDirectoriesMatchAgent: install.sh's prerequisite check looks
+// in the same CNI directories, in the same order, as the agent (one list per language).
+func TestInstallScriptCNIDirectoriesMatchAgent(t *testing.T) {
+	scriptContent, readError := os.ReadFile(filepath.Join("..", "install.sh"))
+	if readError != nil {
+		t.Fatalf("read install.sh: %v", readError)
+	}
+	loopMatch := installScriptCNILoopPattern.FindSubmatch(scriptContent)
+	if loopMatch == nil {
+		t.Fatal("install.sh has no `for cni_directory in ...; do` loop")
+	}
+	if scriptDirectories := strings.Fields(string(loopMatch[1])); !slices.Equal(scriptDirectories, cniPluginDirectories) {
+		t.Errorf("install.sh CNI directories = %v, agent cniPluginDirectories = %v", scriptDirectories, cniPluginDirectories)
 	}
 }
