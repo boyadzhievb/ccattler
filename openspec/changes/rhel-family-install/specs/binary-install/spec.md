@@ -63,7 +63,7 @@ directory and how to call `cca` by its full path, and its next steps SHALL use t
 #### Scenario: Directory missing from secure_path, full-path advice
 - **GIVEN** sudo's `secure_path` is `/sbin:/bin:/usr/sbin:/usr/bin` and the install directory is `/usr/local/bin`
 - **WHEN** `install.sh` finishes
-- **THEN** it warns that `sudo` will not find `cca` there and its next steps call `sudo /usr/local/bin/cca status`
+- **THEN** it warns that `sudo` will not find `cca` there and its next steps call `sudo '/usr/local/bin/cca' status` (every printed path single-quoted; user decision 2026-11-24, option a)
 - Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `missing`)
 
 ### Requirement: install.sh prints no sudoers text
@@ -75,7 +75,7 @@ apply, 2026-11-24, user decision on review round 3, option a: three rounds found
 - **GIVEN** sudo's `secure_path` is `/sbin:/bin:/usr/sbin:/usr/bin` and the install directory is `/usr/local/bin`
 - **WHEN** `install.sh` finishes
 - **THEN** its output contains no `Defaults secure_path` and no `/etc/sudoers.d` command; it names the guide's
-  `secure_path` step (installation page link), and the next steps call `sudo /usr/local/bin/cca`
+  `secure_path` step (installation page link), and the next steps call `sudo '/usr/local/bin/cca'`
 - Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `missing`)
 
 #### Scenario: Unusual paths never reach sudoers text
