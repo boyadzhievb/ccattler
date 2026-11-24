@@ -7,9 +7,12 @@ scenario tests to write first; group 1 records the baseline that the move is che
 
 - [x] 1.1 Start on a clean tree after M267 rework 3f is committed (`git status --short` empty). Record the base
   commit (`BASE`) and `wc -l types/keys.go`.
-  Result (2026-11-24): `BASE` = ce45772 (M267 3f commit 5092aec plus the M275 proposal). Work done in a git worktree
-  (branch `m275-split-type-keys`) because M267 rework 3g is in progress in the main tree. `git status --short` printed
-  nothing; `git rev-parse HEAD` = ce45772b1301be18109f1a690976da4d0d4e736d; `wc -l types/keys.go` = `2634`.
+  Result (2026-11-24): `BASE` = 8d43699 (the M275 proposal commit, on top of M267 3g 6dbc3a4). Work done in a git
+  worktree (branch `m275-split-type-keys`) because M267 rework 3g was in progress in the main tree. `git status
+  --short` printed nothing at the start; `git rev-parse 8d43699` = 8d43699482b9e5acb5c7f7aacfe0634dab7be76d; `git show
+  8d43699:types/keys.go | wc -l` = `2634`.
+  BASE re-recorded 2026-11-24 after the rebase onto 6dbc3a4; types/keys.go is identical in ce45772 and 8d43699 (`git
+  diff --stat ce45772 8d43699 -- types` empty).
 - [x] 1.2 Record the baseline on `BASE`: `go build ./...` passes, `go test -count=1 ./types ./integration -run
   'TestDocCrossCheck'` passes, and the declaration count (`grep -c '^func ' types/keys.go`). Apply the D1 rules to
   the declarations on `BASE` and record the per-file counts; record every difference from the counts in design.md
@@ -21,7 +24,7 @@ scenario tests to write first; group 1 records the baseline that the move is che
   against an independent re-application of the rules: identical, 0 unmatched): keys.go 4 (import, `Root`, prefix
   block, shared scan block), keys_cloud 40, keys_service 39, keys_instance 33, keys_placement 31, keys_secret 31,
   keys_service_scale 28, keys_volume 27, keys_job 24, keys_rollout 22, keys_route 22, keys_tenant 20, keys_node 19,
-  keys_network 14, keys_probe 12, keys_auth 11. No difference from design.md D1: `git diff --stat 92feee5 ce45772 --
+  keys_network 14, keys_probe 12, keys_auth 11. No difference from design.md D1: `git diff --stat 92feee5 8d43699 --
   types` is empty, so nothing was added since 92feee5.
 
 ## 2. Move
@@ -31,7 +34,7 @@ scenario tests to write first; group 1 records the baseline that the move is che
   relative order. Drop the `// ----` separator lines and keep every floating comment before its declaration (D2,
   as changed on 2026-11-24; the first wording dropped floating comments too). Verify `go build ./...` and
   `go vet ./types`.
-  Result: the 15 files were generated from `git show ce45772:types/keys.go` by copying each declaration's line span
+  Result: the 15 files were generated from `git show 8d43699:types/keys.go` by copying each declaration's line span
   (doc comment included, from `go/parser`) in base order, one blank line between declarations; header lines 1-2
   copied from keys.go; `import "fmt"` added only when the file body contains `fmt.` (all 15 subject files; keys.go
   has none). Rework after the 2026-11-24 D2 change (floating comments kept): every floating comment of the base
@@ -59,8 +62,11 @@ scenario tests to write first; group 1 records the baseline that the move is che
 - [x] 2.4 Run the D3 line-multiset check against `BASE` and paste its output here. Explain every remaining line as
   one of the allowed differences (header, `package`, `import`, file map, dropped separator or floating comment); any
   other line fails this task. Verify `git diff --stat "$BASE"` lists only `types/keys*.go` and the docs of group 3.
-  Result (rework after the 2026-11-24 D2 change, floating comments kept): `BASE=ce45772`, the D3 command exits 1
-  with 120 lines of output (10 `<`, 79 `>`):
+  Result (rework after the 2026-11-24 D2 change, floating comments kept): `BASE=8d43699`, the D3 command exits 1
+  with 120 lines of output (10 `<`, 79 `>`). Rerun with `BASE=8d43699` after the rebase, before the file-map
+  wording fix: `diff` against the earlier pasted ce45772 output printed nothing (identical). Output below is after
+  the file-map wording fix (keys_cloud.go "cloud routes", keys_placement.go "cluster autoscale bounds"); it differs
+  from the previous paste only in those two `>` file-map lines:
 
   ```text
   12,21c12
@@ -113,12 +119,12 @@ scenario tests to write first; group 1 records the baseline that the move is che
   > import "fmt"
   1187a1210,1224
   > //	keys_auth.go          roles, grants, groups, policies, users
-  > //	keys_cloud.go         cloud provider, load balancers, routes, cloud identity, credentials
+  > //	keys_cloud.go         cloud provider, load balancers, cloud routes, cloud identity, credentials
   > //	keys_instance.go      instance facts
   > //	keys_job.go           jobs and cron jobs
   > //	keys_network.go       endpoints, subnets, allocations, VIPs, DNS, network policy
   > //	keys_node.go          nodes, leases, utilization, drain, pressure
-  > //	keys_placement.go     placement, groups, priority, unplaced demand, capacity requests
+  > //	keys_placement.go     placement, groups, priority, unplaced demand, capacity requests, cluster autoscale bounds
   > //	keys_probe.go         probe config and results
   > //	keys_rollout.go       update pacing, disruption budget, rollout state
   > //	keys_route.go         routes and route TLS key secret names
@@ -169,10 +175,10 @@ scenario tests to write first; group 1 records the baseline that the move is che
   :1634/:1636, :1867/:1875), the only allowed removal after the D2 change. Added (79): 15 copyright and 15 SPDX
   lines (16 files, base had one each); 15 `package types` (16 files vs 1); 14 `import "fmt"` (15 files vs 1); 20
   file-map lines in keys.go (3 prose lines, 1 `//` blank-comment line, 15 file lines and the `keys_service.go`
-  continuation). No other line. `git diff --stat ce45772`: `design/graphs/AUDIT_GRAPH.md`,
-  `design/graphs/OBSERVABILITY_GRAPH.md`, `design/graphs/STATEFUL_SERVICES_GRAPH.md`,
-  `docs/design-connection-block.md`, `openspec/changes/split-type-keys/{design,proposal,tasks}.md`, `types/keys.go`;
-  `git status --short --untracked-files=all` adds only the 15 untracked `types/keys_*.go` files.
+  continuation). No other line. `git diff --stat 8d43699` (committed move aaa1326 plus the working tree): 23 files,
+  `design/graphs/AUDIT_GRAPH.md`, `design/graphs/OBSERVABILITY_GRAPH.md`, `design/graphs/STATEFUL_SERVICES_GRAPH.md`,
+  `docs/design-connection-block.md`, `openspec/changes/split-type-keys/{design,proposal,tasks}.md`, `types/keys.go`
+  and the 15 `types/keys_*.go`; nothing else.
 
 ## 3. Docs
 
@@ -191,12 +197,12 @@ scenario tests to write first; group 1 records the baseline that the move is che
   `grep -rn 'keys\.go:\|keys_[a-z_]*\.go:' design/graphs/` shows only these refs plus unrelated
   `cmd/cca/server_secret_keys.go:*` ones. After the floating-comment rework the same greps give the same numbers
   (no kept comment precedes these declarations). Also (rework asked by the main session, 2026-11-24):
-  `docs/design-connection-block.md:235` now names `types/keys_service.go` for `KeyDesiredConnection`, `ScanDesiredConnections`,
-  `KeyDesiredServiceConnection`, `ScanDesiredServiceConnections` (`grep -n` finds them at keys_service.go:192, 197,
+  `docs/design-connection-block.md:235` now names `types/keys_service.go` for `KeyDesiredConnection`,
+  `ScanDesiredConnections`, `KeyDesiredServiceConnection`, `ScanDesiredServiceConnections` (`grep -n` finds them at keys_service.go:192, 197,
   204, 210); `design/k8s-parity-gaps.md` left alone (historical file lists).
 - [x] 3.2 `milestones.md` Phase 230: note that `TestEveryServiceKeyConstructorUsesARegisteredRoot` parses every
   non-test file in `types` after the rebase (D4). Verify the note names M275.
-  Result: already in `BASE` from the proposal commit ce45772 (`git show ce45772:milestones.md | grep -c 'Note from
+  Result: already in `BASE` from the proposal commit 8d43699 (`git show 8d43699:milestones.md | grep -c 'Note from
   M275'` = 1). `milestones.md:931` "Note from M275 (2026-11-24): …parses `keys.go` only… fails until it parses every
   non-test file in `types`"; the nearest heading above it is `:921 ### Phase 230 — Hierarchical Service Names
   Overwrite Other Services (M230, bug)`. No edit needed.
@@ -207,11 +213,43 @@ scenario tests to write first; group 1 records the baseline that the move is che
   Result (rerun after the floating-comment rework): `gofmt -l types` printed nothing; `golangci-lint run
   ./types/...` → `0 issues.`; `go vet ./types` exit 0; `go test -count=1 -json ./...` exit 0: 2880 tests pass, 5
   skip, 0 fail; packages 20 ok, 2 skip, 0 fail; `TestDocCrossCheckFactPrefixesExist` PASS ("verified 10 fact key
-  prefixes"); `openspec validate split-type-keys` → "Change 'split-type-keys' is valid".
-- [ ] 4.2 Independent correctness review (`code-reviewer`, Opus high) of `BASE..HEAD`: it reruns the D3 check
+  prefixes"); `openspec validate split-type-keys` → "Change 'split-type-keys' is valid". After the file-map wording
+  fix (comment-only, same line count; `grep -n` still gives PrefixEvent :65, PrefixAudit :82,
+  PrefixObservedTelemetry :87, so no graph change): `gofmt -l types` empty, `go build ./...` exit 0,
+  `golangci-lint run ./types/...` `0 issues.`, `go test -count=1 ./types ./integration` → `ok types 0.029s`, `ok
+  integration 8.131s`.
+- [x] 4.2 Independent correctness review (`code-reviewer`, Opus high) of `BASE..HEAD`: it reruns the D3 check
   itself and confirms the D1 placement. Record each finding as fixed or rejected with one line of reasoning.
-- [ ] 4.3 Patterns review (`code-reviewer`) of the diff against `design/Anti-pattern.md` and its references (file
+  Result (2026-11-24, on 8d43699..aaa1326, code-reviewer Opus high + Codex job review-mwuge1w0-9k93tu: APPROVE):
+  - D3 rerun: 10 separators out, 79 header/package/import/map lines in.
+  - Reviewer's go/ast check: 377 declarations, each exactly once, identical doc and body; base order kept; 15
+    floating groups kept and still floating; failures 0. A mutation (one changed character, one merged floating
+    comment) gave 5 failures.
+  - D1 rules rerun: nothing misplaced.
+  - `go doc -all ./types`: same 539 entries; const blocks appear in file order.
+  - M230 test with the split files: fails loudly ("checked only 0"); over all files it finds 107, the same as base.
+  - Graph references match; build, vet, lint and tests pass. Codex: no findings.
+  Findings:
+  - **Fixed:** BASE named ce45772, which is no longer an ancestor after the rebase; re-recorded as 8d43699 (same
+    `types/keys.go`).
+  - **Fixed:** the file map did not name the cluster autoscale bounds, now on the keys_placement.go line.
+  - **Fixed:** "routes" appeared twice in the map; keys_cloud.go now says "cloud routes".
+  - **Rejected:** two kept floating headers cover a narrower area after the split ("Observed init results are
+    per-instance" in keys_service.go, "Derived key functions" in keys_rollout.go). They were already so in the base,
+    and D2 keeps comments byte-identical.
+  - **Info, no action:** the `go doc` order differs; the API is unchanged.
+  Rechecked after the fixes: D3 differs only in the two map lines; gofmt and lint are clean; `go test ./types
+  ./integration` ok; the graph line numbers are unchanged (65, 82, 87).
+- [x] 4.3 Patterns review (`code-reviewer`) of the diff against `design/Anti-pattern.md` and its references (file
   cohesion, no duplication introduced, doc comments intact). Record each finding as fixed or rejected.
+  Result (same run, a separate section of the report): APPROVE.
+  - One subject per file, 84 to 301 lines; keys.go 191.
+  - No dead code: every one of the 432 names is used at least twice.
+  - No duplication beyond the headers.
+  - No init, iota or directives; the one package var depends only on constants, so initialization order cannot
+    change.
+  - Placement is not enforced by a test: accepted in the design (M259).
+  Suggestions 2 and 3 are fixed (see 4.2); suggestion 4 is rejected (see 4.2).
 - [ ] 4.4 One full Deploy Testbed run on the release commit or its parent (job summary says `full run`); record the
   run ID. A pure move cannot change runtime behaviour, but CLAUDE.md (M231) requires the closing run.
 

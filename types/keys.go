@@ -8,12 +8,12 @@ package types
 // constructors, scan prefixes and key constants are in its own file:
 //
 //	keys_auth.go          roles, grants, groups, policies, users
-//	keys_cloud.go         cloud provider, load balancers, routes, cloud identity, credentials
+//	keys_cloud.go         cloud provider, load balancers, cloud routes, cloud identity, credentials
 //	keys_instance.go      instance facts
 //	keys_job.go           jobs and cron jobs
 //	keys_network.go       endpoints, subnets, allocations, VIPs, DNS, network policy
 //	keys_node.go          nodes, leases, utilization, drain, pressure
-//	keys_placement.go     placement, groups, priority, unplaced demand, capacity requests
+//	keys_placement.go     placement, groups, priority, unplaced demand, capacity requests, cluster autoscale bounds
 //	keys_probe.go         probe config and results
 //	keys_rollout.go       update pacing, disruption budget, rollout state
 //	keys_route.go         routes and route TLS key secret names
