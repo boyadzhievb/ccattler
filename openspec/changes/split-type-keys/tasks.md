@@ -198,8 +198,8 @@ scenario tests to write first; group 1 records the baseline that the move is che
   `cmd/cca/server_secret_keys.go:*` ones. After the floating-comment rework the same greps give the same numbers
   (no kept comment precedes these declarations). Also (rework asked by the main session, 2026-11-24):
   `docs/design-connection-block.md:235` now names `types/keys_service.go` for `KeyDesiredConnection`,
-  `ScanDesiredConnections`, `KeyDesiredServiceConnection`, `ScanDesiredServiceConnections` (`grep -n` finds them at keys_service.go:192, 197,
-  204, 210); `design/k8s-parity-gaps.md` left alone (historical file lists).
+  `ScanDesiredConnections`, `KeyDesiredServiceConnection`, `ScanDesiredServiceConnections` (`grep -n` finds
+  them at keys_service.go:192, 197, 204, 210); `design/k8s-parity-gaps.md` left alone (historical file lists).
 - [x] 3.2 `milestones.md` Phase 230: note that `TestEveryServiceKeyConstructorUsesARegisteredRoot` parses every
   non-test file in `types` after the rebase (D4). Verify the note names M275.
   Result: already in `BASE` from the proposal commit 8d43699 (`git show 8d43699:milestones.md | grep -c 'Note from
