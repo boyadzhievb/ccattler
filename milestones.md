@@ -552,6 +552,12 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 275 — Fact Key Constructors Split by Subject (M275, refactor)
+
+Requested 2026-11-24 (user: "refactor keys.go"; option A, a pure move, chosen over option B, shared helpers that rewrite every constructor). `types/keys.go` holds all 336 key constructors in 2,634 lines (one of the five large files in the M259 measurement). They move unchanged into one file per subject (`keys_service.go`, `keys_instance.go`, `keys_node.go`, …). `keys.go` keeps the layer prefixes, the shared scan prefixes and a file map. No name, signature or key path changes. The move is checked by a line-multiset diff against the base commit. Starts after M267 rework 3f is committed. Approved by the user 2026-11-24 ("go for m275"); implemented in its own worktree while M267 3g is in progress in the main tree.
+
+OpenSpec change: [`split-type-keys`](openspec/changes/split-type-keys/) (checklist in its `tasks.md`).
+
 ### Phase 274 — Process Gates Enforced (M274)
 
 Decided 2026-11-23 (user), after reviewing an external "deterministic code factory" instruction pack whose own first limitation is that CLAUDE.md and rules steer the agent but enforce nothing. Several CCattler process rules exist only as instructions (CLAUDE.md, `openspec/config.yaml`). The same day, a YAML mistake in `openspec/config.yaml` silently dropped every proposal rule: the CLI only warned "ignoring this artifact's rules", and nothing failed.
@@ -921,6 +927,8 @@ To be proposed as an OpenSpec change when work starts. Open questions for the pr
 - Check against the store too: a name applied later can collide with a service applied earlier, in another configuration
 - Long-term: move service fields under their own key level (`desired/service/{name}/spec/{field}` or an escaped name) so the key space cannot collide — a key migration, compare M175's `network/dns/service/` note
 - Existing clusters: a startup or lint listing of names that already collide
+
+Note from M275 (2026-11-24): M275 moves the service key constructors out of `types/keys.go` into `types/keys_*.go`. The branch's `TestEveryServiceKeyConstructorUsesARegisteredRoot` parses `keys.go` only and requires at least 90 constructors, so after the rebase it fails until it parses every non-test file in `types`. Record that change as a decision in the change's `design.md`.
 
 ### Phase 217 — Scale API Safety (M217)
 
@@ -1448,6 +1456,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | **Tier 1 — High value for effort** | | |
 | M251 — Host Preflight Checks | 251 | `cca preflight` checks a host before setup and lists every problem at once with its fix, like `kubeadm init phase preflight`: root or sudo, container runtime running, CNI plugins, etcd (control plane), nft or iptables, `br_netfilter` and IP forwarding, free ports (9770, 2379, 15353, 4789/udp), RAM and CPU minimums. `cca init` and `setup.sh` run it first. Found testing the install docs on a fresh Debian 13 host (2026-11-19), where each missing piece surfaced only when a later step failed. |
 | M259 — Code Rules Checked in CI | 259 | The project's code rules (80-line functions, no magic numbers, no duplication, doc comments, complexity) are now checked by linters in CI for new and changed code, and a test enforces the package layers. Before, only code review checked them, though the docs said CI did. A "how to add a controller" guide with an example controller and a repeatable comprehension check help new contributors. |
+| M275 — Fact Key Constructors Split by Subject | 275 | Refactor (requested 2026-11-24): the 2,634-line `types/keys.go` is split into one file per subject (services, scaling, rollout, placement, instances, nodes, network, volumes, routes, jobs, tenants, cloud, auth, secrets). `keys.go` keeps the layer prefixes and a map of the files. No key path or exported name changes. |
 | M255 — Image Signature Verification | 255 | Images can be required to carry a valid cosign/sigstore signature, by policy per registry or repository, like CRI-O's `policy.json` and Kubernetes' admission policy controllers. A public key works air-gapped. Under `enforce`, an unsigned or wrongly signed image is refused with its reason, and a verified image runs by digest. |
 | M186 — Debug & Explain CLI | 186 | Existing: `cca describe` (service/node/instance/gate), `cca diff`, `cca events`. Remaining: `cca debug <service>` (one-shot health report: instances, probes, recent events, placement failures) and `cca explain <service>` (scheduler placement reasoning per node). |
 | M187 — Network Policy Egress Rules | 187 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
