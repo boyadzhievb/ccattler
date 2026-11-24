@@ -60,7 +60,7 @@ func TestWriteInitSecretKeysWritesOnlyRootKey(t *testing.T) {
 // keys only when present in the init output and absent on the host, so an
 // HA secondary keeps the first node's copies.
 func TestSetupScriptNeverReplacesSecretKeys(t *testing.T) {
-	setupScript := buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24")
+	setupScript := buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24", nil)
 	for _, keyFile := range []string{"secret-root.key", "secret-master.key"} {
 		guard := `if [ -f "$SOURCE_DIR/` + keyFile + `" ] && [ ! -f /etc/ccattler/` + keyFile + ` ]; then`
 		if !strings.Contains(setupScript, guard) {
@@ -79,7 +79,7 @@ func TestSetupScriptNeverReplacesSecretKeys(t *testing.T) {
 // but does not require it, so systemd does not stop cca-server when the local
 // etcd stops and leave it down after etcd returns (M219 HA run, check 9).
 func TestSetupScriptServerUnitSurvivesEtcdRestart(t *testing.T) {
-	setupScript := buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24")
+	setupScript := buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24", nil)
 	if strings.Contains(setupScript, "Requires=etcd.service") || !strings.Contains(setupScript, "Wants=etcd.service") {
 		t.Error("cca-server unit must use Wants=etcd.service, not Requires=etcd.service")
 	}

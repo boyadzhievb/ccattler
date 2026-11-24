@@ -94,7 +94,7 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 - [x] 3m.4 R5, R6: the receiver rename, the etcd port constant everywhere, and a test that the CNI directory list in
   `install.sh` matches `cniPluginDirectories`.
   Result: receiver `setupScriptStepRun`; `setupScriptEtcdClientPort` at the endpoints file, `--endpoints` and etcdctl health lines (no literal 2379 left in command_init.go); TestInstallScriptCNIDirectoriesMatchAgent (runtime) passes and fails on a temporary drift edit (reverted). Checks: gofmt clean, golangci-lint ./... 0 issues, go vet clean, go test -count=1 ./... exit 0, -race cmd/cca runtime ok.
-- [ ] 3m.5 S2 (user decision 2026-11-24, option b; design.md D5 and the host-setup requirement updated):
+- [x] 3m.5 S2 (user decision 2026-11-24, option b; design.md D5 and the host-setup requirement updated):
   - `cca init --etcd-client-cidr` (repeatable or comma-separated, validated, error before any file is written);
   - setup.sh opens 2379/tcp only from those CIDRs (firewalld rich rules, `ufw allow from`) and otherwise prints the
     commands and names the flag;
@@ -104,6 +104,17 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   `TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks`, `TestInitRejectsInvalidEtcdClientCIDR`. Replace the
   old `TestSetupScriptOpensEtcdClientPort` (it asserted the open-to-all rule the decision removed), recorded here
   with that reason.
+  Result: plumbing first (field `etcdClientNetworks`, new unused parameter), then red on 71e24ac logic:
+  TestSetupScriptOpensEtcdClientPortOnlyToGivenNetworks (firewalld, ufw; three CIDRs incl. IPv6),
+  TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks (firewalld, ufw), TestInitRejectsInvalidEtcdClientCIDR
+  (cmd/cca main_test via the binary: 192.0.2.0/33, 192.0.2.1, not-a-network, trailing comma; error names flag and
+  value, output dir not created), TestInitParsesEtcdClientCIDRs (repeat + comma, host bits cleared). The old
+  TestSetupScriptOpensEtcdClientPort is replaced: it asserted the open-to-all 2379 rule that the S2 decision removed.
+  Fix: `parseEtcdClientCIDRs` (net.ParseCIDR per item, error from the flag set before any file is written); one
+  firewalld rich rule (ipv4/ipv6) or `ufw allow from` per network; without networks no 2379 rule and a printed note
+  with both commands, `<your node network>` and the flag. Guide: step 1 paragraph, worker-section note with the
+  firewalld command, SELinux/firewalld paragraph corrected; cli-reference lists the flag. Green; TestDocCrossCheck*,
+  vitepress build, gofmt, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

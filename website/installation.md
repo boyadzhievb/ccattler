@@ -181,8 +181,9 @@ expected: `setup.sh` (below) reconfigures it with TLS. On RHEL, AlmaLinux and Ro
 
 **SELinux and firewalld (RHEL, AlmaLinux, Rocky).** Leave both on. `container-selinux`, installed with `containerd.io`,
 is the policy for containers. The quick install restores the SELinux label of `cca`, so systemd can run it. When
-firewalld is running, `setup.sh` opens 9770/tcp (API), 2379/tcp (etcd clients, used by agents on worker hosts) and
-4789/udp (VXLAN), and enables masquerading; with ufw active on Debian or Ubuntu it opens the same ports.
+firewalld is running, `setup.sh` opens 9770/tcp (API) and 4789/udp (VXLAN) and enables masquerading; with ufw active
+on Debian or Ubuntu it opens the same ports. It opens 2379/tcp (etcd clients, used by agents on worker hosts) only
+from the networks given to `cca init --etcd-client-cidr` (see [Set up a cluster by hand](#set-up-a-cluster-by-hand)).
 
 ## Quick install
 
@@ -327,6 +328,12 @@ sudo systemctl enable --now cca-server cca-agent
 sudo cca status
 ```
 
+**Adding worker hosts later?** Their agents reach etcd on this host on 2379/tcp. With firewalld or ufw active,
+`setup.sh` opens that port only from the networks you name, because every client certificate the cluster CA issues can use
+etcd. Add `--etcd-client-cidr` with the network of your worker hosts to the `cca init` line, for example
+`--etcd-client-cidr 192.168.1.0/24` (repeat the flag or separate several networks with commas). Without it the port
+stays closed, and `setup.sh` prints the firewalld and ufw commands that open it later.
+
 `~/cca-init` holds the CA private key and the secret root key. Once `setup.sh` has copied them to `/etc/ccattler`,
 keep a backup of that directory somewhere safe and delete `~/cca-init`.
 
@@ -336,6 +343,16 @@ If something fails, read the logs: `sudo journalctl -u cca-server -u cca-agent -
 
 On each worker, install the prerequisites without etcd ([step 3 of Prepare a fresh host](#prepare-a-fresh-host))
 and the `cca` binary.
+
+Workers need etcd's port 2379/tcp on the control-plane host. If that host runs firewalld or ufw, it is open only when
+`cca init` there got `--etcd-client-cidr` with the workers' network (step 1). Otherwise open it there yourself, for the
+workers' network only, with the command `setup.sh` printed, for example on firewalld:
+
+```bash
+sudo firewall-cmd --permanent \
+    --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" port port="2379" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
 
 Create a join token **on the control-plane host**. It works once, for this worker name, for 15 minutes:
 

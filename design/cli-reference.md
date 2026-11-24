@@ -16,6 +16,8 @@ cca agent --node-id <id>      # start node agent (--storage-backend local|nfs --
 cca token create/list/revoke  # join tokens via /api/node/join-token (cluster.admin)
 cca join <server> <token>     # join node to cluster
 cca init [flags]              # initialize cluster
+                              # --etcd-client-cidr <cidr>[,<cidr>] (repeatable): networks setup.sh opens etcd's
+                              # 2379/tcp to in firewalld/ufw; without it the port stays closed (M279)
                               # server, agent and init: --help lists every flag; an unknown flag, a flag
                               # without its value or a stray argument stops the command with an error (M227)
 

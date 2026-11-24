@@ -44,6 +44,8 @@ type initCommandConfig struct {
 	existingCAPath string
 	// existingCAKeyPath points to the corresponding CA private key (HA setup).
 	existingCAKeyPath string
+	// etcdClientNetworks are the networks setup.sh opens the etcd client port to (D5).
+	etcdClientNetworks []*net.IPNet
 }
 
 // parseInitCommandArgs parses the flags following "init". An unknown flag, a
@@ -70,6 +72,11 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 	flagSet.StringVar(&parsedConfig.vipCIDR, "vip-cidr", "", "service virtual IP CIDR")
 	flagSet.StringVar(&parsedConfig.existingCAPath, "ca", "", "existing CA certificate to reuse (HA setup)")
 	flagSet.StringVar(&parsedConfig.existingCAKeyPath, "ca-key", "", "private key of the existing CA")
+	flagSet.Func("etcd-client-cidr", "network allowed to reach etcd on 2379/tcp (repeatable or comma-separated)", func(flagValue string) error {
+		parsedNetworks, cidrError := parseEtcdClientCIDRs(flagValue)
+		parsedConfig.etcdClientNetworks = append(parsedConfig.etcdClientNetworks, parsedNetworks...)
+		return cidrError
+	})
 	if parseError := parseDaemonFlagSet(flagSet, args); parseError != nil {
 		return parsedConfig, parseError
 	}
@@ -93,6 +100,20 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 	}
 
 	return parsedConfig, nil
+}
+
+// parseEtcdClientCIDRs parses one --etcd-client-cidr value, a comma-separated list
+// of IPv4 or IPv6 CIDRs, and names the first item that is not one.
+func parseEtcdClientCIDRs(flagValue string) ([]*net.IPNet, error) {
+	var parsedNetworks []*net.IPNet
+	for _, cidrItem := range strings.Split(flagValue, ",") {
+		_, parsedNetwork, parseError := net.ParseCIDR(strings.TrimSpace(cidrItem))
+		if parseError != nil {
+			return nil, fmt.Errorf("--etcd-client-cidr %q: %q is not an IPv4 or IPv6 CIDR", flagValue, cidrItem)
+		}
+		parsedNetworks = append(parsedNetworks, parsedNetwork)
+	}
+	return parsedNetworks, nil
 }
 
 // executeInitCommand generates PKI material and writes a setup script that
@@ -142,7 +163,8 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 		writeInitSecretKeys(outputDirectory)
 	}
 
-	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory, parsedConfig.clusterCIDR, parsedConfig.vipCIDR)
+	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory,
+		parsedConfig.clusterCIDR, parsedConfig.vipCIDR, parsedConfig.etcdClientNetworks)
 	writeInitFile(outputDirectory, "setup.sh", []byte(setupScript), 0755)
 
 	printInitSummary(outputDirectory)
@@ -247,7 +269,8 @@ func writeInitFile(outputDirectory string, fileName string, data []byte, permiss
 // --vip-cidr flags are included in the generated systemd units. This function
 // exceeds 80 lines because it is predominantly shell template text assembled
 // via WriteString calls with no meaningful logic boundaries to extract.
-func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory string, clusterCIDR string, vipCIDR string) string {
+func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory string, clusterCIDR string, vipCIDR string,
+	etcdClientNetworks []*net.IPNet) string {
 	var scriptBuilder strings.Builder
 
 	scriptBuilder.WriteString("#!/bin/sh\n")
@@ -273,7 +296,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("SYSCTL\n")
 	scriptBuilder.WriteString("echo 'br_netfilter' > /etc/modules-load.d/ccattler.conf\n\n")
 
-	scriptBuilder.WriteString(buildSetupScriptFirewallStep())
+	scriptBuilder.WriteString(buildSetupScriptFirewallStep(etcdClientNetworks))
 
 	scriptBuilder.WriteString("echo '==> Creating directories'\n")
 	scriptBuilder.WriteString("mkdir -p /etc/ccattler \"$PKI_DIR\" \"$LOG_DIR\"\n\n")
@@ -397,25 +420,64 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 
 // buildSetupScriptFirewallStep returns the setup.sh step that opens the
 // CCattler ports in ufw or firewalld when either is active: VXLAN, the API
-// port and the etcd client port that worker agents connect to.
-func buildSetupScriptFirewallStep() string {
+// port, and the etcd client port only from etcdClientNetworks (D5).
+func buildSetupScriptFirewallStep(etcdClientNetworks []*net.IPNet) string {
 	var scriptBuilder strings.Builder
 	scriptBuilder.WriteString("echo '==> Opening VXLAN port (UDP 4789) in host firewall'\n")
 	scriptBuilder.WriteString("if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'active'; then\n")
 	scriptBuilder.WriteString("    ufw allow 4789/udp comment 'CCattler VXLAN'\n")
 	fmt.Fprintf(&scriptBuilder, "    ufw allow %s/tcp comment 'CCattler API'\n", defaultAPIListenPort)
-	fmt.Fprintf(&scriptBuilder, "    ufw allow %s/tcp comment 'CCattler etcd clients'\n", setupScriptEtcdClientPort)
+	for _, etcdClientNetwork := range etcdClientNetworks {
+		fmt.Fprintf(&scriptBuilder, "    ufw allow from %s to any port %s proto tcp comment 'CCattler etcd clients'\n",
+			etcdClientNetwork, setupScriptEtcdClientPort)
+	}
 	scriptBuilder.WriteString("    ufw route allow in on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
 	scriptBuilder.WriteString("    ufw route allow out on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
 	scriptBuilder.WriteString("elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running; then\n")
 	scriptBuilder.WriteString("    firewall-cmd --permanent --add-port=4789/udp\n")
 	fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-port=%s/tcp\n", defaultAPIListenPort)
-	fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-port=%s/tcp\n", setupScriptEtcdClientPort)
+	for _, etcdClientNetwork := range etcdClientNetworks {
+		fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-rich-rule="+setupScriptFirewalldEtcdRule+"\n",
+			firewalldAddressFamily(etcdClientNetwork), etcdClientNetwork, setupScriptEtcdClientPort)
+	}
 	scriptBuilder.WriteString("    firewall-cmd --permanent --add-masquerade\n")
 	scriptBuilder.WriteString("    firewall-cmd --reload\n")
 	scriptBuilder.WriteString("fi\n\n")
-
+	if len(etcdClientNetworks) == 0 {
+		scriptBuilder.WriteString(buildSetupScriptEtcdPortClosedNote())
+	}
 	return scriptBuilder.String()
+}
+
+// setupScriptFirewalldEtcdRule is the firewalld rich rule that opens the etcd client
+// port to one network; its format verbs are the address family, the network and the port.
+const setupScriptFirewalldEtcdRule = `'rule family="%s" source address="%s" port port="%s" protocol="tcp" accept'`
+
+// setupScriptEtcdPortPlaceholder stands for the operator's node network in the
+// printed commands when cca init got no --etcd-client-cidr.
+const setupScriptEtcdPortPlaceholder = "<your node network>"
+
+// firewalldAddressFamily returns the firewalld rich-rule family of a network.
+func firewalldAddressFamily(network *net.IPNet) string {
+	if network.IP.To4() != nil {
+		return "ipv4"
+	}
+	return "ipv6"
+}
+
+// buildSetupScriptEtcdPortClosedNote returns the setup.sh lines that say 2379/tcp
+// stays closed without --etcd-client-cidr and print the commands that open it (D5).
+func buildSetupScriptEtcdPortClosedNote() string {
+	var noteBuilder strings.Builder
+	noteBuilder.WriteString("cat <<'ETCD_PORT_NOTE'\n")
+	fmt.Fprintf(&noteBuilder, "NOTE: the etcd client port %s/tcp is not opened in the host firewall, because cca init\n", setupScriptEtcdClientPort)
+	noteBuilder.WriteString("got no --etcd-client-cidr. Agents on worker hosts need it. Open it for your node network:\n")
+	fmt.Fprintf(&noteBuilder, "  firewalld: firewall-cmd --permanent --add-rich-rule="+setupScriptFirewalldEtcdRule+" && firewall-cmd --reload\n",
+		"ipv4", setupScriptEtcdPortPlaceholder, setupScriptEtcdClientPort)
+	fmt.Fprintf(&noteBuilder, "  ufw:       ufw allow from '%s' to any port %s proto tcp comment 'CCattler etcd clients'\n",
+		setupScriptEtcdPortPlaceholder, setupScriptEtcdClientPort)
+	noteBuilder.WriteString("ETCD_PORT_NOTE\n\n")
+	return noteBuilder.String()
 }
 
 // buildSetupScriptEtcdStep returns the setup.sh step that finds the etcd

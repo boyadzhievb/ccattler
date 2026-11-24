@@ -4,6 +4,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -252,31 +253,70 @@ func TestSetupScriptEtcdMissingHintNamesRealSources(t *testing.T) {
 	}
 }
 
-// TestSetupScriptOpensEtcdClientPort: the firewall step opens 2379/tcp next to the
-// API port and VXLAN in firewalld and in ufw.
-func TestSetupScriptOpensEtcdClientPort(t *testing.T) {
+// parseTestNetworks parses CIDRs that the test knows are valid.
+func parseTestNetworks(t *testing.T, cidrs ...string) []*net.IPNet {
+	t.Helper()
+	var networks []*net.IPNet
+	for _, cidr := range cidrs {
+		_, network, parseError := net.ParseCIDR(cidr)
+		if parseError != nil {
+			t.Fatalf("parse %s: %v", cidr, parseError)
+		}
+		networks = append(networks, network)
+	}
+	return networks
+}
+
+// etcdClientPortCalls returns the logged firewall calls that mention the etcd client port.
+func etcdClientPortCalls(toolCalls []string) []string {
+	var portCalls []string
+	for _, toolCall := range toolCalls {
+		if strings.Contains(toolCall, setupScriptEtcdClientPort) {
+			portCalls = append(portCalls, toolCall)
+		}
+	}
+	return portCalls
+}
+
+// TestSetupScriptOpensEtcdClientPortOnlyToGivenNetworks: with --etcd-client-cidr
+// networks, the firewall step opens 2379/tcp only from those networks (one
+// source-restricted rule each), next to the API port and VXLAN, in firewalld and ufw.
+// It replaces TestSetupScriptOpensEtcdClientPort, which asserted the open-to-all
+// rule that the S2 decision (2026-11-24, option b) removed.
+func TestSetupScriptOpensEtcdClientPortOnlyToGivenNetworks(t *testing.T) {
+	etcdClientNetworks := parseTestNetworks(t, "192.0.2.0/24", "198.51.100.0/25", "2001:db8::/64")
 	testCases := []struct {
-		name        string   // subcase name
-		omitTools   []string // the other firewall's fake is left off PATH
-		wantedCalls []string // calls that must appear in the log
+		name            string   // subcase name
+		omitTools       []string // the other firewall's fake is left off PATH
+		wantedPortCalls []string // every logged call that mentions 2379, in order
+		wantedCalls     []string // other calls that must appear
 	}{
-		{name: "firewalld", omitTools: []string{"ufw"}, wantedCalls: []string{
-			"firewall-cmd --permanent --add-port=2379/tcp",
+		{name: "firewalld", omitTools: []string{"ufw"}, wantedPortCalls: []string{
+			`firewall-cmd --permanent --add-rich-rule=rule family="ipv4" source address="192.0.2.0/24" port port="2379" protocol="tcp" accept`,
+			`firewall-cmd --permanent --add-rich-rule=rule family="ipv4" source address="198.51.100.0/25" port port="2379" protocol="tcp" accept`,
+			`firewall-cmd --permanent --add-rich-rule=rule family="ipv6" source address="2001:db8::/64" port port="2379" protocol="tcp" accept`,
+		}, wantedCalls: []string{
 			"firewall-cmd --permanent --add-port=" + defaultAPIListenPort + "/tcp",
 			"firewall-cmd --permanent --add-port=4789/udp",
 			"firewall-cmd --reload",
 		}},
-		{name: "ufw", omitTools: []string{"firewall-cmd"}, wantedCalls: []string{
-			"ufw allow 2379/tcp comment CCattler etcd clients",
+		{name: "ufw", omitTools: []string{"firewall-cmd"}, wantedPortCalls: []string{
+			"ufw allow from 192.0.2.0/24 to any port 2379 proto tcp comment CCattler etcd clients",
+			"ufw allow from 198.51.100.0/25 to any port 2379 proto tcp comment CCattler etcd clients",
+			"ufw allow from 2001:db8::/64 to any port 2379 proto tcp comment CCattler etcd clients",
+		}, wantedCalls: []string{
 			"ufw allow " + defaultAPIListenPort + "/tcp comment CCattler API",
 			"ufw allow 4789/udp comment CCattler VXLAN",
 		}},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			stepRun := runSetupScriptStep(t, buildSetupScriptFirewallStep(), setupScriptStepOptions{omitFakeTools: testCase.omitTools})
+			stepRun := runSetupScriptStep(t, buildSetupScriptFirewallStep(etcdClientNetworks), setupScriptStepOptions{omitFakeTools: testCase.omitTools})
 			if stepRun.exitError != nil {
 				t.Fatalf("firewall step failed: %v\n%s", stepRun.exitError, stepRun.output)
+			}
+			if portCalls := etcdClientPortCalls(stepRun.toolCalls); !slices.Equal(portCalls, testCase.wantedPortCalls) {
+				t.Errorf("etcd port calls:\n%s\nwant:\n%s", strings.Join(portCalls, "\n"), strings.Join(testCase.wantedPortCalls, "\n"))
 			}
 			for _, wantedCall := range testCase.wantedCalls {
 				if !slices.Contains(stepRun.toolCalls, wantedCall) {
@@ -284,6 +324,52 @@ func TestSetupScriptOpensEtcdClientPort(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks: without
+// --etcd-client-cidr no firewall rule mentions 2379, and setup.sh prints the
+// firewalld and ufw commands with a placeholder network, naming the flag.
+func TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string   // subcase name
+		omitTools []string // the other firewall's fake is left off PATH
+	}{{name: "firewalld", omitTools: []string{"ufw"}}, {name: "ufw", omitTools: []string{"firewall-cmd"}}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			stepRun := runSetupScriptStep(t, buildSetupScriptFirewallStep(nil), setupScriptStepOptions{omitFakeTools: testCase.omitTools})
+			if stepRun.exitError != nil {
+				t.Fatalf("firewall step failed: %v\n%s", stepRun.exitError, stepRun.output)
+			}
+			if portCalls := etcdClientPortCalls(stepRun.toolCalls); len(portCalls) != 0 {
+				t.Errorf("etcd client port opened without --etcd-client-cidr:\n%s", strings.Join(portCalls, "\n"))
+			}
+			for _, wantedText := range []string{
+				"--etcd-client-cidr",
+				`firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<your node network>" port port="2379" protocol="tcp" accept'`,
+				"ufw allow from '<your node network>' to any port 2379 proto tcp comment 'CCattler etcd clients'",
+			} {
+				if !strings.Contains(stepRun.output, wantedText) {
+					t.Errorf("output lacks %q:\n%s", wantedText, stepRun.output)
+				}
+			}
+		})
+	}
+}
+
+// TestInitParsesEtcdClientCIDRs: --etcd-client-cidr accepts repeated and
+// comma-separated CIDRs and keeps each as its network (host bits cleared).
+func TestInitParsesEtcdClientCIDRs(t *testing.T) {
+	parsedConfig, parseError := parseInitCommandArgs([]string{
+		"--etcd-client-cidr", "192.0.2.0/24,2001:db8::/64", "--etcd-client-cidr", "198.51.100.7/25"})
+	if parseError != nil {
+		t.Fatalf("valid CIDRs rejected: %v", parseError)
+	}
+	var parsedNetworks []string
+	for _, network := range parsedConfig.etcdClientNetworks {
+		parsedNetworks = append(parsedNetworks, network.String())
+	}
+	if wanted := []string{"192.0.2.0/24", "2001:db8::/64", "198.51.100.0/25"}; !slices.Equal(parsedNetworks, wanted) {
+		t.Errorf("etcd client networks = %v, want %v", parsedNetworks, wanted)
 	}
 }
 

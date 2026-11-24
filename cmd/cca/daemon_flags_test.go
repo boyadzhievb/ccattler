@@ -136,7 +136,7 @@ func extractDaemonInvocations(unitText string) map[string][][]string {
 // the install docs, the Ansible and Lima unit templates) through the real parsers.
 func TestShippedUnitFilesPassOnlyKnownFlags(testContext *testing.T) {
 	unitTextBySource := map[string]string{
-		"cca init setup script": buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24"),
+		"cca init setup script": buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24", nil),
 	}
 	expectedInvocationCount := 2 // setup script: one server unit, one agent unit
 	for _, repositoryPath := range []string{
@@ -188,7 +188,7 @@ func TestSetupScriptAgentUsesLocalAPIServer(testContext *testing.T) {
 	}
 	for _, testCase := range testCases {
 		testContext.Run(testCase.advertiseAddress, func(subtestContext *testing.T) {
-			setupScript := buildSetupScript(testCase.advertiseAddress, "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24")
+			setupScript := buildSetupScript(testCase.advertiseAddress, "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24", nil)
 			invocationsByCommand := extractDaemonInvocations(setupScript)
 			if len(invocationsByCommand["agent"]) != 1 || len(invocationsByCommand["server"]) != 1 {
 				subtestContext.Fatalf("setup.sh has %d agent and %d server units, want one of each",
