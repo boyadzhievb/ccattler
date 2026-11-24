@@ -17,6 +17,15 @@ gid 0) with mode 0755, never by the user who ran the script, because systemd uni
 - **THEN** the installed file is owned by uid 0 and gid 0 with mode 0755, and no step leaves it owned by the user
 - Test: `TestInstallScriptInstallsRootOwnedBinary`; check `install-host:rhel-family` (`ls -ln /usr/local/bin/cca`)
 
+#### Scenario: Installed without sudo into a directory the user can write
+- **GIVEN** an install directory the user can write, so the script installs without `sudo` and the binary is not
+  owned by uid 0
+- **WHEN** `install.sh` finishes on Linux
+- **THEN** it warns that whoever owns the binary or can write its directory can change what systemd and `sudo` run
+  as root, and that the directory must be writable only by root. Every path in the warning is quoted. (Added during
+  apply, 2026-11-24: review round 4.)
+- Test: `TestInstallScriptWarnsWhenBinaryNotRootOwned`
+
 ### Requirement: The installed binary carries the system label on SELinux hosts
 When SELinux is enabled on the host (`selinuxenabled` succeeds), `install.sh` SHALL give the installed `cca` binary
 the label the policy defines for its path (for `/usr/local/bin`, `bin_t`). On a host without SELinux tools, or with

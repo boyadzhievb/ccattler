@@ -241,7 +241,13 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
     - TestInitWarnsOnWideEtcdClientCIDR: `10.0.0.0/7`, `203.0.113.0/24`, `2001::/16`, `0.0.0.0/1`;
     - TestSetupScriptEtcdRulesNeverCoverEveryAddress: 7 subcases, among them the leading-zero forms and the unions;
     - TestInstallScriptWarnsWhenSudoPathLacksInstallDir: `missing`, `unsafe sudo path entries`, `user-owned dir`,
-      `user-owned parent`, `symlink into a user-owned dir`, `relative path` (sudoers text printed).
+      `user-owned parent`, `symlink into a user-owned dir`, `relative path`;
+    - TestInstallScriptWarnsWhenBinaryNotRootOwned: `user-owned` (left out of the first version of this list).
+
+    **Correction, 2026-11-24, after review round 4:** the first version said these install subcases failed with
+    "sudoers text printed". That was wrong. On ca6e9b9 none of them printed sudoers text, because the tests' temp
+    directory is never "safe". They failed on the missing guide link. The reviewer's mutation (printing
+    `Defaults secure_path=x`) shows the new assertion does catch sudoers text.
   - **3p.3:** `SELinux disabled` passes on the base, because the behaviour was already right. A mutation that prints
     "SELinux check skipped" makes it fail ("output mentions SELinux although it is disabled").
   - **Green on the worktree:**
@@ -254,6 +260,42 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   - **install.sh:** no `safe_sudo_path_entries`, `directory_is_safe_for_sudo`, `Defaults secure_path` or `sudoers.d`
     is left. The directory lookup is `CDPATH='' cd -P -- … && pwd -P` (B5), and a non-uid-0 owner gives a warning.
   - **Spec:** the union subcases are named by their values (host-setup spec aligned).
+  Round 4 (2026-11-24, on ca6e9b9..de03b14; both on Opus high after the user switched models):
+  - **code-reviewer (Codex included): request changes, small.** All CIDR checks hold. The checked form equals the
+    written form for every probed input. Red reproduced on ca6e9b9 and the SELinux mutation confirmed. Green 66/66
+    under dash and bash.
+  - **security-audit: adequate, nothing above LOW.** About 30 allow-all attempts, all refused; no injection; no
+    sudoers text in any install.sh path.
+
+  The main session checked R4-1, R4-2, R4-3 and R4-6 in the code:
+  - `install.sh:189` uses the absolute path unnormalized, where the base used `cd … && pwd`;
+  - `install.sh:177-178` print an unquoted path and an incomplete fix;
+  - `installation.md:213` still says "prints the fix".
+
+  | # | Finding | Resolution |
+  |---|---|---|
+  | R4-1 | The uid-0 warning's fix (`chown`) does not remove the risk: the user can still replace the file in their writable directory (both reviewers) | **fix** 3q.1: say the directory must be root-only, as installation.md:216 does |
+  | R4-2 | The printed `sudo chown root:root ${INSTALL_PATH}/cca` is unquoted, so a path with a space changes ownership of the wrong file when pasted (security LOW) | **fix** 3q.1 (quote the path in every printed command) |
+  | R4-3 | Absolute INSTALL_PATH no longer normalized (`/usr/local/bin/`, `/usr/local//bin`): false warning, `sudo /usr/local/bin//cca` (reproduced by the reviewer) | **fix** 3q.1 (normalize every path with `CDPATH='' cd -P -- … && pwd -P`); test subcases, red first |
+  | R4-4 | The 3p evidence claimed "sudoers text printed"; a red subcase was missing | **fixed** by the main session (correction above) |
+  | R4-5 | No spec scenario for the uid-0 warning; `init_etcd_client_cidr_cli_test.go:44` no longer checks that the error names the value | **spec fixed** by the main session (scenario added); **fix** 3q.2 (test asserts the value) |
+  | R4-6 | `installation.md:213` says install.sh "prints the fix"; it now links to it | **fix** 3q.2 |
+  | R4-7 | The warning calls link-local and shared ranges (169.254/16, 100.64/10, fe80::/10) "public" (Codex, confirmed) | **fix** 3q.2: wording "not private or loopback", which matches the spec's definition |
+  | — | Only an exact cover of a family is refused; wider sets get warnings | **by design** (design.md "Structural changes after review round 3") |
+
+- [ ] 3q.1 R4-1, R4-2, R4-3 in install.sh:
+  - the ownership warning names the root-only directory fix and quotes the path;
+  - every printed command quotes the path;
+  - every INSTALL_PATH is normalized with `CDPATH='' cd -P -- … && pwd -P`.
+
+  Red first: subcases for a trailing slash, a double slash and a path with a space. Keep shellcheck clean under sh and
+  dash.
+- [ ] 3q.2 R4-5 to R4-7:
+  - `TestInitRejectsInvalidEtcdClientCIDR` asserts the error names the value;
+  - `installation.md:213` wording;
+  - the warning says "not private or loopback".
+
+  Then run the checks as in 3.1.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up
