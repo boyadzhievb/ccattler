@@ -571,6 +571,8 @@ Found 2026-11-24 by following `website/installation.md` on a fresh Rocky Linux 9
 
 User decisions 2026-11-24: one milestone for the code fixes and the RHEL-family guide (option a); containerd from Docker's repository.
 
+Scope correction during apply (user decision 2026-11-24, option a): the install.sh fixes go into the published root `install.sh` (its `sudo mv` keeps the temp label), not `scripts/install.sh`. Its prerequisite check also accepts the distribution CNI directories, and its guide link follows the renamed "Prepare a fresh host" section.
+
 Approved by the user 2026-11-24 ("go implement it"); implemented on branch `m279-rhel-family-install` so M267's release is cut without it. OpenSpec change: [`rhel-family-install`](openspec/changes/rhel-family-install/) (checklist in its `tasks.md`). Proven by the guide followed literally on the reverted Rocky VM and on the Debian docs host.
 
 ### Phase 278 — A Moved Instance Keeps the Source's IP When Its Own IP Is Unknown (M278, bug)

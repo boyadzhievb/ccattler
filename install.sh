@@ -138,15 +138,52 @@ if [ ! -d "$INSTALL_PATH" ]; then
     fi
 fi
 
-if [ -w "$INSTALL_PATH" ]; then
-    mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
-else
+# run_as_installer runs a command with sudo when the install directory needed it.
+use_sudo="no"
+run_as_installer() {
+    if [ "$use_sudo" = "yes" ]; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
+
+if [ ! -w "$INSTALL_PATH" ]; then
     log_info "Writing to ${INSTALL_PATH} requires elevated permissions."
-    sudo mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
+    use_sudo="yes"
 fi
+run_as_installer mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
 chmod +x "${INSTALL_PATH}/cca"
 
+# mv keeps the temp file's SELinux label (user_tmp_t), which systemd cannot
+# execute; restorecon applies the policy label for the install path.
+if command -v restorecon >/dev/null 2>&1; then
+    if ! run_as_installer restorecon "${INSTALL_PATH}/cca"; then
+        log_warn "Could not restore the SELinux label of ${INSTALL_PATH}/cca; systemd cannot start it until you run:"
+        log_warn "  sudo restorecon ${INSTALL_PATH}/cca"
+    fi
+fi
+
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
+
+# --- sudo's secure_path: 'sudo cca' fails when INSTALL_PATH is not on it ---
+if command -v sudo >/dev/null 2>&1; then
+    # -n never prompts; without cached credentials sudo's PATH cannot be read.
+    if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
+        log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path:"
+        log_info "  call 'sudo ${INSTALL_PATH}/cca', or add the directory to secure_path (installation guide, step 1)."
+    else
+        case ":${sudo_path}:" in
+            *":${INSTALL_PATH}:"*) ;;
+            *)
+                log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path (${sudo_path})."
+                log_warn "Call 'sudo ${INSTALL_PATH}/cca', or add the directory with a sudoers drop-in:"
+                log_warn "  echo 'Defaults secure_path=\"${sudo_path}:${INSTALL_PATH}\"' | sudo tee /etc/sudoers.d/ccattler-secure-path"
+                log_warn "  sudo chmod 0440 /etc/sudoers.d/ccattler-secure-path && sudo visudo -cf /etc/sudoers.d/ccattler-secure-path"
+                ;;
+        esac
+    fi
+fi
 log_info "Run 'cca version' to verify."
 echo ""
 
@@ -162,14 +199,20 @@ if [ "$operating_system" = "linux" ]; then
     missing_prerequisites=""
     host_has_program containerd || missing_prerequisites="$missing_prerequisites containerd"
     host_has_program nft || missing_prerequisites="$missing_prerequisites nftables"
-    [ -x /opt/cni/bin/bridge ] || missing_prerequisites="$missing_prerequisites cni-plugins"
+    # The agent searches these directories in this order (runtime/containerd.go);
+    # EL9's containernetworking-plugins installs to /usr/libexec/cni.
+    cni_plugins_found="no"
+    for cni_directory in /opt/cni/bin /usr/libexec/cni /usr/lib/cni; do
+        if [ -x "${cni_directory}/bridge" ]; then cni_plugins_found="yes"; fi
+    done
+    [ "$cni_plugins_found" = "yes" ] || missing_prerequisites="$missing_prerequisites cni-plugins"
     host_has_program etcd || missing_prerequisites="$missing_prerequisites etcd(control-plane-only)"
     if [ -z "$missing_prerequisites" ]; then
         log_ok "containerd, nftables, CNI plugins and etcd found"
     else
         log_warn "Missing for a cluster host:${missing_prerequisites}"
-        log_warn "Install them as described in 'Prepare a fresh Debian or Ubuntu host':"
-        log_warn "  ${INSTALL_GUIDE_URL}#prepare-a-fresh-debian-or-ubuntu-host"
+        log_warn "Install them as described in 'Prepare a fresh host':"
+        log_warn "  ${INSTALL_GUIDE_URL}#prepare-a-fresh-host"
         log_warn "Simulation ('cca demo', 'cca apply') works without them."
     fi
 fi

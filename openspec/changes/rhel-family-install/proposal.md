@@ -9,7 +9,7 @@ Ubuntu only. On 2026-11-24 the guide was followed step by step on a fresh Rocky 
 firewalld active). A single-node cluster with two nginx instances worked only after six manual workarounds. Four of the
 problems are bugs in shipped code, not in the guide:
 
-1. **The binary is not executable by systemd.** `scripts/install.sh` installs `cca` with the SELinux label of its
+1. **The binary is not executable by systemd.** `install.sh` (the published root script; corrected 2026-11-24, see design.md) installs `cca` with the SELinux label of its
    temp download (`user_tmp_t`), so `cca-server` and `cca-agent` fail with `203/EXEC Permission denied`.
 2. **`setup.sh` assumes a Debian etcd package.**
    - It only adds a TLS drop-in to an existing `etcd.service`, but no EL9 repository (Rocky, EPEL) ships etcd, so the
@@ -70,7 +70,7 @@ Out of scope:
 
 ## Impact
 
-- `scripts/install.sh`, `cmd/cca/command_init.go` (setup script generation), `runtime/containerd.go` (CNI directories),
+- `install.sh` (root, published; corrected 2026-11-24), `cmd/cca/command_init.go` (setup script generation), `runtime/containerd.go` (CNI directories),
   `website/installation.md`, `milestones.md`.
 - Tests: `cmd/cca` setup-script tests, a shell test for install.sh, `runtime` CNI directory test.
 - Graphs: none expected (no controller or store-key change). Check `NETWORK_GRAPH.md` for the CNI directory.

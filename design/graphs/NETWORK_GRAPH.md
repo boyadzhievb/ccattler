@@ -353,7 +353,8 @@ ContainerdRuntime.ensureCNIInitialized()                       [once, before the
 │   ├── net.InterfaceByName("cca0")                            [missing → nothing to do, CNI creates it]
 │   ├── staleBridgeAddresses(addresses, networkCIDR)           [every IPv4 address except firstHostAddress/prefix]
 │   └── FOR EACH stale: deleteBridgeAddress → ip addr del {addr} dev cca0
-└── gocni.New(buildCNIConflist(networkName, networkCIDR))      [bridge plugin, isGateway → assigns {subnet}.1]
+└── newContainerdCNINetwork(buildCNIConflist(networkName, networkCIDR))  [bridge plugin, isGateway → assigns {subnet}.1]
+    └── gocni.New(WithPluginDir(cniPluginDirectories))         [/opt/cni/bin, /usr/libexec/cni, /usr/lib/cni; first hit wins, M279]
 ```
 cca0 holds only the gateway of the node subnet; VIPs are on `cca-vip0`. A redeploy with a new `cluster_cidr` gives the node a new subnet, so the old gateway must go or the bridge plugin refuses every container (Flow 7).
 

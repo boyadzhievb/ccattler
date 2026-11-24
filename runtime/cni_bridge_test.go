@@ -76,3 +76,16 @@ func TestEnsureBridgeAddressMatchesSubnetOnARealBridge(t *testing.T) {
 		t.Errorf("a missing bridge must not be an error: %v", missingError)
 	}
 }
+
+// TestContainerdRuntimeCNIPluginDirectories: the CNI library searches /opt/cni/bin
+// first, then the distribution directories (EL9 installs to /usr/libexec/cni).
+func TestContainerdRuntimeCNIPluginDirectories(t *testing.T) {
+	cniNetwork, initError := newContainerdCNINetwork(buildCNIConflist("cca-test", "10.100.1.0/24"))
+	if initError != nil {
+		t.Fatalf("newContainerdCNINetwork: %v", initError)
+	}
+	wantedDirectories := []string{"/opt/cni/bin", "/usr/libexec/cni", "/usr/lib/cni"}
+	if pluginDirectories := cniNetwork.GetConfig().PluginDirs; !slices.Equal(pluginDirectories, wantedDirectories) {
+		t.Errorf("CNI plugin directories = %v, want %v", pluginDirectories, wantedDirectories)
+	}
+}

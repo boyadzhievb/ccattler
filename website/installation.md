@@ -6,16 +6,17 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 
 | Requirement | Details |
 |---|---|
-| **OS** | Linux (Ubuntu 22.04+, Debian 12+) or macOS (Apple Silicon and Intel) |
+| **OS** | Linux (Ubuntu 22.04+, Debian 12+, RHEL/AlmaLinux/Rocky 9) or macOS (Apple Silicon and Intel) |
 | **Architecture** | amd64 or arm64 |
 | **Go** | 1.22+ (only if building from source) |
 | **Container runtime** | Docker, nerdctl, or Lima — required for `cca run-container`. Optional for simulation and process modes. |
 | **etcd** | Required for multi-node clusters (installed by Ansible) |
 
-### Prepare a fresh Debian or Ubuntu host
+### Prepare a fresh host
 
-A minimal install ships without several tools these instructions use. Run the steps that apply, in order. Step 1
-works on any distribution; steps 2 and 3 use Debian/Ubuntu package names, the distributions CCattler is tested on.
+A minimal install ships without several tools these instructions use. Run the steps that apply, in order. Steps 2
+and 3 have one block for **Debian and Ubuntu** and one for **RHEL, AlmaLinux and Rocky Linux 9**; run the one for your
+distribution.
 
 **1. Get `sudo`.** This step is the same on every Linux distribution except for the package manager and the name
 of the admin group. Check:
@@ -47,8 +48,8 @@ Log out and back in (group membership is read at login), then run `sudo -v` agai
 
 **Passwordless sudo (only for automation).** Ansible and other non-interactive tools that connect over SSH cannot
 answer a password prompt. On those hosts, allow `USERNAME` to use sudo without a password instead. The drop-in file
-works the same on every distribution; replace `apt install -y sudo` with your distribution's command from the table
-above (`su` asks for the root password; `su -` with the dash gives root's PATH, which has `visudo`):
+works the same on every distribution. Without sudo yet, replace `apt install -y sudo` with your distribution's command
+from the table above (`su` asks for the root password; `su -` with the dash gives root's PATH, which has `visudo`):
 
 ```bash
 su - -c "apt install -y sudo \
@@ -57,18 +58,55 @@ su - -c "apt install -y sudo \
   && visudo -cf /etc/sudoers.d/USERNAME-nopasswd"
 ```
 
+If you already have sudo (for example the first user on Ubuntu or Rocky), write the same file with it:
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/$USER-nopasswd
+sudo chmod 0440 /etc/sudoers.d/$USER-nopasswd
+sudo visudo -cf /etc/sudoers.d/$USER-nopasswd
+```
+
 `visudo -cf` checks the syntax, because a broken sudoers file can lock you out of sudo. The file name must not contain
 a `.`, because sudo ignores such files. To remove it: `sudo rm /etc/sudoers.d/USERNAME-nopasswd`. Interactive installs
 do not need this.
 
-**2. Install the download tools** (needed by the quick install below):
+**`sudo cca` on RHEL, AlmaLinux and Rocky.** sudo there runs commands with its own `secure_path`
+(`/sbin:/bin:/usr/sbin:/usr/bin`), which leaves out `/usr/local/bin`, where the quick install puts `cca`. Every
+`sudo cca …` below then fails with `command not found`. Add the directory once (Debian and Ubuntu already include it;
+the quick install warns when it is missing):
+
+```bash
+echo 'Defaults secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin"' \
+    | sudo tee /etc/sudoers.d/ccattler-secure-path
+sudo chmod 0440 /etc/sudoers.d/ccattler-secure-path
+sudo visudo -cf /etc/sudoers.d/ccattler-secure-path
+```
+
+Or call `cca` by its full path: `sudo /usr/local/bin/cca …`.
+
+**2. Install the download tools** (needed by the quick install below).
+
+Debian and Ubuntu:
 
 ```bash
 sudo apt update
 sudo apt install -y curl tar ca-certificates
 ```
 
-**3. For a host that runs real containers or joins a cluster**, also install:
+RHEL, AlmaLinux and Rocky (`curl` is preinstalled there, as `curl-minimal`):
+
+```bash
+sudo dnf install -y tar ca-certificates
+```
+
+**3. For a host that runs real containers or joins a cluster**, also install containerd, nftables, the CNI plugins and,
+on the control-plane host only, etcd. The commands below need the CPU architecture in Go's naming:
+
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')   # amd64 or arm64
+```
+
+Debian and Ubuntu:
 
 ```bash
 # Container runtime and the nft tool used by the agent's data plane
@@ -79,23 +117,59 @@ sudo apt install -y etcd-server etcd-client
 
 # CNI plugins (container networking)
 CNI_VERSION=1.9.1
-ARCH=$(dpkg --print-architecture)   # amd64 or arm64
 sudo mkdir -p /opt/cni/bin
 curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${ARCH}-v${CNI_VERSION}.tgz" \
     | sudo tar -xz -C /opt/cni/bin
 ```
+
+RHEL, AlmaLinux and Rocky:
+
+```bash
+# Container runtime from Docker's repository (containerd.io; it also installs container-selinux)
+# and the nft tool used by the agent's data plane
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y containerd.io nftables
+sudo systemctl enable --now containerd
+
+# CNI plugins (container networking) from AppStream; they install to /usr/libexec/cni
+sudo dnf install -y containernetworking-plugins
+
+# Control-plane host only: etcd. No EL9 repository ships it, so install the release binary,
+# checked against the release's SHA256SUMS
+ETCD_VERSION=3.5.36
+ETCD_RELEASE="etcd-v${ETCD_VERSION}-linux-${ARCH}"
+cd "$(mktemp -d)"
+curl -fsSLO "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/${ETCD_RELEASE}.tar.gz"
+curl -fsSLO "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/SHA256SUMS"
+grep " ${ETCD_RELEASE}.tar.gz\$" SHA256SUMS | sha256sum -c -
+tar -xzf "${ETCD_RELEASE}.tar.gz"
+sudo install -m 755 "${ETCD_RELEASE}/etcd" "${ETCD_RELEASE}/etcdctl" /usr/local/bin/
+sudo restorecon /usr/local/bin/etcd /usr/local/bin/etcdctl   # SELinux label for systemd
+cd -
+```
+
+`sha256sum -c` must print `OK`; stop if it does not. If the CNI package is not available, the Debian tarball commands
+above work too (into `/opt/cni/bin`). If you cannot use Docker's repository, EPEL also ships `containerd`; EPEL needs
+the CRB repository enabled (`sudo dnf config-manager --set-enabled crb && sudo dnf install -y epel-release`).
 
 Verify:
 
 ```bash
 systemctl is-active containerd     # active
 ls /usr/sbin/nft                   # /usr/sbin/nft (not on a normal user's PATH on Debian)
-ls /opt/cni/bin/bridge             # /opt/cni/bin/bridge
+ls /opt/cni/bin/bridge             # Debian/Ubuntu; /usr/libexec/cni/bridge on RHEL, AlmaLinux, Rocky
 command -v etcd                    # control plane only
 ```
 
 On Debian and Ubuntu, `etcd-server` starts etcd right away without TLS, listening only on `127.0.0.1`. That is
-expected: `setup.sh` (below) reconfigures it with TLS.
+expected: `setup.sh` (below) reconfigures it with TLS. On RHEL, AlmaLinux and Rocky, etcd has no service yet:
+`setup.sh` creates the `etcd` user and writes `etcd.service`, with its data in `/var/lib/etcd/default`.
+
+**SELinux and firewalld (RHEL, AlmaLinux, Rocky).** Leave both on. `container-selinux`, installed with `containerd.io`,
+is the policy for containers. The quick install restores the SELinux label of `cca`, so systemd can run it. When
+firewalld is running, `setup.sh` opens 9770/tcp (API), 2379/tcp (etcd clients, used by agents on worker hosts) and
+4789/udp (VXLAN), and enables masquerading; with ufw active on Debian or Ubuntu it opens the same ports.
 
 ## Quick install
 
@@ -105,7 +179,9 @@ One command — detects your OS and architecture, downloads the right binary, in
 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
 ```
 
-Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon).
+Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon). On SELinux hosts it restores the binary's SELinux label.
+When `/usr/local/bin` is not on sudo's `secure_path`, it warns and prints the fix from
+[step 1 of Prepare a fresh host](#prepare-a-fresh-host).
 
 Pin a specific version (the variable must be set for `bash`, which runs the script, not for `curl`):
 
@@ -219,7 +295,7 @@ control-plane host's address, `WORKER_IP` with the worker's address, and `worker
 
 This host also runs an agent, so it runs containers too: **a single-host cluster is just this step** (then step 3).
 
-Install the prerequisites, including etcd ([Prepare a fresh Debian or Ubuntu host](#prepare-a-fresh-debian-or-ubuntu-host)),
+Install the prerequisites, including etcd ([Prepare a fresh host](#prepare-a-fresh-host)),
 then the `cca` binary ([Quick install](#quick-install)). Then:
 
 ```bash
@@ -245,7 +321,7 @@ If something fails, read the logs: `sudo journalctl -u cca-server -u cca-agent -
 
 ### 2. Worker hosts
 
-On each worker, install the prerequisites without etcd ([step 3 of Prepare a fresh host](#prepare-a-fresh-debian-or-ubuntu-host))
+On each worker, install the prerequisites without etcd ([step 3 of Prepare a fresh host](#prepare-a-fresh-host))
 and the `cca` binary.
 
 Create a join token **on the control-plane host**. It works once, for this worker name, for 15 minutes:

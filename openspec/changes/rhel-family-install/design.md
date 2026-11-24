@@ -38,6 +38,18 @@ key is read or written differently, so there are no writers to fence and no chan
 
 ## Decisions
 
+**Correction during apply, 2026-11-24 (user decision, option a): D1 and D2 apply to the root `install.sh`, not
+`scripts/install.sh`.**
+- **Why:** the design named the wrong script (a main-session error found by the implementer).
+- **Which script is live:** `release.yml:141` publishes the root `install.sh`, and that is what the guide's `curl … | bash`
+  runs. Its `sudo mv` (`install.sh:145`) keeps the temp file's label, which is the `user_tmp_t` seen on Rocky.
+  `scripts/install.sh` (M7) installs nothing for users; CI only sources its `detect_os`/`detect_arch`. It stays as it
+  is, and the edits made to it are reverted.
+- **Also in scope** for the root script:
+  - its CNI prerequisite check (`install.sh:168`) accepts the D6 directories, not only `/opt/cni/bin/bridge`;
+  - its link to the guide's host-preparation anchor (`install.sh:173`) follows the D7 rename.
+- **Variables:** the root script's `CCATTLER_VERSION` and `INSTALL_PATH` are the ones the guide documents.
+
 ### D1. Relabel after install, don't change how install.sh copies
 `install.sh` runs `sudo restorecon "${INSTALL_DIR}/cca"` (or without sudo when it installed without sudo) when
 `command -v restorecon` succeeds, after the copy. `restorecon` applies the policy's label for the path, so it is

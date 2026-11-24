@@ -50,8 +50,10 @@ const containerLabelLogPath = "ccattler.log.path"
 // ContainerdLogBaseDir is the base directory for CCattler container log files.
 const ContainerdLogBaseDir = "/var/lib/ccattler/logs"
 
-// cniPluginDirectory is the path where CNI plugin binaries are installed.
-const cniPluginDirectory = "/opt/cni/bin"
+// cniPluginDirectories are searched in order for CNI plugin binaries: the
+// upstream tarball location first, then where distribution packages install
+// them (EL9 containernetworking-plugins: /usr/libexec/cni).
+var cniPluginDirectories = []string{"/opt/cni/bin", "/usr/libexec/cni", "/usr/lib/cni"}
 
 // cniBridgeName is the Linux bridge device created by the CNI bridge plugin.
 const cniBridgeName = "cca0"
@@ -680,16 +682,22 @@ func (containerdRuntime *ContainerdRuntime) ensureCNIInitialized() error {
 		return fmt.Errorf("container bridge %s: %w", cniBridgeName, bridgeError)
 	}
 	conflistJSON := buildCNIConflist(containerdRuntime.networkName, containerdRuntime.networkCIDR)
-	cniInstance, initError := gocni.New(
-		gocni.WithMinNetworkCount(1),
-		gocni.WithPluginDir([]string{cniPluginDirectory}),
-		gocni.WithConfListBytes(conflistJSON),
-	)
+	cniInstance, initError := newContainerdCNINetwork(conflistJSON)
 	if initError != nil {
 		return fmt.Errorf("initialize CNI: %w", initError)
 	}
 	containerdRuntime.cniNetwork = cniInstance
 	return nil
+}
+
+// newContainerdCNINetwork creates the go-cni instance for the given conflist,
+// searching the CNI plugin directories for the plugin binaries.
+func newContainerdCNINetwork(conflistJSON []byte) (gocni.CNI, error) {
+	return gocni.New(
+		gocni.WithMinNetworkCount(1),
+		gocni.WithPluginDir(cniPluginDirectories),
+		gocni.WithConfListBytes(conflistJSON),
+	)
 }
 
 // buildCNIConflist generates a CNI conflist JSON with bridge + host-local IPAM

@@ -273,18 +273,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("SYSCTL\n")
 	scriptBuilder.WriteString("echo 'br_netfilter' > /etc/modules-load.d/ccattler.conf\n\n")
 
-	scriptBuilder.WriteString("echo '==> Opening VXLAN port (UDP 4789) in host firewall'\n")
-	scriptBuilder.WriteString("if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'active'; then\n")
-	scriptBuilder.WriteString("    ufw allow 4789/udp comment 'CCattler VXLAN'\n")
-	fmt.Fprintf(&scriptBuilder, "    ufw allow %s/tcp comment 'CCattler API'\n", defaultAPIListenPort)
-	scriptBuilder.WriteString("    ufw route allow in on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
-	scriptBuilder.WriteString("    ufw route allow out on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
-	scriptBuilder.WriteString("elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running; then\n")
-	scriptBuilder.WriteString("    firewall-cmd --permanent --add-port=4789/udp\n")
-	fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-port=%s/tcp\n", defaultAPIListenPort)
-	scriptBuilder.WriteString("    firewall-cmd --permanent --add-masquerade\n")
-	scriptBuilder.WriteString("    firewall-cmd --reload\n")
-	scriptBuilder.WriteString("fi\n\n")
+	scriptBuilder.WriteString(buildSetupScriptFirewallStep())
 
 	scriptBuilder.WriteString("echo '==> Creating directories'\n")
 	scriptBuilder.WriteString("mkdir -p /etc/ccattler \"$PKI_DIR\" \"$LOG_DIR\"\n\n")
@@ -304,40 +293,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("fi\n")
 	scriptBuilder.WriteString("chmod 644 \"$PKI_DIR/ca.pem\" \"$PKI_DIR/node.pem\" \"$PKI_DIR/etcd.pem\"\n\n")
 
-	scriptBuilder.WriteString("echo '==> Configuring etcd with TLS'\n")
-	scriptBuilder.WriteString("if ! command -v etcd >/dev/null 2>&1; then\n")
-	scriptBuilder.WriteString("    echo 'WARNING: etcd not found. Install etcd first:'\n")
-	scriptBuilder.WriteString("    echo '  Debian/Ubuntu: sudo apt install etcd-server'\n")
-	scriptBuilder.WriteString("    echo '  RHEL/AlmaLinux: sudo dnf install etcd'\n")
-	scriptBuilder.WriteString("    echo 'Then re-run this script.'\n")
-	scriptBuilder.WriteString("    exit 1\n")
-	scriptBuilder.WriteString("fi\n\n")
-
-	scriptBuilder.WriteString("# Grant etcd ownership of its own key pair.\n")
-	scriptBuilder.WriteString("if id etcd >/dev/null 2>&1; then\n")
-	scriptBuilder.WriteString("    chown etcd:etcd \"$PKI_DIR/etcd.pem\" \"$PKI_DIR/etcd-key.pem\"\n")
-	scriptBuilder.WriteString("fi\n\n")
-
-	scriptBuilder.WriteString("# Clear /etc/default/etcd to prevent apt-default DAEMON_ARGS from\n")
-	scriptBuilder.WriteString("# overriding TLS environment variables via command-line flags.\n")
-	scriptBuilder.WriteString("echo -n > /etc/default/etcd 2>/dev/null || true\n\n")
-	scriptBuilder.WriteString("mkdir -p /etc/systemd/system/etcd.service.d\n")
-	scriptBuilder.WriteString("# Detect etcd binary path for ExecStart override.\n")
-	scriptBuilder.WriteString("ETCD_BIN=$(command -v etcd)\n")
-	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<ETCD_OVERRIDE\n")
-	scriptBuilder.WriteString("[Service]\n")
-	scriptBuilder.WriteString("# Clear base unit ExecStart to prevent flag/env conflicts (RHEL ships\n")
-	scriptBuilder.WriteString("# etcd with --listen-client-urls flags; etcd 3.5+ rejects duplicate config).\n")
-	scriptBuilder.WriteString("ExecStart=\n")
-	scriptBuilder.WriteString("ExecStart=$ETCD_BIN\n")
-	scriptBuilder.WriteString("Environment=\"DAEMON_ARGS=\"\n")
-	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:2379,https://127.0.0.1:2379\"\n", advertiseAddress)
-	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:2379\"\n", advertiseAddress)
-	scriptBuilder.WriteString("Environment=\"ETCD_CERT_FILE=/etc/ccattler/pki/etcd.pem\"\n")
-	scriptBuilder.WriteString("Environment=\"ETCD_KEY_FILE=/etc/ccattler/pki/etcd-key.pem\"\n")
-	scriptBuilder.WriteString("Environment=\"ETCD_TRUSTED_CA_FILE=/etc/ccattler/pki/ca.pem\"\n")
-	scriptBuilder.WriteString("Environment=\"ETCD_CLIENT_CERT_AUTH=true\"\n")
-	scriptBuilder.WriteString("ETCD_OVERRIDE\n\n")
+	scriptBuilder.WriteString(buildSetupScriptEtcdStep(advertiseAddress))
 
 	scriptBuilder.WriteString("echo '==> Writing etcd endpoints for CLI auto-detection'\n")
 	scriptBuilder.WriteString("echo 'https://127.0.0.1:2379' > /etc/ccattler/endpoints\n")
@@ -438,3 +394,128 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 
 	return scriptBuilder.String()
 }
+
+// buildSetupScriptFirewallStep returns the setup.sh step that opens the
+// CCattler ports in ufw or firewalld when either is active: VXLAN, the API
+// port and the etcd client port that worker agents connect to.
+func buildSetupScriptFirewallStep() string {
+	var scriptBuilder strings.Builder
+	scriptBuilder.WriteString("echo '==> Opening VXLAN port (UDP 4789) in host firewall'\n")
+	scriptBuilder.WriteString("if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'active'; then\n")
+	scriptBuilder.WriteString("    ufw allow 4789/udp comment 'CCattler VXLAN'\n")
+	fmt.Fprintf(&scriptBuilder, "    ufw allow %s/tcp comment 'CCattler API'\n", defaultAPIListenPort)
+	fmt.Fprintf(&scriptBuilder, "    ufw allow %s/tcp comment 'CCattler etcd clients'\n", setupScriptEtcdClientPort)
+	scriptBuilder.WriteString("    ufw route allow in on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
+	scriptBuilder.WriteString("    ufw route allow out on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
+	scriptBuilder.WriteString("elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running; then\n")
+	scriptBuilder.WriteString("    firewall-cmd --permanent --add-port=4789/udp\n")
+	fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-port=%s/tcp\n", defaultAPIListenPort)
+	fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-port=%s/tcp\n", setupScriptEtcdClientPort)
+	scriptBuilder.WriteString("    firewall-cmd --permanent --add-masquerade\n")
+	scriptBuilder.WriteString("    firewall-cmd --reload\n")
+	scriptBuilder.WriteString("fi\n\n")
+
+	return scriptBuilder.String()
+}
+
+// buildSetupScriptEtcdStep returns the setup.sh step that finds the etcd
+// binary, writes etcd.service when no distribution unit exists (D3), and
+// writes the TLS drop-in, which never sets the data directory.
+func buildSetupScriptEtcdStep(advertiseAddress string) string {
+	var scriptBuilder strings.Builder
+	scriptBuilder.WriteString(setupScriptEtcdLookupStep)
+	scriptBuilder.WriteString(setupScriptEtcdUnitStep)
+
+	scriptBuilder.WriteString("# Grant etcd ownership of its own key pair.\n")
+	scriptBuilder.WriteString("if id etcd >/dev/null 2>&1; then\n")
+	scriptBuilder.WriteString("    chown etcd:etcd \"$PKI_DIR/etcd.pem\" \"$PKI_DIR/etcd-key.pem\"\n")
+	scriptBuilder.WriteString("fi\n\n")
+
+	scriptBuilder.WriteString("# Clear /etc/default/etcd to prevent apt-default DAEMON_ARGS from\n")
+	scriptBuilder.WriteString("# overriding TLS environment variables via command-line flags.\n")
+	scriptBuilder.WriteString("echo -n > /etc/default/etcd 2>/dev/null || true\n\n")
+	scriptBuilder.WriteString("mkdir -p /etc/systemd/system/etcd.service.d\n")
+	scriptBuilder.WriteString("# ETCD_BIN comes from the lookup above.\n")
+	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<ETCD_OVERRIDE\n")
+	scriptBuilder.WriteString("[Service]\n")
+	scriptBuilder.WriteString("# Clear base unit ExecStart to prevent flag/env conflicts (RHEL ships\n")
+	scriptBuilder.WriteString("# etcd with --listen-client-urls flags; etcd 3.5+ rejects duplicate config).\n")
+	scriptBuilder.WriteString("ExecStart=\n")
+	scriptBuilder.WriteString("ExecStart=$ETCD_BIN\n")
+	scriptBuilder.WriteString("Environment=\"DAEMON_ARGS=\"\n")
+	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:%s,https://127.0.0.1:%s\"\n",
+		advertiseAddress, setupScriptEtcdClientPort, setupScriptEtcdClientPort)
+	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:%s\"\n", advertiseAddress, setupScriptEtcdClientPort)
+	scriptBuilder.WriteString("Environment=\"ETCD_CERT_FILE=/etc/ccattler/pki/etcd.pem\"\n")
+	scriptBuilder.WriteString("Environment=\"ETCD_KEY_FILE=/etc/ccattler/pki/etcd-key.pem\"\n")
+	scriptBuilder.WriteString("Environment=\"ETCD_TRUSTED_CA_FILE=/etc/ccattler/pki/ca.pem\"\n")
+	scriptBuilder.WriteString("Environment=\"ETCD_CLIENT_CERT_AUTH=true\"\n")
+	scriptBuilder.WriteString("ETCD_OVERRIDE\n\n")
+
+	return scriptBuilder.String()
+}
+
+// setupScriptEtcdClientPort is the etcd client port setup.sh configures and opens
+// in the host firewall; agents on worker hosts connect to it.
+const setupScriptEtcdClientPort = "2379"
+
+// setupScriptEtcdLookupStep finds etcd on PATH, then in /usr/local/bin and
+// /usr/bin (sudo's secure_path may omit /usr/local/bin, where the release binary
+// goes), and stops with real sources per distribution family when it is missing.
+const setupScriptEtcdLookupStep = `echo '==> Configuring etcd with TLS'
+ETCD_BIN=$(command -v etcd || true)
+for ETCD_CANDIDATE in /usr/local/bin/etcd /usr/bin/etcd; do
+    if [ -z "$ETCD_BIN" ] && [ -x "$ETCD_CANDIDATE" ]; then
+        ETCD_BIN=$ETCD_CANDIDATE
+    fi
+done
+if [ -z "$ETCD_BIN" ]; then
+    echo 'ERROR: etcd not found. Install etcd first:' >&2
+    echo '  Debian/Ubuntu: sudo apt install etcd-server' >&2
+    echo '  RHEL/AlmaLinux/Rocky: no repository ships etcd; install the release binary from' >&2
+    echo '    https://github.com/etcd-io/etcd/releases into /usr/local/bin, verified with SHA256SUMS' >&2
+    echo '    (steps: https://ccattler.org/installation#prepare-a-fresh-host)' >&2
+    echo 'Then re-run this script.' >&2
+    exit 1
+fi
+
+`
+
+// setupScriptEtcdUnitStep creates the etcd user and a full etcd.service when the
+// host has no unit (a release binary). The data directory is explicit, the same
+// /var/lib/etcd/default as Debian's etcd-server; a distribution unit is kept.
+const setupScriptEtcdUnitStep = `if ! systemctl cat etcd.service >/dev/null 2>&1; then
+    echo '==> No etcd.service found: creating the etcd user and unit'
+    if ! id etcd >/dev/null 2>&1; then
+        ETCD_NOLOGIN=/sbin/nologin
+        if [ -x /usr/sbin/nologin ]; then ETCD_NOLOGIN=/usr/sbin/nologin; fi
+        if command -v useradd >/dev/null 2>&1; then
+            useradd --system --user-group --home-dir /var/lib/etcd --shell "$ETCD_NOLOGIN" etcd
+        elif command -v adduser >/dev/null 2>&1; then
+            adduser --system --group --home /var/lib/etcd --shell "$ETCD_NOLOGIN" etcd
+        else
+            echo 'ERROR: cannot create the etcd user: neither useradd nor adduser found.' >&2
+            exit 1
+        fi
+    fi
+    cat > /etc/systemd/system/etcd.service <<ETCD_UNIT
+[Unit]
+Description=etcd key-value store (written by CCattler setup.sh)
+Documentation=https://etcd.io/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=etcd
+ExecStart=$ETCD_BIN
+Environment=ETCD_DATA_DIR=/var/lib/etcd/default
+Environment=ETCD_NAME=%H
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+ETCD_UNIT
+fi
+`
