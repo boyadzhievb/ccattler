@@ -104,10 +104,24 @@ change than this bug needs.
 - `setup.sh` already runs with `set -eu`. The message path ends with `exit 1`; the old message appeared to exit 0
   (seen through a pipe on the VM, so this is checked in the test).
 
-### D5. Open 2379/tcp next to the API port
-- firewalld: `--add-port=2379/tcp`.
-- ufw: `ufw allow 2379/tcp comment 'CCattler etcd clients'`.
-- Peer port 2380 is not opened: there is no HA etcd setup in `cca init` (see M184).
+### D5. Open 2379/tcp only to the networks the operator names
+Changed during apply, 2026-11-24, by user decision on security finding S2, option b. The first version opened
+2379/tcp to every source.
+- **Why:** until M280 is fixed, every certificate the cluster CA issues with ClientAuth, gate certificates included,
+  is a full etcd client. So the port must not be reachable from hosts nobody chose.
+- **The flag:** `cca init --etcd-client-cidr` takes one or more CIDRs (repeatable or comma-separated), each checked
+  with `net.ParseCIDR`. An invalid value stops `cca init` before any file is written.
+- **firewalld:** one rich rule per CIDR: `firewall-cmd --permanent --add-rich-rule='rule family="ipv4|ipv6" source
+  address="<cidr>" port port="2379" protocol="tcp" accept'`.
+- **ufw:** `ufw allow from <cidr> to any port 2379 proto tcp comment 'CCattler etcd clients'`.
+- **Without the flag:** no rule. `setup.sh` prints both commands with a `<your node network>` placeholder and names the
+  flag. The guide's worker section tells multi-node users to pass the flag.
+- **Rejected:**
+  - the advertise address's own subnet, because it guesses which hosts are trusted;
+  - never opening the port, because RHEL multi-node would then fail until a reader finds the doc.
+
+  For comparison, kubeadm and k3s document the ports and touch no firewall.
+- **Peer port 2380** is not opened: there is no HA etcd setup in `cca init` (see M184).
 
 ### D6. CNI search path
 `cniPluginDirectories = []string{"/opt/cni/bin", "/usr/libexec/cni", "/usr/lib/cni"}`, passed to

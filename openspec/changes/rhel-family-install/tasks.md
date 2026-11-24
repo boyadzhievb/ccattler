@@ -66,7 +66,7 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   | # | Finding | Resolution |
   |---|---|---|
   | S1 | install.sh leaves `/usr/local/bin/cca` owned by the installing user; systemd and `sudo cca` run it as root (local escalation; in every release so far). Codex flagged the chmod; the reviewer rejected it on the same mechanism | **fix** 3m.1 (user decision 2026-11-24, option a: in M279); release notes tell existing users `sudo chown root:root /usr/local/bin/cca` |
-  | S2 | setup.sh opens 2379/tcp to every source; every cluster-CA leaf with ClientAuth is an etcd root client, gate certificates included (route_tls.go:162 → ca.go:211) | **fix** 3m.2 (rule limited to cluster sources); the CA design issue → milestone M280 |
+  | S2 | setup.sh opens 2379/tcp to every source; every cluster-CA leaf with ClientAuth is an etcd root client, gate certificates included (route_tls.go:162 → ca.go:211) | **fix** 3m.5 (user decision 2026-11-24, option b: `--etcd-client-cidr`, closed by default); the CA design issue → milestone M280 |
   | S3 | An existing unit's `EnvironmentFile` can override the TLS drop-in | **fix** 3m.2 (empty `EnvironmentFile=` in the drop-in) |
   | S4 | The guide's etcd checksum does not stop the install | **fix** 3m.3 (`&&` chain; pinned SHA-256 in the doc) |
   | S5 | The printed secure_path drop-in can add user-writable dirs (also code-reviewer 3) | **fix** 3m.1 (only for an absolute, root-owned, not group/world-writable INSTALL_PATH) |
@@ -94,6 +94,16 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 - [x] 3m.4 R5, R6: the receiver rename, the etcd port constant everywhere, and a test that the CNI directory list in
   `install.sh` matches `cniPluginDirectories`.
   Result: receiver `setupScriptStepRun`; `setupScriptEtcdClientPort` at the endpoints file, `--endpoints` and etcdctl health lines (no literal 2379 left in command_init.go); TestInstallScriptCNIDirectoriesMatchAgent (runtime) passes and fails on a temporary drift edit (reverted). Checks: gofmt clean, golangci-lint ./... 0 issues, go vet clean, go test -count=1 ./... exit 0, -race cmd/cca runtime ok.
+- [ ] 3m.5 S2 (user decision 2026-11-24, option b; design.md D5 and the host-setup requirement updated):
+  - `cca init --etcd-client-cidr` (repeatable or comma-separated, validated, error before any file is written);
+  - setup.sh opens 2379/tcp only from those CIDRs (firewalld rich rules, `ufw allow from`) and otherwise prints the
+    commands and names the flag;
+  - the guide's worker section and `design/cli-reference.md` updated (`TestDocCrossCheckCLICommandsExist`).
+
+  Tests first, red on 71e24ac: `TestSetupScriptOpensEtcdClientPortOnlyToGivenNetworks`,
+  `TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks`, `TestInitRejectsInvalidEtcdClientCIDR`. Replace the
+  old `TestSetupScriptOpensEtcdClientPort` (it asserted the open-to-all rule the decision removed), recorded here
+  with that reason.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

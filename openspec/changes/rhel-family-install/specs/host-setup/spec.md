@@ -40,15 +40,31 @@ and Rocky (no EL9 repository ships etcd).
   download for RHEL-family hosts, and it does not suggest `dnf install etcd`
 - Test: `TestSetupScriptEtcdMissingHintNamesRealSources`
 
-### Requirement: setup.sh opens the etcd client port on a control-plane host
-When ufw or firewalld is active, `setup.sh` SHALL also open the etcd client port, 2379/tcp, next to the API port and
-VXLAN, because agents on worker hosts connect to etcd on the control-plane host.
+### Requirement: setup.sh opens the etcd client port only to the networks the operator names
+Agents on worker hosts connect to etcd on the control-plane host. When ufw or firewalld is active, `setup.sh` SHALL
+open 2379/tcp only from the networks given to `cca init --etcd-client-cidr`, and never from every source. Without
+the flag it SHALL leave the port closed and print the exact firewalld or ufw command that opens it for a network.
+(Changed during apply, 2026-11-24, user decision on security finding S2: option b.)
 
-#### Scenario: firewalld active
-- **GIVEN** firewalld is running
+#### Scenario: Networks given
+- **GIVEN** `cca init --etcd-client-cidr 192.0.2.0/24` and firewalld running
 - **WHEN** the generated `setup.sh` configures the firewall
-- **THEN** it adds 2379/tcp, 9770/tcp and 4789/udp permanently and reloads firewalld
-- Test: `TestSetupScriptOpensEtcdClientPort` (firewalld and ufw subcases)
+- **THEN** it allows 2379/tcp only from 192.0.2.0/24 (a source-restricted rule), adds 9770/tcp and 4789/udp as
+  before, and reloads firewalld; the ufw subcase uses `ufw allow from 192.0.2.0/24 to any port 2379 proto tcp`
+- Test: `TestSetupScriptOpensEtcdClientPortOnlyToGivenNetworks` (firewalld and ufw subcases, several CIDRs)
+
+#### Scenario: No networks given
+- **GIVEN** `cca init` without `--etcd-client-cidr`
+- **WHEN** the generated `setup.sh` configures the firewall
+- **THEN** it does not open 2379/tcp from any source, and prints the firewalld and ufw commands that open it for a
+  network, naming the flag
+- Test: `TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks`
+
+#### Scenario: Invalid network
+- **GIVEN** `cca init --etcd-client-cidr 192.0.2.0/33` (or any value that is not an IPv4/IPv6 CIDR)
+- **WHEN** `cca init` runs
+- **THEN** it exits with an error naming the value, and writes no files
+- Test: `TestInitRejectsInvalidEtcdClientCIDR`
 
 ### Requirement: The agent finds CNI plugins in distribution directories
 The containerd runtime SHALL look for CNI plugin binaries in `/opt/cni/bin` first, then in `/usr/libexec/cni` and
