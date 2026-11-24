@@ -379,6 +379,28 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   `installed_owner=${installed_owner%% *}` removed with the old check. Checks: 41/41 install tests under /bin/sh (dash)
   and bash; shellcheck sh and dash clean; gofmt clean; golangci-lint ./... 0 issues; go vet; go test -count=1 ./...
   exit 0; -race ok.
+  Round 6 (2026-11-24, on bc650be..48256d3; both on Opus high):
+  - **code-reviewer (Codex included): request changes, low only.** R5-1 to R5-7 fixed; no chown, chmod or sudoers
+    text in install.sh. Red reproduced on bc650be; green 41/41 under dash and bash.
+  - **security-audit: adequate, nothing above LOW.** Standard /usr/local/bin is quiet; user-owned paths,
+    group-writable parents and ACLs warn; symlinks and bind mounts are handled.
+
+  | # | Finding | Resolution |
+  |---|---|---|
+  | R6-1 | The as-given secure_path match accepts relative values (`.`, `install`), and the given spelling's parents are not walked (B1 reproduced, L1 reasoned) | **fix** 3s.1: accept the given spelling only when absolute and its own components pass the ownership walk (lstat, not followed) |
+  | R6-2 | A symlink to a target whose name holds a newline gets past the refusal; `$(pwd -P)` strips a trailing newline (B2 and L2, reproduced; fails safe) | **fix** 3s.1: also refuse when the resolved path contains a newline |
+  | R6-3 | The sticky exemption also applies to the binary, a regular file (B3 and L3; unreachable today: `install -m 0755`) | **fix** 3s.1: write-bit and sticky rules only for directories |
+  | R6-4 | Old Debian: `/usr/local` is also root:staff 2775, so the walk flags it, but the guide's fixed snippet fixes only `/usr/local/bin` | **fix** 3s.2: the snippet covers `/usr/local` too |
+  | R6-5 | The `dash` subcase of `TestInstallScriptRefusesUnusableInstallPath` passes whatever the input (install.sh's own text contains `'-'`) | **fix** 3s.2 |
+  | R6-6 | Ownership checks cannot see user-controlled filesystems (loop-mounted images, FUSE allow_other, NFS) | **document** 3s.2: one sentence in the guide (a stated limit) |
+  | R6-7 | Unreferenced `installPathPlain`; three overlapping test options for INSTALL_PATH | **fix** 3s.2 |
+  | — | Results returned through shell globals; carriage returns and escapes in a user-chosen INSTALL_PATH; "what systemd runs" with a custom INSTALL_PATH | **rejected**: POSIX sh has no `local`, so globals with clear names are acceptable; the escapes only affect the user's own output; the wording stays true for `sudo <path>/cca` |
+
+- [ ] 3s.1 R6-1 to R6-3 in install.sh. Red first: subcases for a relative given spelling on sudo's PATH, a symlink
+  in a user-writable parent listed on secure_path, and a symlink to a target name with a newline. Keep shellcheck
+  clean under sh and dash.
+- [ ] 3s.2 R6-4 to R6-7: the guide snippet and the limit sentence, the `dash` subcase assertion, and the test option
+  cleanup. Then run the checks as in 3.1.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up
