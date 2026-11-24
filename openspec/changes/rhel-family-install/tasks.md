@@ -310,7 +310,7 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   union error names the networks joined by commas; reason text "is not private or loopback"; installation.md "links
   to the fix". Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok,
   vitepress build of a copy.
-- [ ] 3q.3 R4-8 (Codex stop-time check, 2026-11-24, confirmed by the main session at install.sh:188, which warns
+- [x] 3q.3 R4-8 (Codex stop-time check, 2026-11-24, confirmed by the main session at install.sh:188, which warns
   only when the binary's uid is not 0): a root-owned binary in a directory that is group- or world-writable, or not
   root-owned (old Debian `/usr/local/bin` root:staff 2775), gets no warning, although group members can replace it
   and run code as root. Same rule as R4-1, so it is in scope.
@@ -319,6 +319,12 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   - Red first: subcases `root-owned binary, group-writable dir` and `root-owned binary, user-owned dir`.
   - The binary-install scenario "Installed without sudo into a directory the user can write" covers the advice; the
     main session extends its GIVEN to any directory others can write.
+  Result: red on ae1976c: TestInstallScriptWarnsWhenBinaryNotRootOwned/{root-owned binary, group-writable dir (0 2775);
+  root-owned binary, user-owned dir} (no warning). Fix: the Linux ownership check also reads the normalized
+  directory's owner and mode (`stat -c '%u %a'`) and warns when it is not uid 0 or has 022 bits, with the same
+  root-only advice and quoted paths; the binary check comes first. Green 31/31 under sh and bash; shellcheck sh and
+  dash clean; next-step quoting unchanged. Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test
+  -count=1 ./... exit 0, -race ok.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

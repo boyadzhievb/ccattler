@@ -183,12 +183,24 @@ fi
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
 
 # --- Ownership (Linux): systemd and sudo run cca as root, so only root may be able to change it ---
+# Both the binary and its directory count: whoever can write the directory can replace the binary.
 if [ "$operating_system" = "linux" ]; then
+    install_directory_quoted=$(shell_quoted "$INSTALL_PATH")
     installed_owner=$(stat -c '%u' "${INSTALL_PATH}/cca" 2>/dev/null || echo unknown)
     installed_owner=${installed_owner%% *}
+    directory_owner_and_mode=$(stat -c '%u %a' "$INSTALL_PATH" 2>/dev/null || echo "unknown 777")
+    directory_owner=${directory_owner_and_mode%% *}
+    directory_mode=${directory_owner_and_mode##* }
+    ownership_problem=""
     if [ "$installed_owner" != "0" ]; then
-        install_directory_quoted=$(shell_quoted "$INSTALL_PATH")
-        log_warn "$(shell_quoted "${INSTALL_PATH}/cca") is owned by uid ${installed_owner}, not root."
+        ownership_problem="$(shell_quoted "${INSTALL_PATH}/cca") is owned by uid ${installed_owner}, not root."
+    elif [ "$directory_owner" != "0" ]; then
+        ownership_problem="${install_directory_quoted} is owned by uid ${directory_owner}, not root."
+    elif [ $((0${directory_mode} & 022)) -ne 0 ]; then
+        ownership_problem="${install_directory_quoted} is group- or world-writable (mode ${directory_mode})."
+    fi
+    if [ -n "$ownership_problem" ]; then
+        log_warn "$ownership_problem"
         log_warn "Whoever owns it or can write ${install_directory_quoted} can change what systemd and sudo run as root,"
         log_warn "so that directory must be writable only by root:"
         log_warn "  sudo chown root:root ${install_directory_quoted} && sudo chmod 0755 ${install_directory_quoted}"

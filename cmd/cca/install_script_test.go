@@ -515,21 +515,25 @@ func physicalPath(t *testing.T, path string) string {
 }
 
 // TestInstallScriptWarnsWhenBinaryNotRootOwned: on Linux, when the binary is not owned
-// by uid 0 (installed without sudo into a directory the user can write), install.sh
-// warns that whoever owns it or can write its directory can change what systemd and
-// sudo run as root, and that the directory must be writable only by root; every path
-// in the warning is quoted. It stays quiet when root owns the binary.
+// by uid 0, or its directory is not root-owned or is group- or world-writable (old
+// Debian root:staff 2775), install.sh warns that whoever owns the binary or can write
+// its directory can change what systemd and sudo run as root, and that the directory
+// must be writable only by root; every path in the warning is quoted.
 func TestInstallScriptWarnsWhenBinaryNotRootOwned(t *testing.T) {
 	for _, testCase := range []struct {
 		name           string            // subcase name
 		installDirName string            // install directory name, "" for "install"
-		statTable      map[string]string // owner stat reports for the installed binary
-		wantWarning    bool              // the ownership warning is printed
+		statTable      map[string]string // owner and mode stat reports; unlisted paths are root-owned 0755
+		wantFirstLine  string            // what the warning names first; {dir} is the quoted directory; "" for none
 	}{
 		{name: "root-owned"},
-		{name: "user-owned", statTable: map[string]string{"{install}/cca": "1000 755"}, wantWarning: true},
+		{name: "user-owned", statTable: map[string]string{"{install}/cca": "1000 755"}, wantFirstLine: "{cca} is owned by uid 1000"},
 		{name: "user-owned, path with a space", installDirName: "my install",
-			statTable: map[string]string{"{install}/cca": "1000 755"}, wantWarning: true},
+			statTable: map[string]string{"{install}/cca": "1000 755"}, wantFirstLine: "{cca} is owned by uid 1000"},
+		{name: "root-owned binary, group-writable dir", statTable: map[string]string{"{install}": "0 2775"},
+			wantFirstLine: "{dir} is group- or world-writable"},
+		{name: "root-owned binary, user-owned dir", statTable: map[string]string{"{install}": "1000 755"},
+			wantFirstLine: "{dir} is owned by uid 1000"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			run := runInstallScriptWithFakes(t, installScriptOptions{sudoSecurePath: "/usr/bin:{install}", writableInstallDir: true,
@@ -537,16 +541,21 @@ func TestInstallScriptWarnsWhenBinaryNotRootOwned(t *testing.T) {
 			if run.exitError != nil {
 				t.Fatalf("install.sh failed: %v\n%s", run.exitError, run.output)
 			}
-			installDirectory := physicalPath(t, run.installDir)
+			quotedDirectory := "'" + physicalPath(t, run.installDir) + "'"
+			quotedBinary := "'" + physicalPath(t, run.installDir) + "/cca'"
+			wantWarning := testCase.wantFirstLine != ""
 			wantedParts := []string{
-				"'" + installDirectory + "/cca' is owned by uid 1000",
-				"can write '" + installDirectory + "'",
+				"can write " + quotedDirectory,
 				"writable only by root",
-				"sudo chown root:root '" + installDirectory + "' && sudo chmod 0755 '" + installDirectory + "'",
+				"sudo chown root:root " + quotedDirectory + " && sudo chmod 0755 " + quotedDirectory,
+			}
+			if wantWarning {
+				wantedParts = append(wantedParts,
+					strings.NewReplacer("{dir}", quotedDirectory, "{cca}", quotedBinary).Replace(testCase.wantFirstLine))
 			}
 			for _, wantedPart := range wantedParts {
-				if hasPart := strings.Contains(run.output, wantedPart); hasPart != testCase.wantWarning {
-					t.Errorf("warning part %q present = %v, want %v; output:\n%s", wantedPart, hasPart, testCase.wantWarning, run.output)
+				if hasPart := strings.Contains(run.output, wantedPart); hasPart != wantWarning {
+					t.Errorf("warning part %q present = %v, want %v; output:\n%s", wantedPart, hasPart, wantWarning, run.output)
 				}
 			}
 		})
