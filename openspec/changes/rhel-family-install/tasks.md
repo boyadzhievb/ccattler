@@ -212,14 +212,14 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   | — | Runtime warning when the binary is not owned by uid 0 after an install without sudo (security suggestion) | **fix** 3p.2 (one warning line) |
   | Codex | "`<ipv4 or ipv6>` is not runnable"; "`::fffe:0:0/95` covers all IPv4" | **rejected**: the line is a template next to `<your node network>`; that prefix becomes an ipv6 rule, which IPv4 packets never match |
 
-- [ ] 3p.1 B1 and B3 (design.md "Structural changes after review round 3"):
+- [x] 3p.1 B1 and B3 (design.md "Structural changes after review round 3"):
   - check the canonical parsed network with one parser (`Mask.Size()` after unmapping);
   - refuse a union covering a family;
   - warn for wider than /8 or /32, or public ranges, naming M280.
 
   Tests, red on 56068a0: the new subcases of `TestInitRejectsInvalidEtcdClientCIDR`, `TestInitWarnsOnWideEtcdClientCIDR`
   and `TestSetupScriptEtcdRulesNeverCoverEveryAddress` (parse the rules out of the generated setup.sh).
-- [ ] 3p.2 B2, B5, warning (user option a): `install.sh` drops `safe_sudo_path_entries`,
+- [x] 3p.2 B2, B5, warning (user option a): `install.sh` drops `safe_sudo_path_entries`,
   `directory_is_safe_for_sudo` and every printed sudoers line.
   - When the install directory is missing from secure_path, it warns, gives the full-path next steps and names the
     guide's `secure_path` step (link).
@@ -227,7 +227,33 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   - The `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` subcases assert there is no `Defaults secure_path` and no
     `/etc/sudoers.d` in the output, red first.
   - Remove the dead helpers and keep shellcheck clean.
-- [ ] 3p.3 B4: the `SELinux disabled` subcase asserts that nothing about SELinux is printed. Run the checks as in 3.1.
+- [x] 3p.3 B4: the `SELinux disabled` subcase asserts that nothing about SELinux is printed. Run the checks as in 3.1.
+
+  Who did 3p: the lead-developer started it (tests, canonical CIDR form, union check, warnings, the install.sh
+  rewrite). It stopped at its usage limit. The main session finished it (user decision 2026-11-24, option b): one
+  lint fix, the red and green evidence, the ticks. Round-4 reviewers review it independently.
+
+  Results (2026-11-24):
+  - **Red on ca6e9b9.** New test files copied into worktree `scratchpad/m279-red-3p`; the run compiled cleanly. Log:
+    `scratchpad/m279-evidence/3p-red.txt`. Failing:
+    - TestInitRejectsInvalidEtcdClientCIDR: `0.0.0.0/00`, `::/000`, `::ffff:0.0.0.0/096`, `0.0.0.0/1,128.0.0.0/1`,
+      `::/1,8000::/1`, `0.0.0.0/1,128.0.0.0/2,192.0.0.0/2,10.0.0.0/8`;
+    - TestInitWarnsOnWideEtcdClientCIDR: `10.0.0.0/7`, `203.0.113.0/24`, `2001::/16`, `0.0.0.0/1`;
+    - TestSetupScriptEtcdRulesNeverCoverEveryAddress: 7 subcases, among them the leading-zero forms and the unions;
+    - TestInstallScriptWarnsWhenSudoPathLacksInstallDir: `missing`, `unsafe sudo path entries`, `user-owned dir`,
+      `user-owned parent`, `symlink into a user-owned dir`, `relative path` (sudoers text printed).
+  - **3p.3:** `SELinux disabled` passes on the base, because the behaviour was already right. A mutation that prints
+    "SELinux check skipped" makes it fail ("output mentions SELinux although it is disabled").
+  - **Green on the worktree:**
+    - `gofmt -l .` empty;
+    - `golangci-lint run ./...` 0 issues, after fixing QF1001 at command_init.go:224 (De Morgan);
+    - `go vet ./...` clean;
+    - `shellcheck -s sh` and `-s dash install.sh` clean;
+    - `go test -count=1 ./...` exit 0, 20 packages ok (`scratchpad/m279-evidence/3p-go-test.txt`);
+    - `go test -race ./cmd/cca ./runtime` ok.
+  - **install.sh:** no `safe_sudo_path_entries`, `directory_is_safe_for_sudo`, `Defaults secure_path` or `sudoers.d`
+    is left. The directory lookup is `CDPATH='' cd -P -- … && pwd -P` (B5), and a non-uid-0 owner gives a warning.
+  - **Spec:** the union subcases are named by their values (host-setup spec aligned).
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

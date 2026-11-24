@@ -6,10 +6,12 @@ package main
 
 import (
 	"fmt"
+	"math/big"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,6 +83,10 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 	if parseError := parseDaemonFlagSet(flagSet, args); parseError != nil {
 		return parsedConfig, parseError
 	}
+	if etcdClientNetworksCoverFamily(parsedConfig.etcdClientNetworks) {
+		return parsedConfig, fmt.Errorf("--etcd-client-cidr: the networks %v together cover every address; "+
+			"name the cluster's networks, not every source", parsedConfig.etcdClientNetworks)
+	}
 
 	if parsedConfig.nodeID == "" {
 		hostname, _ := os.Hostname()
@@ -104,21 +110,21 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 }
 
 // parseEtcdClientCIDRs parses one --etcd-client-cidr value, a comma-separated list
-// of IPv4 or IPv6 CIDRs, and names the first item that is not one or that covers
-// every address (which would open etcd to all sources).
+// of IPv4 or IPv6 CIDRs, into canonical networks, and names the first item that is
+// not one or that covers every address (which would open etcd to all sources).
 func parseEtcdClientCIDRs(flagValue string) ([]*net.IPNet, error) {
 	var parsedNetworks []*net.IPNet
 	for _, cidrItem := range strings.Split(flagValue, ",") {
-		trimmedItem := strings.TrimSpace(cidrItem)
-		_, parsedNetwork, parseError := net.ParseCIDR(trimmedItem)
+		_, parsedNetwork, parseError := net.ParseCIDR(strings.TrimSpace(cidrItem))
 		if parseError != nil {
 			return nil, fmt.Errorf("--etcd-client-cidr %q: %q is not an IPv4 or IPv6 CIDR", flagValue, cidrItem)
 		}
-		if prefixCoversEveryAddress(trimmedItem) {
+		canonicalNetwork := canonicalEtcdClientNetwork(parsedNetwork)
+		if prefixLength, _ := canonicalNetwork.Mask.Size(); prefixLength == 0 {
 			return nil, fmt.Errorf("--etcd-client-cidr %q: %q covers every address; name the cluster's networks, not every source",
 				flagValue, cidrItem)
 		}
-		parsedNetworks = append(parsedNetworks, parsedNetwork)
+		parsedNetworks = append(parsedNetworks, canonicalNetwork)
 	}
 	return parsedNetworks, nil
 }
@@ -126,18 +132,100 @@ func parseEtcdClientCIDRs(flagValue string) ([]*net.IPNet, error) {
 // ipv4MappedPrefixBits is the length of the ::ffff:0:0/96 prefix of IPv4-mapped IPv6 addresses.
 const ipv4MappedPrefixBits = 96
 
-// prefixCoversEveryAddress reports whether a valid CIDR covers its whole address
-// family, judged on the unmapped form so ::ffff:0.0.0.0/96 counts as 0.0.0.0/0.
-func prefixCoversEveryAddress(cidr string) bool {
-	parsedPrefix, parseError := netip.ParsePrefix(cidr)
-	if parseError != nil {
-		return false
+// canonicalEtcdClientNetwork returns the one form both the checks and setup.sh use:
+// a 4-byte IPv4 network, also for an IPv4-mapped IPv6 network, or a 16-byte IPv6 one.
+func canonicalEtcdClientNetwork(network *net.IPNet) *net.IPNet {
+	prefixLength, maskBits := network.Mask.Size()
+	ipv4Address := network.IP.To4()
+	switch {
+	case ipv4Address != nil && maskBits == net.IPv4len*8:
+		return &net.IPNet{IP: ipv4Address, Mask: network.Mask}
+	case ipv4Address != nil && prefixLength >= ipv4MappedPrefixBits:
+		return &net.IPNet{IP: ipv4Address, Mask: net.CIDRMask(prefixLength-ipv4MappedPrefixBits, net.IPv4len*8)}
 	}
-	prefixBits := parsedPrefix.Bits()
-	if parsedPrefix.Addr().Is4In6() {
-		prefixBits -= ipv4MappedPrefixBits
+	return &net.IPNet{IP: network.IP.To16(), Mask: network.Mask}
+}
+
+// etcdClientNetworksCoverFamily reports whether canonical networks together cover a
+// whole address family. CIDR blocks either nest or are disjoint, so after dropping
+// every block inside a wider one the sizes add up to the union's size.
+func etcdClientNetworksCoverFamily(networks []*net.IPNet) bool {
+	networksByFamilyBits := map[int][]*net.IPNet{}
+	for _, network := range networks {
+		_, maskBits := network.Mask.Size()
+		networksByFamilyBits[maskBits] = append(networksByFamilyBits[maskBits], network)
 	}
-	return prefixBits <= 0
+	for familyBits, familyNetworks := range networksByFamilyBits {
+		slices.SortFunc(familyNetworks, func(first, second *net.IPNet) int {
+			firstLength, _ := first.Mask.Size()
+			secondLength, _ := second.Mask.Size()
+			return firstLength - secondLength
+		})
+		coveredAddresses := new(big.Int)
+		var outermostNetworks []*net.IPNet
+		for _, network := range familyNetworks {
+			if slices.ContainsFunc(outermostNetworks, func(wider *net.IPNet) bool { return wider.Contains(network.IP) }) {
+				continue // inside a wider block already counted
+			}
+			outermostNetworks = append(outermostNetworks, network)
+			prefixLength, _ := network.Mask.Size()
+			coveredAddresses.Add(coveredAddresses, new(big.Int).Lsh(big.NewInt(1), uint(familyBits-prefixLength)))
+		}
+		if coveredAddresses.Cmp(new(big.Int).Lsh(big.NewInt(1), uint(familyBits))) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// etcdClientWideIPv4Bits and etcdClientWideIPv6Bits: networks shorter than these
+// prefixes get a warning (D5), as do networks with public addresses.
+const (
+	etcdClientWideIPv4Bits = 8
+	etcdClientWideIPv6Bits = 32
+)
+
+// etcdClientNetworkWarnings returns one warning per network that is wider than /8
+// (IPv4) or /32 (IPv6) or holds public addresses: until M280 every certificate the
+// cluster CA issues can use etcd, so those sources can reach it with any of them.
+func etcdClientNetworkWarnings(networks []*net.IPNet) []string {
+	var warnings []string
+	for _, network := range networks {
+		prefixLength, maskBits := network.Mask.Size()
+		wideLimit := etcdClientWideIPv6Bits
+		if maskBits == net.IPv4len*8 {
+			wideLimit = etcdClientWideIPv4Bits
+		}
+		var reasons []string
+		if prefixLength < wideLimit {
+			reasons = append(reasons, fmt.Sprintf("is wider than /%d", wideLimit))
+		}
+		if !networkIsPrivateOrLoopback(network) {
+			reasons = append(reasons, "holds public addresses")
+		}
+		if len(reasons) > 0 {
+			warnings = append(warnings, fmt.Sprintf("WARNING: --etcd-client-cidr %s %s; every certificate the cluster CA "+
+				"issues can use etcd from there until M280 is fixed. Name only the cluster's own networks.",
+				network, strings.Join(reasons, " and ")))
+		}
+	}
+	return warnings
+}
+
+// networkIsPrivateOrLoopback reports whether a canonical network's first and last
+// addresses are private or loopback; an aligned block with both lies in one such range.
+func networkIsPrivateOrLoopback(network *net.IPNet) bool {
+	lastAddressBytes := make([]byte, len(network.IP))
+	for byteIndex := range network.IP {
+		lastAddressBytes[byteIndex] = network.IP[byteIndex] | ^network.Mask[byteIndex]
+	}
+	for _, addressBytes := range [][]byte{network.IP, lastAddressBytes} {
+		address, valid := netip.AddrFromSlice(addressBytes)
+		if !valid || (!address.IsPrivate() && !address.IsLoopback()) {
+			return false
+		}
+	}
+	return true
 }
 
 // executeInitCommand generates PKI material and writes a setup script that
@@ -145,6 +233,9 @@ func prefixCoversEveryAddress(cidr string) bool {
 func executeInitCommand(parsedConfig initCommandConfig) {
 	outputDirectory := resolveInitOutputDirectory(parsedConfig.outputDirectory)
 
+	for _, networkWarning := range etcdClientNetworkWarnings(parsedConfig.etcdClientNetworks) {
+		fmt.Fprintln(os.Stderr, networkWarning)
+	}
 	fmt.Printf("Generating PKI for node %s (advertise: %s)...\n", parsedConfig.nodeID, parsedConfig.advertiseAddress)
 
 	var certificateAuthority *security.CertificateAuthority

@@ -4,10 +4,13 @@
 package main
 
 import (
+	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -409,4 +412,81 @@ func TestSetupScriptEtcdUserWithoutUseradd(t *testing.T) {
 			t.Errorf("etcd.service written although the etcd user could not be created")
 		}
 	})
+}
+
+// setupScriptEtcdRulePatterns pull the source networks out of the generated 2379 rules.
+var setupScriptEtcdRulePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`--add-rich-rule='rule family="ipv[46]" source address="([^"<]+)" port port="2379"`),
+	regexp.MustCompile(`ufw allow from ([^ <']+) to any port 2379 proto tcp`),
+}
+
+// prefixIntervalsCoverFamily reports whether the prefixes, unmapped to IPv4 where
+// mapped, cover every address of IPv4 or of IPv6. It merges address intervals,
+// independent of the production check.
+func prefixIntervalsCoverFamily(prefixes []netip.Prefix) bool {
+	intervalsByBits := map[int][][2]*big.Int{}
+	for _, prefix := range prefixes {
+		prefixAddress, prefixBits := prefix.Addr(), prefix.Bits()
+		if prefixAddress.Is4In6() {
+			prefixAddress, prefixBits = prefixAddress.Unmap(), prefixBits-96
+		}
+		familyBits := prefixAddress.BitLen()
+		start := new(big.Int).SetBytes(prefixAddress.AsSlice())
+		size := new(big.Int).Lsh(big.NewInt(1), uint(familyBits-max(prefixBits, 0)))
+		end := new(big.Int).Sub(new(big.Int).Add(start, size), big.NewInt(1))
+		intervalsByBits[familyBits] = append(intervalsByBits[familyBits], [2]*big.Int{start, end})
+	}
+	for familyBits, intervals := range intervalsByBits {
+		slices.SortFunc(intervals, func(first, second [2]*big.Int) int { return first[0].Cmp(second[0]) })
+		coveredUpTo := big.NewInt(-1)
+		for _, interval := range intervals {
+			if interval[0].Cmp(new(big.Int).Add(coveredUpTo, big.NewInt(1))) > 0 {
+				break
+			}
+			if interval[1].Cmp(coveredUpTo) > 0 {
+				coveredUpTo = interval[1]
+			}
+		}
+		lastAddress := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), uint(familyBits)), big.NewInt(1))
+		if coveredUpTo.Cmp(lastAddress) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSetupScriptEtcdRulesNeverCoverEveryAddress: for every --etcd-client-cidr value
+// cca init accepts, the 2379 rules read back out of the generated setup.sh never
+// cover every address of a family, alone or together (firewalld and ufw lines).
+func TestSetupScriptEtcdRulesNeverCoverEveryAddress(t *testing.T) {
+	for _, flagValue := range []string{
+		"0.0.0.0/0", "0.0.0.0/00", "::/0", "::/000", "::ffff:0.0.0.0/96", "::ffff:0.0.0.0/096",
+		"0.0.0.0/1,128.0.0.0/1", "::/1,8000::/1", "0.0.0.0/1,128.0.0.0/2,192.0.0.0/2",
+		"0.0.0.0/1", "10.0.0.0/8,10.1.0.0/16", "192.0.2.0/24,2001:db8::/64", "::ffff:10.0.0.0/104",
+		"0.0.0.0/1,::ffff:128.0.0.0/97",
+	} {
+		t.Run(flagValue, func(t *testing.T) {
+			parsedConfig, parseError := parseInitCommandArgs([]string{"--etcd-client-cidr", flagValue})
+			if parseError != nil {
+				return // refused: no setup.sh is written
+			}
+			setupScript := buildSetupScript("192.0.2.10", "ctrl", "/tmp/cca-init", "", "", parsedConfig.etcdClientNetworks)
+			for _, rulePattern := range setupScriptEtcdRulePatterns {
+				var rulePrefixes []netip.Prefix
+				for _, ruleMatch := range rulePattern.FindAllStringSubmatch(setupScript, -1) {
+					rulePrefix, prefixError := netip.ParsePrefix(ruleMatch[1])
+					if prefixError != nil {
+						t.Fatalf("rule source %q is not a canonical prefix: %v", ruleMatch[1], prefixError)
+					}
+					rulePrefixes = append(rulePrefixes, rulePrefix)
+				}
+				if len(rulePrefixes) == 0 {
+					t.Fatalf("no 2379 rule found for %q", flagValue)
+				}
+				if prefixIntervalsCoverFamily(rulePrefixes) {
+					t.Errorf("--etcd-client-cidr %q wrote rules covering every address: %v", flagValue, rulePrefixes)
+				}
+			}
+		})
+	}
 }

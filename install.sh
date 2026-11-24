@@ -170,78 +170,37 @@ fi
 
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
 
-# directory_is_safe_for_sudo: the directory is absolute, made of plain path
-# characters and, with symlinks resolved, it and every parent up to / are owned by
-# root and not group- or world-writable, so listing it in sudo's secure_path does
-# not let another user plant commands that sudo runs as root.
-directory_is_safe_for_sudo() {
-    case "$1" in
-        /*) ;;
-        *) return 1 ;;
-    esac
-    case "$1" in
-        *[!A-Za-z0-9/._-]*) return 1 ;;
-    esac
-    checked_directory=$(readlink -f "$1" 2>/dev/null) || return 1
-    [ -d "$checked_directory" ] || return 1
-    while :; do
-        owner_and_mode=$(stat -c '%u %a' "$checked_directory" 2>/dev/null) || return 1
-        [ "${owner_and_mode%% *}" = "0" ] || return 1
-        [ $((0${owner_and_mode##* } & 022)) -eq 0 ] || return 1
-        if [ "$checked_directory" = "/" ]; then
-            return 0
-        fi
-        checked_directory=${checked_directory%/*}
-        [ -n "$checked_directory" ] || checked_directory=/
-    done
-}
-
-# safe_sudo_path_entries prints the entries of sudo's PATH ($1) that are safe for
-# sudo, each followed by ':', so a drop-in never copies '.' or a user's directory.
-safe_sudo_path_entries() {
-    saved_field_separator=$IFS
-    IFS=:
-    set -f
-    # Splitting on ':' is intended; globbing is off.
-    # shellcheck disable=SC2086
-    set -- $1
-    set +f
-    IFS=$saved_field_separator
-    for sudo_path_entry in "$@"; do
-        if [ "$sudo_path_entry" != "$INSTALL_PATH" ] && directory_is_safe_for_sudo "$sudo_path_entry"; then
-            printf '%s:' "$sudo_path_entry"
-        fi
-    done
-}
+# --- Ownership (Linux): systemd and sudo run cca as root, so only root may be able to change it ---
+if [ "$operating_system" = "linux" ]; then
+    installed_owner=$(stat -c '%u' "${INSTALL_PATH}/cca" 2>/dev/null || echo unknown)
+    installed_owner=${installed_owner%% *}
+    if [ "$installed_owner" != "0" ]; then
+        log_warn "${INSTALL_PATH}/cca is owned by uid ${installed_owner}, not root; whoever owns it can change what"
+        log_warn "systemd and sudo run as root. Before running it as root: sudo chown root:root ${INSTALL_PATH}/cca"
+    fi
+fi
 
 # --- sudo's secure_path (Linux): 'sudo cca' fails when INSTALL_PATH is not on it ---
+# No sudoers text is printed: the guide has the one fixed snippet (review round 3).
+SECURE_PATH_GUIDE_URL="https://ccattler.org/installation#prepare-a-fresh-host"
 # sudo_cca is how the next steps call cca with sudo: the full path after the warning.
 sudo_cca="cca"
-install_directory_absolute=$(cd "$INSTALL_PATH" && pwd)
+case "$INSTALL_PATH" in
+    /*) install_directory_absolute=$INSTALL_PATH ;;
+    *) install_directory_absolute=$(CDPATH='' cd -P -- "$INSTALL_PATH" && pwd -P) ;;
+esac
 if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1; then
     # -n never prompts; without cached credentials sudo's PATH cannot be read.
     if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
-        log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path:"
-        if directory_is_safe_for_sudo "$INSTALL_PATH"; then
-            log_info "  call 'sudo ${install_directory_absolute}/cca', or add the directory to secure_path (installation guide, step 1)."
-        else
-            log_info "  call 'sudo ${install_directory_absolute}/cca'."
-        fi
+        log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path: call"
+        log_info "  'sudo ${install_directory_absolute}/cca', or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
     else
         case ":${sudo_path}:" in
             *":${INSTALL_PATH}:"* | *":${install_directory_absolute}:"*) ;;
             *)
-                log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path (${sudo_path})."
                 sudo_cca="${install_directory_absolute}/cca"
-                if directory_is_safe_for_sudo "$INSTALL_PATH"; then
-                    log_warn "Call 'sudo ${sudo_cca}', or add the directory with a checked sudoers drop-in:"
-                    log_warn "  sudoers_file=\$(mktemp)"
-                    log_warn "  echo 'Defaults secure_path=\"$(safe_sudo_path_entries "$sudo_path")${INSTALL_PATH}\"' > \"\$sudoers_file\""
-                    log_warn "  sudo visudo -cf \"\$sudoers_file\" && sudo install -o 0 -g 0 -m 0440 \"\$sudoers_file\" /etc/sudoers.d/ccattler-secure-path"
-                else
-                    log_warn "Call 'sudo ${sudo_cca}'. ${INSTALL_PATH} is relative, or it or a parent is not root-owned and protected,"
-                    log_warn "so adding it to sudo's secure_path would let another user plant commands sudo runs as root."
-                fi
+                log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path."
+                log_warn "Call 'sudo ${sudo_cca}', or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
                 ;;
         esac
     fi

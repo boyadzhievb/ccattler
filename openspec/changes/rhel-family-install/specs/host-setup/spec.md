@@ -81,7 +81,8 @@ the flag it SHALL leave the port closed and print the exact firewalld or ufw com
 - **WHEN** `cca init` runs
 - **THEN** it exits with the same error as for a single all-covering network, and writes no files (added during apply,
   2026-11-24, user decision on review round 3, option ii)
-- Test: `TestInitRejectsInvalidEtcdClientCIDR` (subcase `union covers every address`)
+- Test: `TestInitRejectsInvalidEtcdClientCIDR` (subcases `0.0.0.0/1,128.0.0.0/1`, `::/1,8000::/1` and
+  `0.0.0.0/1,128.0.0.0/2,192.0.0.0/2,10.0.0.0/8`)
 
 #### Scenario: Wide or public network
 - **GIVEN** `cca init --etcd-client-cidr` with a network wider than /8 (IPv4) or /32 (IPv6), or one containing
