@@ -68,9 +68,11 @@ Milestone M267. Design: [design.md](design.md). Spec delta: [specs/instance-reba
     1 → 1 over 120 s; `journalctl -u cca-server --since -10min | grep -c "rebalancing instance"` → 0; nodes 3/2/2
     instances. **No churn.** Not exercised here: an actual move (the cluster is balanced) — covered by the unit and
     agent tests; the closing full runs (3.4) include the node-failure step that unbalances it.
-- [ ] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
+- [x] 3.3 Independent review (CLAUDE.md): `code-reviewer` (Opus, effort high) on the milestone diff against this design
   and the spec, including the patterns review against `design/Anti-pattern.md`. Record each finding as fixed or
   rejected, with one line of reasoning.
+  Result: 11 review rounds (code-reviewer Opus high, Codex every round), each finding recorded below and in sections
+  3b–3l. Round 11 (on 0f723c8..e6f602f) approved with no findings (3l).
   - Round 1 (2026-11-23, on 800c0cc; Codex: approve, no findings). Verified by the main session:
 
     | # | Finding | Resolution |
@@ -718,8 +720,16 @@ The review rounds for M267 are complete. What remains is the closing runs (3.4).
 
   3.6 check: "etcd watch event dropped" appears in neither run's workflow log (0 lines; agent journals are not part
   of that log). Not counted: 45375028560 (5adf58d, before 3i to 3k).
-- [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
+- [x] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
   `instance-rebalancing`), release with `scripts/release.sh`.
+  Result (2026-11-24):
+  - **Row:** the M267 row states the final scope and names M275 ("Also in this release", user decision: one release).
+  - **Phase links:** Phase 267 and Phase 275 link their archived changes.
+  - **Spec:** synced as a new main spec, `openspec/specs/instance-rebalancing/spec.md`. Its body is identical to the
+    delta, and `openspec validate instance-rebalancing --type spec --strict` reports it valid.
+  - **Archive:** `openspec/changes/archive/2026-11-24-rebalance-respects-fit` (M275 at
+    `2026-11-24-split-type-keys`).
+  - **Release:** `scripts/release.sh M267 v1.97.0-beta`, in the commit after this one.
 - [x] 3.6 Note: the ctrl agent logged `etcd watch event dropped (channel buffer full)` during the loop. After the fix,
   check whether it still appears in the closing run's logs; if it does, record it as its own milestone.
   Result (2026-11-24): it does not appear. Command: `journalctl -u cca-agent -u cca-server --since today | grep -c
