@@ -44,7 +44,7 @@ func TestStartPublishesInstanceWithManyHostPorts(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	portRuntime := &manyHostPortsRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime(), portCount: manyHostPortsTestPortCount}
-	nodeAgent := New("node-1", factStore, portRuntime)
+	nodeAgent := New("node-1", newAuditedInstanceStore(t, factStore, "node-1", 0), portRuntime)
 	setupInstanceInStore(ctx, factStore, "web", "web-1", "node-1", "127.0.0.1")
 	instanceInfo := scannedInstanceInfo(t, ctx, nodeAgent, "web-1")
 
@@ -87,7 +87,7 @@ func TestStartFactsCarriedAfterStoreError(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 	failingStore := &failingStartPublishStore{StateStore: memoryStore}
-	nodeAgent := New("node-1", failingStore, runtime.NewSimulatorRuntime())
+	nodeAgent := New("node-1", newAuditedInstanceStore(t, failingStore, "node-1", 0), runtime.NewSimulatorRuntime())
 	setupInstanceInStore(ctx, memoryStore, "web", "web-1", "node-1", "127.0.0.1")
 	_, _ = memoryStore.Put(ctx, types.KeyObservedInstanceProbeState("web-1", types.ProbeReadiness), []byte(types.ReadinessProbeReady))
 	instanceInfo := scannedInstanceInfo(t, ctx, nodeAgent, "web-1")
@@ -143,7 +143,7 @@ func TestStoppedNotWrittenWhenPlacementChangesDuringStop(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 	movingRuntime := &placementMovingRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime(), factStore: memoryStore}
-	nodeAgent := New("node-1", memoryStore, movingRuntime)
+	nodeAgent := New("node-1", newAuditedInstanceStore(t, memoryStore, "node-1", 0), movingRuntime)
 	setupInstanceInStore(ctx, memoryStore, "web", "web-1", "node-1", "127.0.0.1")
 	if startError := movingRuntime.Start(ctx, runtime.Spec{ID: "web-1", ServiceName: "web", Image: "nginx:1.27"}); startError != nil {
 		t.Fatal(startError)

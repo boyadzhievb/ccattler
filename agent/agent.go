@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"slices"
@@ -621,6 +622,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	}
 
 	nodeAgent.cleanupStaleCrashLoopBackoffs(desiredByID)
+	nodeAgent.cleanupStaleUncommittedStartFacts(desiredByID)
 	nodeAgent.cleanupStaleImageFallbackLogs(desiredByID)
 	nodeAgent.sweepInstanceData(ctx, desiredByID, running)
 
@@ -843,7 +845,7 @@ func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo p
 		}
 	}
 
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePulling, "")
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePulling, "", nil)
 	logging.Default().Info("pulling image", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", image)
 
 	pullContext, cancelPull := context.WithTimeout(ctx, imagePullTimeout)
@@ -885,7 +887,7 @@ func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo
 		Image:      image,
 	})
 	statusReason := fmt.Sprintf("pulling image %s (attempt %d): %s", image, backoffEntry.attempts, errorMessage)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceImagePullBackoff, "",
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceImagePullBackoff, "", nil,
 		store.Op{Type: store.OpPut, Key: types.KeyObservedInstancePullStatus(instanceInfo.id), Value: pullStatusJSON},
 		statusReasonChange(instanceInfo.id, statusReason))
 }
@@ -959,12 +961,11 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		runtimeIP = runtimeStatus.IP
 	}
 
-	// Host ports first, in their own guarded writes (any number of ports, M267 3f
-	// B1). Then one guarded transaction with the state: started_at (a controller
-	// that sees running also sees when this start happened, M241 D10), the
-	// readiness reset (review B4), image and config hash (M267 3e). Start facts a
-	// store error kept out are carried by the next running publish (3f B2).
-	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, nodeAgent.hostPortChangesIfSupported(instanceInfo.id)...)
+	// One guarded transaction with the state and host ports (only ports beyond
+	// the limit are written first, M267 3g R6-1): started_at (a controller that
+	// sees running also sees when this start happened, M241 D10), the readiness
+	// reset (review B4), image and config hash (M267 3e). Start facts a store
+	// error kept out are carried by the next running publish (3f B2).
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 	startFacts := []store.Op{
 		{Type: store.OpPut, Key: types.KeyObservedInstanceStartedAt(instanceInfo.id), Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
@@ -974,7 +975,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	if observedState == types.InstanceRunning {
 		startFacts = append(startFacts, statusReasonChange(instanceInfo.id, "running"))
 	}
-	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, startFacts...) {
+	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, nodeAgent.hostPortChangesIfSupported(instanceInfo.id), startFacts...) {
 		delete(nodeAgent.uncommittedStartFacts, instanceInfo.id)
 	} else {
 		nodeAgent.uncommittedStartFacts[instanceInfo.id] = startFacts
@@ -1004,7 +1005,7 @@ func (nodeAgent *Agent) handleInstanceStartError(ctx context.Context, instanceIn
 		nodeAgent.recordInstanceStartFailure(ctx, instanceInfo, processError)
 		return true
 	}
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceFailed, "",
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceFailed, "", nil,
 		instanceImageChange(instanceInfo.id, image), statusReasonChange(instanceInfo.id, "start failed: "+startError.Error()))
 	return false
 }
@@ -1029,6 +1030,25 @@ func (nodeAgent *Agent) hostPortChangesIfSupported(instanceID string) []store.Op
 		return nil
 	}
 	return hostPortChanges(instanceID, hostPortRuntime.HostPortsForInstance(instanceID))
+}
+
+// publishStateAndNodeChangeCount is how many changes (state and node)
+// publishInstanceStateUnlessStopped adds to a state publish.
+const publishStateAndNodeChangeCount = 2
+
+// writeHostPortOverflow returns the host-port changes (no-ops dropped) that fit
+// in the state publish beside its publishFactCount other changes, after writing
+// the rest first in guarded chunks; false when that overflow did not all
+// commit, and the caller skips the publish (M267 3g R6-1).
+func (nodeAgent *Agent) writeHostPortOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op, publishFactCount int) ([]store.Op, bool) {
+	effectiveHostPortChanges := dropNoOpChanges(ctx, nodeAgent.store, hostPortChanges)
+	inlineCount := min(len(effectiveHostPortChanges), max(0, maxInstanceFactChangesPerTransaction-publishStateAndNodeChangeCount-publishFactCount))
+	overflowChanges := effectiveHostPortChanges[inlineCount:]
+	if len(overflowChanges) > 0 && !nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, overflowChanges...) {
+		logging.Default().Info("host ports not all written, not publishing the instance state", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
+		return nil, false
+	}
+	return effectiveHostPortChanges[:inlineCount], true
 }
 
 // cleanupStoppedStaleInstance removes a container that has already exited and
@@ -1089,7 +1109,8 @@ func (nodeAgent *Agent) releaseStaleInstanceNetwork(ctx context.Context, instanc
 // publishRemovedInstanceState writes stopped for an instance whose container
 // this agent removed, only while placement/instance/{id} still has the revision
 // the move check read (it may move during pre_stop and grace, 3f P2). A moved
-// instance is marked pending instead: stopped is final (M267 D2, D4).
+// instance, before or during the stop (3g R6-3), is marked pending instead:
+// stopped is final (M267 D2, D4).
 func (nodeAgent *Agent) publishRemovedInstanceState(ctx context.Context, instanceID string, movedElsewhere bool, checkedPlacementRevision int64) {
 	if movedElsewhere {
 		nodeAgent.markMovedInstancePending(ctx, instanceID)
@@ -1103,6 +1124,10 @@ func (nodeAgent *Agent) publishRemovedInstanceState(ctx context.Context, instanc
 		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", transactionError.Error())
 	case !swapped:
 		logging.Default().Info("placement changed during the removal, not publishing stopped", "agent", nodeAgent.nodeID, "instance", instanceID)
+		// Moved during pre_stop or grace: the removed container must not stay running and ready (3g R6-3).
+		if movedDuringStop, _, readError := nodeAgent.isInstanceMovedToAnotherNode(ctx, instanceID); readError == nil && movedDuringStop {
+			nodeAgent.markMovedInstancePending(ctx, instanceID)
+		}
 	}
 }
 
@@ -2175,10 +2200,11 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 }
 
 // publishInstanceStateToStore writes marker, service, state, node, IP, network
-// allocation and the caller's sameCycleFacts (status, start facts) in one
-// transaction guarded by the stop and the scanned placement (M267 R2-1, 3c.6,
-// 3e); created-at is create-only. Returns true when committed.
-func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string, sameCycleFacts ...store.Op) bool {
+// allocation, hostPortChanges and the caller's sameCycleFacts (status, start
+// facts) in one transaction guarded by the stop and the scanned placement (M267
+// R2-1, 3c.6, 3e, 3g); created-at is create-only. Returns true when committed.
+func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string,
+	hostPortChanges []store.Op, sameCycleFacts ...store.Op) bool {
 	instanceID, service := instanceInfo.id, instanceInfo.service
 	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceID, runtimeIP)
 	instanceFacts := []store.Op{
@@ -2191,8 +2217,12 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	if ipFromNetworkProvider {
 		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyNetworkAllocation(instanceID), Value: []byte(publishedContainerIP)})
 	}
-	instanceFacts = append(instanceFacts, sameCycleFacts...)
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, dropNoOpChanges(ctx, nodeAgent.store, instanceFacts)) {
+	instanceFacts = dropNoOpChanges(ctx, nodeAgent.store, append(instanceFacts, sameCycleFacts...))
+	inlineHostPortChanges, hostPortsWritten := nodeAgent.writeHostPortOverflow(ctx, instanceInfo, hostPortChanges, len(instanceFacts))
+	if !hostPortsWritten {
+		return false
+	}
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, append(instanceFacts, inlineHostPortChanges...)) {
 		return false
 	}
 	nodeAgent.createInstanceCreatedAtOnce(ctx, instanceInfo)
@@ -2200,17 +2230,23 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	return true
 }
 
-// publishRunningInstance publishes a running container's host ports (endpoints
-// and remote DNAT need them, own guarded writes) and its state with the exit
-// reason deleted (Flow 33) and any start facts a store error kept out (3f B2).
+// publishRunningInstance publishes a running container's state with its host
+// ports (endpoints and remote DNAT need them, same transaction, 3g R6-1), the
+// exit reason deleted (Flow 33) and any start facts a store error kept out (3f B2).
 func (nodeAgent *Agent) publishRunningInstance(ctx context.Context, instanceInfo placedInstanceInfo, runtimeIP string) {
-	nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, nodeAgent.hostPortChangesIfSupported(instanceInfo.id)...)
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 	runningFacts := append(slices.Clone(nodeAgent.uncommittedStartFacts[instanceInfo.id]),
 		store.Op{Type: store.OpDelete, Key: types.KeyObservedInstanceExitReason(instanceInfo.id)})
-	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, runningFacts...) {
+	if nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, observedState, runtimeIP, nodeAgent.hostPortChangesIfSupported(instanceInfo.id), runningFacts...) {
 		delete(nodeAgent.uncommittedStartFacts, instanceInfo.id)
 	}
+}
+
+// cleanupStaleUncommittedStartFacts drops the carried start facts of instances
+// no longer placed on this node, also when their container was gone before a
+// teardown could drop them (M267 3g R6-4).
+func (nodeAgent *Agent) cleanupStaleUncommittedStartFacts(desiredByID map[string]bool) {
+	maps.DeleteFunc(nodeAgent.uncommittedStartFacts, func(instanceID string, _ []store.Op) bool { return !desiredByID[instanceID] })
 }
 
 // createInstanceCreatedAtOnce writes observed/instance/{id}/created-at only if

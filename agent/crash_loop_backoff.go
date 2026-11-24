@@ -181,7 +181,7 @@ func (nodeAgent *Agent) beginCrashLoopWait(ctx context.Context, instanceInfo pla
 		statusReasonChange(instanceInfo.id, fmt.Sprintf("%s; restarting in %s", backoffEntry.lastExitReason, waitDelay)),
 		{Type: store.OpPut, Key: types.KeyObservedInstanceLastExit(instanceInfo.id), Value: []byte(backoffEntry.lastExitReason)},
 	}, exitFacts...)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceCrashLoopBackoff, "", crashLoopFacts...)
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceCrashLoopBackoff, "", nil, crashLoopFacts...)
 }
 
 // describeContainerExit returns "exited with code N", followed by the runtime's

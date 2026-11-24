@@ -63,9 +63,9 @@ func dropNoOpChanges(ctx context.Context, factStore store.StateStore, changes []
 
 // writeGuarded commits the changes about one instance, without no-ops, in
 // transactions of at most maxInstanceFactChangesPerTransaction, each guarded
-// by placementGuard. A lost guard (moved off this node) stops; store errors are
-// logged and stop too (callers write the same facts again next cycle).
-func (instanceFactWriter instanceFactWriter) writeGuarded(ctx context.Context, instanceInfo placedInstanceInfo, changes ...store.Op) {
+// by placementGuard; true when every chunk committed (3g R6-1). A lost guard
+// (moved off this node) or a logged store error stops the rest.
+func (instanceFactWriter instanceFactWriter) writeGuarded(ctx context.Context, instanceInfo placedInstanceInfo, changes ...store.Op) bool {
 	effectiveChanges := dropNoOpChanges(ctx, instanceFactWriter.factStore, changes)
 	for len(effectiveChanges) > 0 {
 		chunk := effectiveChanges[:min(len(effectiveChanges), maxInstanceFactChangesPerTransaction)]
@@ -74,13 +74,14 @@ func (instanceFactWriter instanceFactWriter) writeGuarded(ctx context.Context, i
 			placementGuard(instanceFactWriter.nodeID, instanceInfo), chunk, nil)
 		if transactionError != nil {
 			logging.Default().Error("failed to write instance facts", "instance", instanceInfo.id, "error", transactionError.Error())
-			return
+			return false
 		}
 		if !swapped {
 			logging.Default().Info("instance moved off this node, not writing its facts", "agent", instanceFactWriter.nodeID, "instance", instanceInfo.id)
-			return
+			return false
 		}
 	}
+	return true
 }
 
 // currentPlacement returns the instance as placed on this node right now, for

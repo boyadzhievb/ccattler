@@ -34,7 +34,7 @@ type moveGapCluster struct {
 
 // newMoveGapCluster runs each instance on node-1 (container, running, ready)
 // of service web (port 8080, readiness probe). wrapAgentStore, when not nil,
-// wraps the store both agents use.
+// wraps the store both agents use; each agent's writes are audited (3g.0).
 func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store.StateStore, instanceIDs ...string) *moveGapCluster {
 	t.Helper()
 	ctx := context.Background()
@@ -45,9 +45,9 @@ func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store
 		agentStore = wrapAgentStore(memoryStore)
 	}
 	cluster := &moveGapCluster{factStore: memoryStore, sourceRuntime: runtime.NewSimulatorRuntime()}
-	cluster.sourceAgent = New("node-1", agentStore, cluster.sourceRuntime)
+	cluster.sourceAgent = New("node-1", newAuditedInstanceStore(t, agentStore, "node-1", 0), cluster.sourceRuntime)
 	cluster.sourceAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
-	cluster.targetAgent = New("node-2", agentStore, runtime.NewSimulatorRuntime())
+	cluster.targetAgent = New("node-2", newAuditedInstanceStore(t, agentStore, "node-2", 0), runtime.NewSimulatorRuntime())
 	cluster.targetAgent.SetNetworkProvider(network.NewSimulatorNetworkProviderWithCIDR(10, 101)) // another range: the agents' IPs differ
 
 	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
@@ -58,7 +58,7 @@ func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store
 		if startError := cluster.sourceRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: "web", Image: "nginx:1.27"}); startError != nil {
 			t.Fatal(startError)
 		}
-		cluster.sourceAgent.publishInstanceStateToStore(ctx, scannedInstanceInfo(t, ctx, cluster.sourceAgent, instanceID), types.InstanceRunning, "")
+		cluster.sourceAgent.publishInstanceStateToStore(ctx, scannedInstanceInfo(t, ctx, cluster.sourceAgent, instanceID), types.InstanceRunning, "", nil)
 		cluster.passReadiness(ctx, instanceID)
 	}
 	return cluster
@@ -104,7 +104,7 @@ func scannedInstanceInfo(t *testing.T, ctx context.Context, nodeAgent *Agent, in
 // does after it started the container (placement moved to node-2 first).
 func (cluster *moveGapCluster) publishOnTarget(t *testing.T, ctx context.Context, instanceID string) {
 	t.Helper()
-	cluster.targetAgent.publishInstanceStateToStore(ctx, scannedInstanceInfo(t, ctx, cluster.targetAgent, instanceID), types.InstanceRunning, "")
+	cluster.targetAgent.publishInstanceStateToStore(ctx, scannedInstanceInfo(t, ctx, cluster.targetAgent, instanceID), types.InstanceRunning, "", nil)
 }
 
 // endpointInstanceIDs returns the sorted IDs of the web instances the endpoint
@@ -208,7 +208,7 @@ func TestSourceAgentMarksMovedInstancePending(t *testing.T) {
 		cluster.moveToTarget(ctx, "web-1")
 		cluster.publishOnTarget(t, ctx, "web-1")
 		cluster.passReadiness(ctx, "web-1")
-		cluster.sourceAgent.publishInstanceStateToStore(ctx, sourceScannedInfo, types.InstanceRunning, "")
+		cluster.sourceAgent.publishInstanceStateToStore(ctx, sourceScannedInfo, types.InstanceRunning, "", nil)
 		cluster.checkMovedInstanceFacts(t, ctx, "after the behind source's publish", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
 		cluster.sourceAgent.cleanupUndesiredInstance(ctx, "web-1")
 		cluster.checkMovedInstanceFacts(t, ctx, "after the source cleanup", "web-1", types.InstanceRunning, "node-2", string(types.ReadinessProbeReady))
@@ -222,8 +222,9 @@ func TestSourceAgentMarksMovedInstancePending(t *testing.T) {
 			return racingStore
 		}, "web-1")
 		// Only the state transaction: the target is between its state write and the rest of its publish.
+		// The target's info comes from its scan (the audit, 3g.0, found the unscanned info unguarded).
 		racingStore.publishOnTarget = func(ctx context.Context) {
-			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, placedInstanceInfo{id: "web-1", service: "web"}, types.InstanceRunning, nil)
+			cluster.targetAgent.publishInstanceStateUnlessStopped(ctx, scannedInstanceInfo(t, ctx, cluster.targetAgent, "web-1"), types.InstanceRunning, nil)
 		}
 		cluster.moveAndRemoveOnSource(ctx, "web-1")
 		if !racingStore.targetHasPublished.Load() {
@@ -296,7 +297,7 @@ func TestTargetStartupFailureAfterMoveIsNotRunning(t *testing.T) {
 			types.WritePlacement(ctx, memoryStore, types.Placement{InstanceID: "web-1", NodeID: "node-2"})
 			targetRuntime := runtime.NewSimulatorRuntime()
 			testCase.setUp(targetRuntime)
-			targetAgent := New("node-2", memoryStore, targetRuntime)
+			targetAgent := New("node-2", newAuditedInstanceStore(t, memoryStore, "node-2", 0), targetRuntime)
 			targetAgent.SetInterval(50 * time.Millisecond)
 			go targetAgent.Run(ctx)
 
@@ -347,7 +348,7 @@ func TestSourcePublishNeverOverwritesTargetIP(t *testing.T) {
 		cluster.moveToTarget(ctx, "web-1")
 		cluster.publishOnTarget(t, ctx, "web-1")
 	}
-	cluster.sourceAgent.publishInstanceStateToStore(ctx, sourceScannedInfo, types.InstanceStarting, "")
+	cluster.sourceAgent.publishInstanceStateToStore(ctx, sourceScannedInfo, types.InstanceStarting, "", nil)
 	if !racingStore.hookHasRun.Load() {
 		t.Fatalf("the move was never injected after the source's state write; the case proves nothing")
 	}
@@ -372,8 +373,7 @@ func TestSourcePublishNeverOverwritesTargetIP(t *testing.T) {
 // pass with that scan and returns the store.
 func runSourceProbePass(t *testing.T, moveBeforeProbe bool) store.StateStore {
 	t.Helper()
-	factStore, _, sourceAgent := setupProbeTestAgent("node-1")
-	t.Cleanup(func() { factStore.Close() })
+	factStore, _, sourceAgent := setupAuditedTestAgent(t, "node-1")
 	ctx := context.Background()
 	healthyListener, healthyPort := startTestHTTPServer(t, 200)
 	t.Cleanup(func() { healthyListener.Close() })
@@ -437,8 +437,7 @@ func TestStatusWrittenOnlyAfterCommittedPublish(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			factStore, _, sourceAgent := setupProbeTestAgent("node-1")
-			defer factStore.Close()
+			factStore, _, sourceAgent := setupAuditedTestAgent(t, "node-1")
 			ctx := context.Background()
 			setupInstanceInStore(ctx, factStore, "web", "web-1", "node-1", "127.0.0.1")
 			sourceScannedInfo := scannedInstanceInfo(t, ctx, sourceAgent, "web-1")
@@ -466,6 +465,7 @@ var targetOwnedFacts = map[string]string{
 	types.KeyObservedInstanceProbeProgress("web-1"):                    `{"readiness_failures":1,"readiness_threshold":3}`,
 	types.KeyObservedInstanceExitReason("web-1"):                       "target exit",
 	types.KeyObservedInstanceLastExit("web-1"):                         "target last exit",
+	types.KeyObservedInstanceHostPortForPort("web-1", 9000):            "31000", // node-1's runtime maps 30000 (3g.5)
 }
 
 // snapshotInstanceFacts returns every observed/instance/{id} fact (marker and
@@ -491,55 +491,58 @@ func snapshotInstanceFacts(t *testing.T, ctx context.Context, factStore store.St
 	return snapshot
 }
 
-// TestSourceWritesNothingAfterMove: review rounds 4 and 5 (B1-B4, Sg1, T2).
-// node-1 scanned web-1 before the move and is still in that cycle; each of its
-// paths below leaves every observed/instance/web-1 fact and the network
-// allocation exactly as node-2 left them (no write, no delete).
+// TestSourceWritesNothingAfterMove: review rounds 4 to 6 (B1-B4, Sg1, T2,
+// R6-5). node-1, whose runtime maps host ports, scanned web-1 before the move
+// and is still in that cycle; each of its paths below leaves every
+// observed/instance/web-1 fact and the network allocation as node-2 left them.
 func TestSourceWritesNothingAfterMove(t *testing.T) {
 	testCases := []struct {
-		name    string                                                                       // name is the finding and path
-		runPath func(context.Context, *Agent, *runtime.SimulatorRuntime, placedInstanceInfo) // runPath runs node-1's late path
+		name    string                                            // name is the finding and path
+		runPath func(context.Context, *Agent, placedInstanceInfo) // runPath runs node-1's late path
 	}{
-		{name: "B1 pull failure", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "B1 pull failure", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.recordImagePullFailure(ctx, instanceInfo, "nginx:1.27", "registry unreachable")
 		}},
-		{name: "B2 start path", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "B2 start path", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.startInstanceAndPublishState(ctx, instanceInfo, "nginx:1.26", "source-config-hash",
 				runtime.Spec{ID: instanceInfo.id, ServiceName: instanceInfo.service, Image: "nginx:1.26"})
 		}},
-		{name: "B2 reconcile desired instance", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "B2 reconcile desired instance", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.reconcileDesiredInstance(ctx, instanceInfo)
 		}},
-		{name: "B3 exit reason", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "B3 exit reason", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.recordInstanceExit(ctx, instanceInfo, sourceAgent.ensureCrashLoopBackoffEntry(instanceInfo.id),
 				runtime.Status{ID: instanceInfo.id, ExitCode: 1, Error: "source exit"})
 			sourceAgent.recordInstanceStartFailure(ctx, instanceInfo, "source start failure")
 		}},
-		{name: "B4 probe progress delete", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "B4 probe progress delete", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.probeScheduler.publishProbeProgress(ctx, instanceInfo, &probeConfig{failureThreshold: 3}, nil, nil,
 				&instanceProbeState{startup: &probeTracker{consecutiveSuccesses: 1}})
 		}},
-		{name: "secret wait", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "secret wait", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.recordSecretDeliveryWait(ctx, instanceInfo, serviceSecretRequirements{}, errors.New("secret API unreachable"))
 		}},
-		{name: "restart count", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "restart count", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.incrementRestartCountInStore(ctx, instanceInfo)
 		}},
-		{name: "init step and progress", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "init step and progress", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.executeInitStep(ctx, instanceInfo, initStepDefinition{index: 0, exec: "migrate"}, "nginx:1.27", 1)
 			sourceAgent.clearInitProgress(ctx, instanceInfo)
 		}},
-		{name: "telemetry", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "telemetry", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.nodeReporter.reportWorkloadTelemetry(ctx, []runtime.Status{{ID: instanceInfo.id, Running: true}})
 		}},
-		{name: "running path", runPath: func(ctx context.Context, sourceAgent *Agent, _ *runtime.SimulatorRuntime, instanceInfo placedInstanceInfo) {
+		{name: "running path", runPath: func(ctx context.Context, sourceAgent *Agent, instanceInfo placedInstanceInfo) {
 			sourceAgent.publishRunningInstance(ctx, instanceInfo, "10.100.1.9")
 		}},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			factStore, sourceRuntime, sourceAgent := setupProbeTestAgent("node-1")
+			factStore := store.NewMemoryStore()
 			defer factStore.Close()
+			// Host ports, so the start and running paths have ports to write (3g.5 R6-5).
+			sourceRuntime := &manyHostPortsRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime(), portCount: 2}
+			sourceAgent := New("node-1", newAuditedInstanceStore(t, factStore, "node-1", 0), sourceRuntime)
 			ctx := context.Background()
 			setupInstanceInStore(ctx, factStore, "web", "web-1", "node-1", "127.0.0.1")
 			sourceScannedInfo := scannedInstanceInfo(t, ctx, sourceAgent, "web-1")
@@ -553,7 +556,7 @@ func TestSourceWritesNothingAfterMove(t *testing.T) {
 				t.Fatal(startError)
 			}
 			factsBefore := snapshotInstanceFacts(t, ctx, factStore, "web-1")
-			testCase.runPath(ctx, sourceAgent, sourceRuntime, sourceScannedInfo)
+			testCase.runPath(ctx, sourceAgent, sourceScannedInfo)
 			factsAfter := snapshotInstanceFacts(t, ctx, factStore, "web-1")
 			for key, valueBefore := range factsBefore {
 				if valueAfter, stillThere := factsAfter[key]; !stillThere || valueAfter != valueBefore {

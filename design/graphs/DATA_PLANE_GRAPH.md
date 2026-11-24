@@ -384,7 +384,7 @@ ShadowDataPlane.ReconcileVIPDataPlane(ctx, configs)  [shadow_dataplane.go:50]
 | Key Pattern | Where Written |
 |---|---|
 | `observed/node/{nodeID}/address` | `PublishAdvertiseAddress` (node LAN IP) |
-| `observed/instance/{id}/host_port/{port}` | `hostPortChanges` in the agent's guarded publish (port mapping, M267 3e) |
+| `observed/instance/{id}/hostport/{port}` | `hostPortChanges` in the agent's guarded publish (port mapping, M267 3e; overflow beyond the limit first, 3g) |
 
 ## Store Key Data Flow (controller/user writes → reconciler reads)
 

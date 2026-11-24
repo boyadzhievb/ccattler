@@ -185,7 +185,7 @@ func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, insta
 	}
 	if _, wasWaiting := nodeAgent.secretDeliveryWaits[instanceInfo.id]; wasWaiting {
 		// Leave waiting-for-secrets; with a cached image nothing else would change the state before start.
-		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePending, "")
+		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstancePending, "", nil)
 	}
 	nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo)
 	logging.Default().Info("secrets delivered", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "count", strconv.Itoa(len(deliveredValues)))
@@ -239,7 +239,7 @@ func (nodeAgent *Agent) recordSecretDeliveryWait(ctx context.Context, instanceIn
 		statusReason += " (" + strings.Join(waitEntry.secretNames, ", ") + ")"
 	}
 	// The wait status and reason commit with the state, or not at all (stopped or moved meanwhile, M267 3e).
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "",
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo, types.InstanceWaitingForSecrets, "", nil,
 		store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceSecretWait(instanceInfo.id), Value: statusJSON},
 		statusReasonChange(instanceInfo.id, statusReason))
 }

@@ -403,6 +403,110 @@ red on 44b6998. Verified by the main session:
   `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
   `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (29.7 s, 6.8 s, 10.6 s, 1.4 s);
   `openspec validate rebalance-respects-fit` valid. `executeReconciliationCycle` still 111 lines (known, M259).
+
+## 3g. Review round 6 (2026-11-24, on 92feee5..5092aec; code-reviewer Opus high + Codex: request changes)
+
+B2, B3 and T2 are fixed and 130 ports publish. The new tests are red on 92feee5: the scanner control was rerun with
+the 92feee5 scanner, 8 of 8 not detected; the 3f.5 mutation red was judged convincing. Every finding below was
+reproduced by the main session on 5092aec with the reviewer's probe tests (`TestReview6*`, worktree
+`scratchpad/review6-probe-5092aec`):
+
+| # | Finding | Resolution |
+|---|---|---|
+| R6-1 | 3f B1 broke atomicity: host ports commit apart from state/node and `writeGuarded` returns nothing, so the state publish goes on after a failed or partial port write (`running` with 100 of 130 ports; `running` with stale 41000; a move target's port 30000 next to the source node when the state publish fails) | **fix** 3g.1 |
+| R6-2 | The closed-world scan is still bypassable (allocation key counted as non-instance, aliased or dot import of `types`, an allow-listed name on another receiver, a Transaction inside an allow-listed function, a local named `types`); second round with scan bypasses | **fix** 3g.2 |
+| R6-3 | `stopped` withheld on a placement change during the stop (correct), but no `pending` either: the stopped container stays `running`+`ready` until the target publishes | **fix** 3g.3 |
+| R6-4 | `uncommittedStartFacts` kept for the agent's lifetime when the container is gone before teardown runs | **fix** 3g.4 |
+| R6-5 | 3f.5 subcases use a runtime without host ports; no test for dropping B2 facts when the instance leaves | **fix** 3g.5 |
+| — | Readiness delete carried by B2 can remove a fresh `ready` until the next probe | **accepted**: brief, rewritten by the next successful probe |
+| — | `ProbeScheduler`/`NodeReporter` hold `factStore`/`nodeID` twice (also in `instanceFacts`) | **fix** in 3g.1 if touched, else rejected as style only |
+
+Structural change for this round (openspec/config.yaml rework limit): the guarded-write class has come back each
+round since round 2, so the fixes in this round come with a test that enforces the rule on real store operations,
+not on source syntax (3g.0).
+
+- [x] 3g.0 Tests first: an agent-test store decorator that (a) fails the Nth transaction or put on demand and
+  (b) records every committed write. A sweep test runs the start path and the running path (and a move target) once
+  per write index N, failing write N each time. After each run it asserts the rule: when `observed/instance/{id}/state`
+  is `running`, `node` names this node and every host port stored equals the runtime's mapping; a failed publish
+  leaves the facts as they were before it. A second check in the same decorator fails the test for any committed
+  write of a key under `observed/instance/{id}/` or `network/allocation/{id}` whose transaction has no compare on
+  `placement/node/{self}/{id}`, apart from the D4 exceptions, which are listed with reasons. Wire it into the move-gap
+  and write-guard tests. Record the sweep and the audit failing on 5092aec (R6-1 cases, and R6-2 via a test-only
+  unguarded write), before 3g.1.
+  Result: `auditedInstanceStore` (agent/instance_write_audit_test.go) fails write number N (Put, Delete,
+  PutWithLease or Transaction, 1-based) with a store error and records every committed write of an
+  `observed/instance/{id}[/…]`, telemetry or `network/allocation/{id}` key; at test end it fails for any whose write
+  does not compare `placement/node/{self}/{id}`, apart from 3 D4 exceptions matched on the change and its compares
+  (stopped on `placement/instance/{id}`, cleanup deletes on `placement/instance/{id}`, pending/readiness delete on
+  observed node + state). Sweep `TestPublishRuleHoldsWhenAnyWriteFails`: start path, running path (stale port
+  41000) and move target (source's running/node-1/41000), each with 2 and 130 host ports, once without a failure and
+  once per write. Audit wired into newMoveGapCluster (per agent), TestSourceWritesNothingAfterMove,
+  TestTargetStartupFailureAfterMoveIsNotRunning, runSourceProbePass, TestStatusWrittenOnlyAfterCommittedPublish and
+  the round-5 tests (`setupAuditedTestAgent`); control `TestInstanceWriteAuditDetectsUnguardedWrite` (2 of 2 found).
+  Red on 5092aec (worktree `scratchpad/rework3g-red`, `go test -count=1 ./agent/ -run '…'`): the sweep fails in all 6
+  scenarios, e.g. `running on node-1 with 2 of 2 host ports wrong, first 9000="41000" (want 30000)` (port write
+  failed, publish went on), `state publish did not commit, yet 2 facts changed, first …/hostport/9000 "41000" ->
+  "30000"` (move target), `running on node-1 with 30 of 130 host ports wrong, first 9100=""` (second chunk failed).
+  The audit failed `TestRedAuditCatchesTestOnlyUnguardedWrite` (scratch only: an unguarded Put through the agent's
+  store) and found a real test-only unguarded write in `TestSourceAgentMarksMovedInstancePending` ("target
+  publishes between …": the target published with an unscanned info, so no placement compare): `audit (node-2):
+  write 1 committed put observed/instance/web-1/state without comparing placement/node/node-2/web-1`. Fixed in the
+  test (the target's info now comes from its scan).
+- [x] 3g.1 R6-1: `writeGuarded` reports whether every chunk committed. Host ports go inside the state publish
+  transaction when they fit under the limit; only the overflow is written first, in guarded chunks. When the
+  overflow did not all commit, the state publish is skipped and the start facts stay in `uncommittedStartFacts`.
+  3g.0 is green.
+  Result: `writeGuarded` returns true when every chunk committed. `publishInstanceStateToStore` takes the host-port
+  changes; `writeHostPortOverflow` drops no-ops, keeps those that fit beside the publish (100 − 2 state/node − the
+  publish's other changes) for the publish transaction and writes the rest first through `writeGuarded`; false →
+  no publish (start path keeps `uncommittedStartFacts`). Start and running paths pass
+  `hostPortChangesIfSupported`, the other 7 callers nil. Green: `TestPublishRuleHoldsWhenAnyWriteFails` (6 scenarios,
+  2 or 3 writes each, all pass), the review's probes `TestReview6*` now log 130 ports `state="pending"` (not
+  published), stale 41000 with `state="pending"`, move target `running node-1 41000` (unchanged). Residual of this
+  design (recorded under D4, 2026-11-24): with more ports than fit, the overflow can commit and the publish then
+  fail, so a move target's overflow ports sit next to the source's running/node until the next publish; the sweep
+  allows exactly that (overflow port = the runtime's own mapping) only in the 130-port scenarios.
+  `ProbeScheduler`/`NodeReporter` duplicate fields: not touched, rejected as style only.
+- [x] 3g.2 R6-2: the scan keys allow-listed writers by receiver type plus name, resolves `types` through the file's
+  imports, flags dot imports, and treats `KeyNetworkAllocation` as an instance key. "A Transaction added inside an
+  allow-listed function" is recorded in Flow 35 as a limit the 3g.0 audit covers. The control test gets the 6 new
+  patterns, each failing.
+  Result: `transactionWriters` keyed `Receiver.name` (functionKey) with a reason and a Transaction count (another
+  Transaction in an allow-listed function fails); `types` resolved per file through its imports (alias honoured, dot
+  import fails), any declaration of that name (params, results, receivers, :=, var, range, type, func) fails;
+  `instanceKeyFunctionPrefixes` = `KeyObservedInstance`, `KeyNetworkAllocation`. Flow 35 and D4 state that the scan
+  cannot see what an allow-listed Transaction's ops write and that the 3g.0 audit covers it. Control
+  `TestInstanceWriteScanDetectsBypasses` gets `reviewRound6BypassSources` (6 patterns). Red: the 6 against the
+  5092aec scanner (`TestRedRound6BypassesAgainstOldScan` in the red worktree): 6 of 6 `bypass … not detected`.
+  Green: 14 of 14 detected; `TestAgentInstanceWritesAreGuarded` passes on production code unchanged.
+- [x] 3g.3 R6-3: when the `stopped` swap fails, check the move again and, if the instance moved, mark it pending
+  (`markMovedInstancePending`). Red test: placement moves to node-2 during the stop, then state `pending`, no readiness.
+  Result: `publishRemovedInstanceState` on a lost `stopped` swap calls `isInstanceMovedToAnotherNode` again and, when
+  moved, `markMovedInstancePending`. Red (`TestInstanceMovedDuringStopIsMarkedPending`, on 5092aec and before the
+  fix): `state="running" readiness="ready", want pending without readiness`; passes after.
+- [x] 3g.4 R6-4: sweep `uncommittedStartFacts` against the desired set each cycle (like
+  `cleanupStaleCrashLoopBackoffs`). Red test: the instance leaves while its container is gone, so the entry is
+  dropped.
+  Result: `cleanupStaleUncommittedStartFacts(desiredByID)` (maps.DeleteFunc) after `cleanupStaleCrashLoopBackoffs`.
+  Red (`TestUncommittedStartFactsDroppedWhenInstanceLeaves/container_gone_true`, on 5092aec and before the fix):
+  `uncommittedStartFacts still holds web-1 after it left node-1`; passes after. The `container_gone_false` subcase
+  (teardown drops it, R6-5's missing B2-drop test) passes on both.
+- [x] 3g.5 R6-5: the 3f.5 snapshot subcases run on a runtime with host ports.
+  Result: `TestSourceWritesNothingAfterMove` runs on `manyHostPortsRuntime` (2 ports) with the audit, and node-2's
+  facts include `hostport/9000 = 31000`; the unused runtime parameter of runPath removed. No red was asked: the
+  paths were already guarded. Mutation check (placementGuard always nil, reverted): `B2 start path` and `running
+  path` fail with `node-1 changed observed/instance/web-1/hostport/9000 from "31000" to "30000"` plus the audit's
+  `write 1 committed put …/hostport/9000 without comparing placement/node/node-1/web-1`.
+- [x] 3g.6 Docs (graphs, Flow 35, D4 note if the rule wording changes, with date), checks as in 3.1.
+  Result: Flow 35 rule bullet and chain (host ports in the publish, overflow residual, pending after a move during
+  the stop, scan plus audit), D4 bullet and dated note (2026-11-24, lead-developer); CALL_GRAPH (cycle, start and
+  cleanup trees, rule, writes table, reverse index), INSTANCE_LIFECYCLE_GRAPH (start, running, crash-loop end,
+  cleanup trees with line numbers, reverse index), OBSERVABILITY_GRAPH line numbers, DATA_PLANE_GRAPH hostport
+  key. Checks (2026-11-24): `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20
+  ok, 2 without tests; `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.4 s, 6.6 s,
+  10.2 s, 1.4 s); `openspec validate rebalance-respects-fit` valid. `executeReconciliationCycle` 112 lines (one
+  call added; over 80 since before this change, M259).
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing

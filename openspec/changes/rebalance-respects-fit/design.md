@@ -102,10 +102,15 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   first. Exceptions: the `stopped` write (on the `placement/instance/{id}` revision the move check read, round 5 P2),
   the source's `pending` after a move (its own node and state guard), and cleanup of an instance that left the
   desired set (only while it is not placed on another node; instance GC deletes `network/allocation/{id}` with the
-  tree, B3). Host ports are written in their own guarded, chunked writes (B1); start facts a store error kept out are
-  carried by the next running publish (B2). A closed-world scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`,
-  T1) checks every store Transaction against a list with reasons and every Put/Delete key for a direct non-instance
-  `types.Key*` call; it cannot see writes through other packages or reflection. Store errors
+  tree, B3). Host ports go in the state publish; only those beyond the transaction limit are written first, in
+  guarded chunks, and the publish is skipped unless all of them committed (round 6 R6-1); start facts a store error
+  kept out are carried by the next running publish (B2) and dropped once the instance is no longer placed on this node
+  (R6-4). A `stopped` write that fails because the instance moved during the stop is replaced by the source's
+  `pending` (R6-3). A closed-world scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`, T1, R6-2) checks every
+  store Transaction against a list keyed by receiver and name, with reasons and Transaction counts, and every
+  Put/Delete key for a direct non-per-instance `types.Key*` call; it cannot see writes through other packages or
+  reflection, nor what an allow-listed Transaction's ops write: the audit of real store operations in the agent tests
+  (3g.0) covers that. Store errors
   in these transactions are logged as errors with the error, not as "changed meanwhile" (R2-3).
 - **A failed target startup never looks healthy.** The target publishes `image_pull_backoff` (pull failure) or
   `failed` (start failure, replaced by the failure controller) with `node` = target. A dead target agent publishes
@@ -125,6 +130,14 @@ Change during apply, recorded 2026-11-24 (main session): in rework 3f, the "all 
 guarded" bullet was updated to describe the round-5 fixes (B1 chunked host ports, B2 carried start facts, B3
 allocation GC, T1 closed-world scan, P2 `stopped` on the placement revision), as 3e.3 did for round 4. It describes
 fixes already decided in the tasks.md round-5 table. No requirement or spec scenario changed.
+
+Change during apply, recorded 2026-11-24 (lead-developer subagent, rework 3g): the same bullet now describes the
+round-6 fixes decided in the tasks.md round-6 table (R6-1 host ports in the state publish with only the overflow
+written first, R6-2 scan keyed by receiver and resolved imports plus the store-operation audit, R6-3 pending after a
+move during the stop, R6-4 start facts dropped when the instance leaves). Residual of the R6-1 design, as the main
+session specified it: with more host ports than fit in one transaction, overflow ports can commit and the publish
+then fail, so a move target's overflow ports sit next to the source's `running` and `node` until the next publish. No
+requirement or spec scenario changed.
 
 ## Failure cases
 

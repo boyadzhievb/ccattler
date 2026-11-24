@@ -306,19 +306,22 @@ reconcileDesiredInstance(instanceInfo)                        :736
     ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1441
     ├── runtime.Status(id) → get IP
     ├── observeInstanceState(id) → running | starting   [exited → starting (instant exit, M238)]
-    ├── instanceFacts.writeGuarded(hostPortChangesIfSupported)  → PUT observed/instance/{id}/hostport/{port}
-    │   [own guarded writes, chunked by maxInstanceFactChangesPerTransaction (100): any number of ports, 3f B1]
     ├── start facts, all in the publish transaction below (M267 3e):
     │   PUT observed/instance/{id}/started_at = now (RFC 3339, fractions)  [every start; min_healthy_time, M241 D10]
     │   DELETE observed/instance/{id}/probe/readiness  [ready again only once the probe passes, review B4]
     │   PUT image, PUT config-hash = configHashBeforeBuild, PUT status_reason = "running" (running only)
-    ├── publishInstanceStateToStore(ctx, instanceInfo, state, runtimeIP, start facts…)
-    │   not committed (store error, lost CAS) → uncommittedStartFacts[id] = start facts,
-    │   carried by publishRunningInstance until they commit; dropped in teardownStaleInstance (3f B2)
+    ├── publishInstanceStateToStore(ctx, instanceInfo, state, runtimeIP, hostPortChangesIfSupported(id), start facts…)
+    │   not committed (store error, lost CAS, host-port overflow not written) → uncommittedStartFacts[id] =
+    │   start facts, carried by publishRunningInstance until they commit; dropped in teardownStaleInstance
+    │   and by cleanupStaleUncommittedStartFacts once not placed here (3f B2, 3g R6-4)
     │   ├── resolvePublishedContainerIP: networkProvider.AllocateIP (also → network/allocation)
     │   │   else a valid runtime IP, else none — resolved BEFORE anything is written (M267 3c.6)
     │   ├── dropNoOpChanges(marker, service, ip, allocation, sameCycleFacts): Get each, keep the changed ones
     │   │   (no more key writes than the former idempotent Puts on etcd, M266)
+    │   ├── writeHostPortOverflow(hostPortChanges, count)  [M267 3g R6-1]
+    │   │   dropNoOpChanges(host ports); those that fit beside the publish (100 − 2 state/node − count)
+    │   │   go into the publish TXN; the overflow first → instanceFacts.writeGuarded (chunks of 100);
+    │   │   overflow not all committed → return false, no publish (start facts kept)
     │   ├── publishInstanceStateUnlessStopped(…, those puts)  [M241 2i.1]
     │   │   Get state → stopped (written by another component) → write nothing, return;
     │   │   else TXN compare the state revision read and the revision of
@@ -326,7 +329,7 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   │   0 = no guard, only for test-built infos; a move deletes the key, so a source still
     │   │   in the cycle that scanned before the move never publishes, M267 R2-1) → PUT state
     │   │   = "running"|"starting", PUT observed/instance/{id}/node = nodeID and the changed
-    │   │   marker/service/ip/network-allocation/sameCycleFacts, all in ONE transaction (M267 D4, 3c.6, 3e: a
+    │   │   marker/service/ip/network-allocation/host ports/sameCycleFacts, all in ONE transaction (M267 D4, 3c.6, 3e, 3g: a
     │   │   move can never land between state and IP); lost CAS → next cycle; store error →
     │   │   ERROR, next cycle
     │   ├── createInstanceCreatedAtOnce: create-only TXN with placementGuard
@@ -370,13 +373,14 @@ executeReconciliationCycle                                   :539
     ├── reconcileResourceChanges(ctx, instanceInfo)
     │   └── live resize CPU/memory if supported
     │
-    └── publishRunningInstance(ctx, info, ip)                [M267 3e, 3f]
-        ├── instanceFacts.writeGuarded(hostPortChangesIfSupported)  [every cycle for endpoints/DNAT; own chunked writes]
+    └── publishRunningInstance(ctx, info, ip)                [M267 3e, 3f, 3g]
         ├── observeInstanceState(id)
         │   ├── Running: true  → InstanceRunning
         │   └── otherwise      → InstanceStarting   [exited after List: next cycle records it, Flow 33, M238 D4]
-        └── publishInstanceStateToStore(ctx, info, state, ip, uncommittedStartFacts[id], DELETE exit-reason)
-            [one guarded TXN, never over stopped: 2i.1; committed → uncommittedStartFacts entry dropped]
+        └── publishInstanceStateToStore(ctx, info, state, ip, hostPortChangesIfSupported(id),
+                uncommittedStartFacts[id], DELETE exit-reason)
+            [one guarded TXN with the host ports (endpoints/DNAT, overflow first: 3g R6-1), never over
+             stopped: 2i.1; committed → uncommittedStartFacts entry dropped]
 ```
 
 ### ProbeScheduler.Run → independent goroutine (5s tick)
@@ -742,6 +746,7 @@ beginCrashLoopWait(instanceInfo, entry, exitDescription, exitFacts…)  [crash_l
         exitFacts (exit-reason))
 
 cleanupStaleCrashLoopBackoffs(desiredByID)   [end of the cycle: drop entries of instances not placed here]
+cleanupStaleUncommittedStartFacts(desiredByID)   [same, for carried start facts (M267 3g R6-4)]
 cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance image fallback log (M241)]
 ```
 
@@ -761,22 +766,22 @@ cleanupStaleImageFallbackLogs(desiredByID)   [same, for the once-per-instance im
 | Init failure | Before BAIL | agent.go:732 |
 | Volume attach failure | Before BAIL | agent.go:745 |
 | Start failure | In handleInstanceStartError (both outcomes) | agent.go |
-| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1051 |
+| Cleanup | In teardownStaleInstance (cleanupUndesiredInstance, cleanupStoppedStaleInstance) | agent.go:1071 |
 
 Instance data removal (M234): `cleanupUndesiredInstance` and `cleanupStoppedStaleInstance` call `removeInstanceDataIfSupported` after the stop → `runtime.InstanceDataRemover.RemoveInstanceData` (containerd: deletes `/var/lib/ccattler/logs/<id>/`, current and previous run logs). `Stop` itself no longer deletes the log directory.
 
 ### Agent cleanup of a container that left the node (M267 D2, D4)
 ```
 executeReconciliationCycle: container not in this node's desired set
-├── running → cleanupUndesiredInstance(id)                  agent.go:1239
+├── running → cleanupUndesiredInstance(id)                  agent.go:1264
 │             removeContainer = pre_stop hook + stopInstanceWithGracePeriod
-└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1038
+└── exited  → cleanupStoppedStaleInstance(id)               agent.go:1058
               removeContainer = runtime.Stop (no hook, container already dead)
-    both: teardownStaleInstance(id, removeContainer)        agent.go:1051
+    both: teardownStaleInstance(id, removeContainer)        agent.go:1071
     ├── FIRST, before anything is removed:
-    │   isInstanceMovedToAnotherNode(id) → (moved, rev, err) agent.go:1160
+    │   isInstanceMovedToAnotherNode(id) → (moved, rev, err) agent.go:1185
     │   ├── GET placement/instance/{id}: not found → false; error → error; this node → false
-    │   └── isControllerStopped(id)                         agent.go:1181
+    │   └── isControllerStopped(id)                         agent.go:1206
     │       GET derived/instance/{id}/controller_stopped: not found → false; error → error;
     │       value "true" → true (controller stop → not a move); else moved
     ├── read error → RETURN: container, local state and store untouched, WARN "cannot read
@@ -785,8 +790,8 @@ executeReconciliationCycle: container not in this node's desired set
     ├── drop local resource/backoff tracking and uncommittedStartFacts[id]; instanceFactWriter.deleteUnlessPlacedElsewhere(pull-status)
     │   (TXN on placement/instance/{id}'s revision; kept while placed on another node: keyed by ID, M267 B2, 3e)
     ├── revoke token, detach volumes, removeContainer(), removeInstanceDataIfSupported
-    ├── publishRemovedInstanceState(id, moved, rev)         agent.go:1093
-    │   ├── moved     → markMovedInstancePending(id)        agent.go:1113
+    ├── publishRemovedInstanceState(id, moved, rev)         agent.go:1114
+    │   ├── moved     → markMovedInstancePending(id)        agent.go:1138
     │   │   GET observed/instance/{id}/node: missing or another node → nothing (the target
     │   │     published); GET state: stopped → nothing (final)
     │   │   TXN compare node revision + state revision → PUT state = pending,
@@ -795,7 +800,8 @@ executeReconciliationCycle: container not in this node's desired set
     │   │    instance controller replace a moved instance)
     │   └── not moved → TXN compare placement/instance/{id} revision the move check read
     │                   (0: absent) → PUT state = stopped (scale-down, controller stop, no
-    │                   placement); lost → nothing (placed elsewhere during pre_stop/grace, 3f P2)
+    │                   placement); lost (placed elsewhere during pre_stop/grace, 3f P2) →
+    │                   isInstanceMovedToAnotherNode again: moved → markMovedInstancePending (3g R6-3)
     ├── probe cleanup
     └── releaseStaleInstanceNetwork(id)
         ReleaseIP (node-local); instanceFactWriter.deleteUnlessPlacedElsewhere(network/allocation/{id},
@@ -834,11 +840,13 @@ executeReconciliationCycle: container not in this node's desired set
 | `handleInstanceStartError` | startInstanceAndPublishState |
 | `instanceConfigHashChange` / `instanceImageChange` | startInstanceAndPublishState (start publish), handleInstanceStartError (M267 3e) |
 | `replaceContainerOnAnotherImage` | executeReconciliationCycle (running path, before detectConfigChange; M241 2e.1) |
-| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish (Agent, ProbeScheduler, NodeReporter each hold an instanceFactWriter; M267 3e, 3f) |
+| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish (Agent, ProbeScheduler, NodeReporter each hold an instanceFactWriter; M267 3e, 3f), and the host-port overflow (writeHostPortOverflow, 3g); returns whether every chunk committed |
+| `writeHostPortOverflow` | publishInstanceStateToStore (host ports beyond the publish's room, written first; M267 3g R6-1) |
+| `cleanupStaleUncommittedStartFacts` | executeReconciliationCycle (after cleanupStaleCrashLoopBackoffs; M267 3g R6-4) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |
 | `hasConfigChangedSinceStart` | isExitedInstanceDueForRestart, detectConfigChange |
 | `incrementRestartCountInStore` | reconcileInstanceWithoutRunningContainer |
-| `publishInstanceStateToStore` | publishRunningInstance (running path), startInstanceAndPublishState, handleInstanceStartError, beginCrashLoopWait, recordSecretDeliveryWait, recordImagePullFailure, ensureImageAvailable (pulling), prepareInstanceSecretMaterial (pending) — every caller passes the facts of the same publish as sameCycleFacts; returns true when committed (M267 3e) |
+| `publishInstanceStateToStore` | publishRunningInstance (running path), startInstanceAndPublishState, handleInstanceStartError, beginCrashLoopWait, recordSecretDeliveryWait, recordImagePullFailure, ensureImageAvailable (pulling), prepareInstanceSecretMaterial (pending) — every caller passes the facts of the same publish as sameCycleFacts, and the start and running paths their host ports (others nil, 3g); returns true when committed (M267 3e) |
 | `publishRunningInstance` | executeReconciliationCycle (running path, M267 3e) |
 | `initStepChanges` | executeInitializationSteps, executeInitStep (M267 3f S1) |
 
