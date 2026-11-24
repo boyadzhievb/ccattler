@@ -574,7 +574,10 @@ Requested 2026-11-24 (user: "we should have such a milestone, as soon as possibl
 - **Disclosure process:** `SECURITY.md` (supported versions, how to report, response times), GitHub private vulnerability reporting turned on, fixes published as GitHub Security Advisories with CVE IDs.
 - **Written security model, public:** a user-facing version of `design/security-model.md` and `threat-model.md` on the website, each control marked implemented, tested or planned.
 - **Continuous fuzzing:** ClusterFuzzLite in GitHub Actions; OSS-Fuzz once adoption qualifies.
-- **External review:** an independent audit or pentest once the above is in place. Funding routes: OSTIF, OpenSSF Alpha-Omega, Sovereign Tech Agency, or CNCF (Sandbox projects); firms such as Trail of Bits, NCC Group, Cure53, X41 and Ada Logics. The report and its fixes are published.
+- **External review:** an independent audit or pentest once the above is in place. Funding routes: OSTIF, OpenSSF Alpha-Omega, Sovereign Tech Agency, or CNCF (Sandbox projects); firms such as Trail of Bits, NCC Group, Cure53, X41 and Ada Logics. The report and its fixes are published (procedure added 2026-11-24, user):
+  1. **Contract:** the full report may be published after the fixes, and a retest of the fixes by the auditor is booked, with its result published too.
+  2. **Fixes under coordinated disclosure:** the report stays private while critical and high findings are fixed, in a fixed window (30–90 days). Each finding becomes an OpenSpec change (bugs first), with a regression test that reproduces it and is named in the spec. Each vulnerability gets a GitHub Security Advisory with a CVE ID, published with the release that fixes it.
+  3. **Publication:** the unedited report goes in `docs/security/audits/<year>-<firm>.pdf`, plus a findings table on the website's security page with the ID, severity, status (fixed in a version, accepted risk with its reason, or won't fix with its reason) and evidence (commit or PR, regression test, advisory, retest result). Findings are linked into the threat → control → test map, and the changelog names the finding IDs.
 
 To be proposed as an OpenSpec change, right after M267 closes.
 
