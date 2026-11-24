@@ -72,7 +72,31 @@ the flag it SHALL leave the port closed and print the exact firewalld or ufw com
 - **WHEN** `cca init` runs
 - **THEN** it exits with an error saying the flag must name the cluster's networks, not every source, and writes no
   files (added during apply, 2026-11-24: security round-2 finding, which reproduced `0.0.0.0/0` opening etcd to all)
-- Test: `TestInitRejectsInvalidEtcdClientCIDR` (subcases for the three values)
+- Test: `TestInitRejectsInvalidEtcdClientCIDR` (subcases for the three values, and the leading-zero forms
+  `0.0.0.0/00`, `::/000`, `::ffff:0.0.0.0/096`, which review round 3 reproduced getting through)
+
+#### Scenario: Networks that together cover every address
+- **GIVEN** `cca init --etcd-client-cidr 0.0.0.0/1,128.0.0.0/1` (or any set whose union is a whole IPv4 or IPv6
+  family)
+- **WHEN** `cca init` runs
+- **THEN** it exits with the same error as for a single all-covering network, and writes no files (added during apply,
+  2026-11-24, user decision on review round 3, option ii)
+- Test: `TestInitRejectsInvalidEtcdClientCIDR` (subcase `union covers every address`)
+
+#### Scenario: Wide or public network
+- **GIVEN** `cca init --etcd-client-cidr` with a network wider than /8 (IPv4) or /32 (IPv6), or one containing
+  public (non-private, non-loopback) addresses
+- **WHEN** `cca init` runs
+- **THEN** it accepts the value, prints a warning naming it and saying that every cluster-CA certificate can use
+  etcd (M280), and writes the rule
+- Test: `TestInitWarnsOnWideEtcdClientCIDR`
+
+#### Scenario: Every written rule is re-checked
+- **GIVEN** any accepted `--etcd-client-cidr` value, among them the forms above
+- **WHEN** the generated `setup.sh` is read back
+- **THEN** no 2379 rule in it, firewalld or ufw, covers every address of a family, alone or together with the
+  others
+- Test: `TestSetupScriptEtcdRulesNeverCoverEveryAddress` (parses the rules out of the generated script)
 
 ### Requirement: The agent finds CNI plugins in distribution directories
 The containerd runtime SHALL look for CNI plugin binaries in `/opt/cni/bin` first, then in `/usr/libexec/cni` and

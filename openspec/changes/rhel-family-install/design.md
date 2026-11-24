@@ -38,6 +38,25 @@ key is read or written differently, so there are no writers to fence and no chan
 
 ## Decisions
 
+**Structural changes after review round 3, 2026-11-24 (user decisions, options a and ii).** This was the third round
+with findings of the same class (the openspec/config.yaml rework limit).
+- **The secure_path advice** (rounds 1, 2 and 3):
+  - `install.sh` no longer prints any sudoers text. It warns, prints the full-path command and names the guide's fixed
+    `secure_path` snippet, which lists only the standard root directories and `/usr/local/bin`. Nothing computed from
+    the host reaches sudoers.
+  - Rejected: patching a third time (print the resolved path).
+- **etcd client networks** (rounds 2 and 3). One canonical value is used for both the check and the rule: the parsed
+  `*net.IPNet` is checked through `Mask.Size()` after unmapping, so the text that is checked is the text written into
+  `setup.sh`.
+  - **Refused:** a set of networks whose union covers a whole family. The deduplicated sizes are summed in the family's
+    address space; IPv4-mapped IPv6 counts as IPv4.
+  - **Warned, not refused:** networks wider than /8 (IPv4) or /32 (IPv6), and public ranges, because clusters on public
+    IPs exist.
+  - **A test that holds it:** `TestSetupScriptEtcdRulesNeverCoverEveryAddress` reads the rules back out of the generated
+    script.
+  - Rejected: refusing only /0, which leaves the two-halves case; allowing private ranges only, which breaks
+    public-IP clusters.
+
 **Spec changes during apply, 2026-11-24 (main session, from review round 2).** These follow the user's decisions
 (S1 option a, S2 option b) and the security findings:
 - **`binary-install`:**

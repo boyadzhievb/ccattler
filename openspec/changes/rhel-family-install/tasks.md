@@ -194,6 +194,40 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 - [x] 3o.5 R2-6 and R2-7: the test helper, the comment, the note wording (with and without a running firewall), the
   family in the note; one guide sentence for a group-writable install directory. Run the checks as in 3.1.
   Result: installedTo matches only `sudo install `; install.sh relabel comment corrected; red on 6dfb619 then green: TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks/{firewalld, ufw, no firewall} (note names the active firewall or says none is active; family placeholder `<ipv4 or ipv6>`); guide sentence on a group-writable install dir (root:staff 2775). Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok, vitepress build of a copy.
+  Round 3 (2026-11-24, on 6dfb619..56068a0):
+  - **code-reviewer (Opus high, Codex job review-mwuuhwyz-lsed0n): request changes.** Red on 6dfb619 for the 3o
+    tests; green 54/54 under dash and bash.
+  - **security-audit (Opus high): needs work.**
+
+  The main session reproduced B1 with the 56068a0 build: `0.0.0.0/00`, `::/000` and `::ffff:0.0.0.0/096` exit 0 and
+  write /0 rules; `0.0.0.0/1,128.0.0.0/1` exits 0.
+
+  | # | Finding | Resolution |
+  |---|---|---|
+  | B1 | Leading-zero prefixes pass the every-address check (`netip` rejects them, so the check returns false; `net.ParseCIDR` accepts them and writes /0). HIGH, both reviewers, reproduced | **fix** 3p.1 (one canonical value, user option ii) |
+  | B2 | The drop-in prints the unresolved path; a user-owned symlink to /usr/bin passes and can be repointed (medium, both reviewers, reproduced) | **fix** 3p.2 (structural, user option a: no sudoers text from install.sh at all) |
+  | B3 | `0.0.0.0/1,128.0.0.0/1` opens 2379 to all (security, reproduced) | **fix** 3p.1 (union refused) |
+  | B4 | The `SELinux disabled` subtest does not assert "prints nothing about SELinux" | **fix** 3p.3 |
+  | B5 | `$(cd "$INSTALL_PATH" && pwd)` follows CDPATH and keeps the logical path | **fix** 3p.2 (`CDPATH= cd -P --`, or moot if the path is no longer printed) |
+  | — | Runtime warning when the binary is not owned by uid 0 after an install without sudo (security suggestion) | **fix** 3p.2 (one warning line) |
+  | Codex | "`<ipv4 or ipv6>` is not runnable"; "`::fffe:0:0/95` covers all IPv4" | **rejected**: the line is a template next to `<your node network>`; that prefix becomes an ipv6 rule, which IPv4 packets never match |
+
+- [ ] 3p.1 B1 and B3 (design.md "Structural changes after review round 3"):
+  - check the canonical parsed network with one parser (`Mask.Size()` after unmapping);
+  - refuse a union covering a family;
+  - warn for wider than /8 or /32, or public ranges, naming M280.
+
+  Tests, red on 56068a0: the new subcases of `TestInitRejectsInvalidEtcdClientCIDR`, `TestInitWarnsOnWideEtcdClientCIDR`
+  and `TestSetupScriptEtcdRulesNeverCoverEveryAddress` (parse the rules out of the generated setup.sh).
+- [ ] 3p.2 B2, B5, warning (user option a): `install.sh` drops `safe_sudo_path_entries`,
+  `directory_is_safe_for_sudo` and every printed sudoers line.
+  - When the install directory is missing from secure_path, it warns, gives the full-path next steps and names the
+    guide's `secure_path` step (link).
+  - It warns when the installed binary is not owned by uid 0.
+  - The `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` subcases assert there is no `Defaults secure_path` and no
+    `/etc/sudoers.d` in the output, red first.
+  - Remove the dead helpers and keep shellcheck clean.
+- [ ] 3p.3 B4: the `SELinux disabled` subcase asserts that nothing about SELinux is printed. Run the checks as in 3.1.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

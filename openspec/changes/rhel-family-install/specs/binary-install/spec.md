@@ -57,30 +57,24 @@ directory and how to call `cca` by its full path, and its next steps SHALL use t
 - **THEN** it warns that `sudo` will not find `cca` there and its next steps call `sudo /usr/local/bin/cca status`
 - Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `missing`)
 
-### Requirement: install.sh never advises an unsafe sudo path
-`install.sh` SHALL print a sudoers drop-in only when every directory it lists is absolute and, with symlinks
-resolved, owned by root and not group- or world-writable, together with all its parent directories; otherwise it
-prints only the full-path advice. (Changed during apply, 2026-11-24: security findings S5 and round-2 sudo path.)
+### Requirement: install.sh prints no sudoers text
+`install.sh` SHALL NOT print a sudoers drop-in or any `Defaults secure_path` line computed from the host. When the
+install directory is not on sudo's `secure_path` it SHALL point to the guide's fixed snippet instead. (Changed during
+apply, 2026-11-24, user decision on review round 3, option a: three rounds found ways to fool a computed drop-in.)
 
-#### Scenario: Safe install directory missing from secure_path
+#### Scenario: Install directory missing from secure_path, no sudoers text
 - **GIVEN** sudo's `secure_path` is `/sbin:/bin:/usr/sbin:/usr/bin` and the install directory is `/usr/local/bin`
 - **WHEN** `install.sh` finishes
-- **THEN** its output warns that `sudo` will not find `cca` in `/usr/local/bin`, shows the checked drop-in command
-  listing only safe directories plus `/usr/local/bin`, and the next steps call `sudo /usr/local/bin/cca`
+- **THEN** its output contains no `Defaults secure_path` and no `/etc/sudoers.d` command; it names the guide's
+  `secure_path` step (installation page link), and the next steps call `sudo /usr/local/bin/cca`
 - Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `missing`)
 
-#### Scenario: Unsafe directory, no drop-in
-- **GIVEN** an install directory, or one of its parents, that is user-owned, group- or world-writable, relative, or
-  a symlink into a user-owned directory
+#### Scenario: Unusual paths never reach sudoers text
+- **GIVEN** an install directory that is a symlink, user-owned, relative, or under a user-owned parent, or sudo
+  passes the caller's PATH (`~/.local/bin`, `.`)
 - **WHEN** `install.sh` finishes
-- **THEN** it prints the full-path advice and no sudoers drop-in
+- **THEN** its output contains no `Defaults secure_path` and no `/etc/sudoers.d` command
 - Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcases for each case)
-
-#### Scenario: sudo passes the caller's PATH
-- **GIVEN** sudoers sets no `secure_path`, so sudo's PATH contains `~/.local/bin` and `.`
-- **WHEN** `install.sh` prints the drop-in
-- **THEN** neither `~/.local/bin` nor `.` appears in it
-- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `unsafe sudo path entries`)
 
 #### Scenario: Install directory on secure_path, or not Linux
 - **GIVEN** sudo's `secure_path` includes the install directory, or the host is macOS
