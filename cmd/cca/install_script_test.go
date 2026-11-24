@@ -417,6 +417,14 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 				t.Errorf("notice=%v dropIn=%v, want notice=%v dropIn=%v; output:\n%s",
 					hasNotice, hasDropIn, testCase.wantAnyNotice, testCase.wantDropIn, run.output)
 			}
+			// After the warning, the next steps call cca by its full path, which sudo finds.
+			wantedNextStep := "4. sudo cca status"
+			if testCase.wantDropIn {
+				wantedNextStep = "4. sudo " + run.installDir + "/cca status"
+			}
+			if testCase.options.unameSystem != "Darwin" && !strings.Contains(run.output, wantedNextStep) {
+				t.Errorf("next steps lack %q; output:\n%s", wantedNextStep, run.output)
+			}
 		})
 	}
 }

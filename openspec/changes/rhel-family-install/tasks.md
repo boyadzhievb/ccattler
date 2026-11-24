@@ -78,12 +78,20 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   - A1: CNI on EL10 has no package;
   - A2: the "No EL9 repository" wording;
   - A3: install.sh's next steps say `sudo cca status` right after the secure_path warning.
-- [ ] 3n A1–A3:
+- [x] 3n A1–A3:
   - the guide's RHEL CNI lines split per release: EL9 uses the AppStream package, EL10 the tarball into
     `/opt/cni/bin`, and the Verify line matches;
   - the etcd comment says EL9 and EL10;
   - install.sh prints `sudo /usr/local/bin/cca status` in its next steps when it warned about secure_path, with a
     test subcase, red first.
+  Result: A1: the RHEL block is split into separate code blocks: EL9 `dnf install -y containernetworking-plugins`
+  (/usr/libexec/cni), EL10 the Debian tarball lines into /opt/cni/bin; the fallback sentence removed; Verify says
+  `/opt/cni/bin/bridge` on Debian/Ubuntu and EL10, `/usr/libexec/cni/bridge` on EL9. Also the OS row and the
+  section intro say "9 and 10" (follows from the EL10 block). A2: "No EL9 or EL10 repository ships it". A3: red on
+  73ae6ee: TestInstallScriptWarnsWhenSudoPathLacksInstallDir/missing (next steps lacked `4. sudo <dir>/cca status`;
+  the other subcases assert `4. sudo cca status`); fix `sudo_cca`, set to `${INSTALL_PATH}/cca` with the warning;
+  green under sh and bash; shellcheck sh and dash clean. Checks: gofmt, golangci-lint ./... 0 issues, go vet,
+  go test -count=1 ./... exit 0, -race ok, bash -n on the guide blocks, vitepress build of a copy.
 - [ ] 3.4 Independent review: `code-reviewer` (correctness) and a patterns review against `design/Anti-pattern.md`;
   each finding recorded as fixed or rejected.
   Round 1 (2026-11-24, on e330546..4a93ca2):

@@ -6,7 +6,7 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 
 | Requirement | Details |
 |---|---|
-| **OS** | Linux (Ubuntu 22.04+, Debian 12+, RHEL/AlmaLinux/Rocky 9) or macOS (Apple Silicon and Intel) |
+| **OS** | Linux (Ubuntu 22.04+, Debian 12+, RHEL/AlmaLinux/Rocky 9 and 10) or macOS (Apple Silicon and Intel) |
 | **Architecture** | amd64 or arm64 |
 | **Go** | 1.22+ (only if building from source) |
 | **Container runtime** | Docker, nerdctl, or Lima — required for `cca run-container`. Optional for simulation and process modes. |
@@ -15,7 +15,7 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 ### Prepare a fresh host
 
 A minimal install ships without several tools these instructions use. Run the steps that apply, in order. Steps 2
-and 3 have one block for **Debian and Ubuntu** and one for **RHEL, AlmaLinux and Rocky Linux 9**; run the one for your
+and 3 have one block for **Debian and Ubuntu** and one for **RHEL, AlmaLinux and Rocky Linux 9 and 10**; run the one for your
 distribution.
 
 **1. Get `sudo`.** This step is the same on every Linux distribution except for the package manager and the name
@@ -137,11 +137,28 @@ sudo dnf install -y dnf-plugins-core
 sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
 sudo dnf install -y containerd.io nftables
 sudo systemctl enable --now containerd
+```
 
-# CNI plugins (container networking) from AppStream; they install to /usr/libexec/cni
+CNI plugins (container networking) on **EL9** (RHEL, AlmaLinux, Rocky 9), from AppStream into `/usr/libexec/cni`:
+
+```bash
 sudo dnf install -y containernetworking-plugins
+```
 
-# Control-plane host only: etcd. No EL9 repository ships it, so install the release binary,
+CNI plugins on **EL10** (RHEL, AlmaLinux, Rocky 10): no EL10 repository ships them, so install the release tarball into
+`/opt/cni/bin`, with the same commands as on Debian:
+
+```bash
+CNI_VERSION=1.9.1
+sudo mkdir -p /opt/cni/bin
+curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${ARCH}-v${CNI_VERSION}.tgz" \
+    | sudo tar -xz -C /opt/cni/bin
+```
+
+etcd, on the control-plane host only (EL9 and EL10):
+
+```bash
+# Control-plane host only: etcd. No EL9 or EL10 repository ships it, so install the release binary,
 # checked against the SHA-256 pinned here (see below). Each step runs only if the one before succeeded.
 ETCD_VERSION=3.5.36
 case "$ARCH" in
@@ -162,8 +179,7 @@ cd "$(mktemp -d)" \
 `SHA256SUMS` file of the [etcd v3.5.36 release](https://github.com/etcd-io/etcd/releases/tag/v3.5.36)
 (`https://github.com/etcd-io/etcd/releases/download/v3.5.36/SHA256SUMS`, read 2026-11-24); a different
 `ETCD_VERSION` needs the values from that version's file. `restorecon` gives the binaries the SELinux label systemd
-needs. If the CNI package is not available, the Debian tarball commands
-above work too (into `/opt/cni/bin`). If you cannot use Docker's repository, EPEL also ships `containerd`; EPEL needs
+needs. If you cannot use Docker's repository, EPEL also ships `containerd`; EPEL needs
 the CRB repository enabled (`sudo dnf config-manager --set-enabled crb && sudo dnf install -y epel-release`).
 
 Verify:
@@ -171,7 +187,7 @@ Verify:
 ```bash
 systemctl is-active containerd     # active
 ls /usr/sbin/nft                   # /usr/sbin/nft (not on a normal user's PATH on Debian)
-ls /opt/cni/bin/bridge             # Debian/Ubuntu; /usr/libexec/cni/bridge on RHEL, AlmaLinux, Rocky
+ls /opt/cni/bin/bridge             # Debian/Ubuntu and EL10; on EL9: ls /usr/libexec/cni/bridge
 command -v etcd                    # control plane only
 ```
 

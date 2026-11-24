@@ -186,6 +186,8 @@ install_path_is_safe_for_sudo() {
 }
 
 # --- sudo's secure_path (Linux): 'sudo cca' fails when INSTALL_PATH is not on it ---
+# sudo_cca is how the next steps call cca with sudo: the full path after the warning.
+sudo_cca="cca"
 if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1 && install_path_is_safe_for_sudo; then
     # -n never prompts; without cached credentials sudo's PATH cannot be read.
     if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
@@ -196,6 +198,7 @@ if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1 && insta
             *":${INSTALL_PATH}:"*) ;;
             *)
                 log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path (${sudo_path})."
+                sudo_cca="${INSTALL_PATH}/cca"
                 log_warn "Call 'sudo ${INSTALL_PATH}/cca', or add the directory with a checked sudoers drop-in:"
                 log_warn "  sudoers_file=\$(mktemp)"
                 log_warn "  echo 'Defaults secure_path=\"${sudo_path}:${INSTALL_PATH}\"' > \"\$sudoers_file\""
@@ -247,7 +250,7 @@ if [ "$operating_system" = "linux" ]; then
     log_info "    1. cca init --advertise-address <this-host-ip> --node-id <name> -o ~/cca-init"
     log_info "    2. Review, then run:  sudo ~/cca-init/setup.sh"
     log_info "    3. sudo systemctl enable --now cca-server cca-agent"
-    log_info "    4. sudo cca status"
+    log_info "    4. sudo ${sudo_cca} status"
     log_info ""
     log_info "  Add worker nodes and use the CLI without sudo:"
     log_info "    ${INSTALL_GUIDE_URL}#set-up-a-cluster-by-hand"
