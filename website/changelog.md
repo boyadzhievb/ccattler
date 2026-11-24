@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.96.0-beta <Badge type="tip" text="latest" /> {#v1-96-0-beta}
+## v1.97.0-beta <Badge type="tip" text="latest" /> {#v1-97-0-beta}
+
+**2026-11-24** — Rebalancing Moves Instances Onto Nodes They Don't Fit.
+
+- **Rebalancing Moves Instances Onto Nodes They Don't Fit** (M267) — Bug fix (found in a full deploy run, 2026-11-23): the scheduler's rebalancing chose a target node by instance count alone, so it moved instances onto nodes without room for their CPU or memory; placement then put the replacement back, in an endless loop. A rebalance move now needs the same fit as a placement, a moved instance is never left looking running on its old node, and every agent write of an instance's facts is guarded by its placement and proven by a fault-injection test that fails every write in turn. Also in this release: M275, `types/keys.go` split into one file per subject (no behaviour change).
+
+---
+
+## v1.96.0-beta {#v1-96-0-beta}
 
 **2026-11-23** — Unplaced-Demand Facts Outlive Their Instance.
 

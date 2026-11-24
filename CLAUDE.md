@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M262 — Unplaced-Demand Facts Outlive Their Instance (v1.96.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M267 — Rebalancing Moves Instances Onto Nodes They Don't Fit (v1.97.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
