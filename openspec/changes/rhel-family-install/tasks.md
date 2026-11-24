@@ -396,11 +396,25 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   | R6-7 | Unreferenced `installPathPlain`; three overlapping test options for INSTALL_PATH | **fix** 3s.2 |
   | — | Results returned through shell globals; carriage returns and escapes in a user-chosen INSTALL_PATH; "what systemd runs" with a custom INSTALL_PATH | **rejected**: POSIX sh has no `local`, so globals with clear names are acceptable; the escapes only affect the user's own output; the wording stays true for `sudo <path>/cca` |
 
-- [ ] 3s.1 R6-1 to R6-3 in install.sh. Red first: subcases for a relative given spelling on sudo's PATH, a symlink
+- [x] 3s.1 R6-1 to R6-3 in install.sh. Red first: subcases for a relative given spelling on sudo's PATH, a symlink
   in a user-writable parent listed on secure_path, and a symlink to a target name with a newline. Keep shellcheck
   clean under sh and dash.
-- [ ] 3s.2 R6-4 to R6-7: the guide snippet and the limit sentence, the `dash` subcase assertion, and the test option
+  Result: red on 22d972b: TestInstallScriptWarnsWhenSudoPathLacksInstallDir/{relative given spelling on sudo's path,
+  symlink in a user-writable parent on path} (no warning), TestInstallScriptRefusesUnusableInstallPath/symlink to a
+  target name with a newline (installed into the stripped name). Fix: normalization keeps a sentinel (`pwd -P && echo
+  x`) and refuses a resolved name with a newline; `find_first_unsafe_path` walks with lstat (`stat -c '%u %a %F'`):
+  owner must be 0, write bits count for directories (unless sticky, every entry below already root-owned) and for
+  files (no sticky exemption), never for symlinks; the given spelling (trailing slashes stripped) counts as on
+  secure_path only when absolute and its walk finds nothing. The fake stat honours `%F`. Green 44/44 under dash and
+  bash; shellcheck sh and dash clean.
+- [x] 3s.2 R6-4 to R6-7: the guide snippet and the limit sentence, the `dash` subcase assertion, and the test option
   cleanup. Then run the checks as in 3.1.
+  Result: guide: old Debian snippet covers /usr/local and /usr/local/bin; one sentence that the check sees owners and modes
+  only (loop-mounted image, FUSE, NFS). `dash` subcase: the error must quote the given path after "directory " and
+  install.sh's fixed wording no longer contains `'-'`. Tests: `installPathPlain` and the spelling type removed;
+  relativeInstall/installPathForm/installPathValue merged into one `installPath` template ({install}, {work},
+  {name}). Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok,
+  TestDocCrossCheck ok, vitepress build of a copy.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

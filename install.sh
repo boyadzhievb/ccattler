@@ -141,7 +141,7 @@ line_break='
 case "$requested_install_path" in
     - | *"$line_break"*)
         # cd would read '-' as the previous directory; a newline breaks every printed path.
-        log_error "Refusing the install directory $(shell_quoted "$requested_install_path"): '-' and newlines are not allowed."
+        log_error "Refusing the install directory $(shell_quoted "$requested_install_path"): a lone dash and newlines are not allowed."
         exit 1
         ;;
 esac
@@ -156,10 +156,19 @@ fi
 
 # Normalize once: absolute, no trailing or double slash, symlinks resolved, so every
 # check and printed path below uses the directory's one real name.
-if ! INSTALL_PATH=$(CDPATH='' cd -P -- "$requested_install_path" && pwd -P); then
+# The trailing x keeps $(...) from stripping newlines that belong to the resolved name.
+if ! resolved_with_sentinel=$(CDPATH='' cd -P -- "$requested_install_path" && pwd -P && echo x); then
     log_error "Cannot enter the install directory $(shell_quoted "$requested_install_path")."
     exit 1
 fi
+INSTALL_PATH=${resolved_with_sentinel%x}
+INSTALL_PATH=${INSTALL_PATH%"$line_break"}
+case "$INSTALL_PATH" in
+    *"$line_break"*)
+        log_error "Refusing the install directory $(shell_quoted "$requested_install_path"): it resolves to a name with a newline."
+        exit 1
+        ;;
+esac
 installed_binary_quoted=$(shell_quoted "${INSTALL_PATH}/cca")
 
 # run_as_installer runs a command with sudo when the install directory needed it.
@@ -195,20 +204,25 @@ fi
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
 
 # --- Ownership (Linux): systemd and sudo run cca as root, so only root may be able to change it ---
-# find_first_unsafe_install_path sets unsafe_install_path to the binary, or to the first
-# directory from INSTALL_PATH up to /, that is not root-owned or that others can write.
+# find_first_unsafe_path sets first_unsafe_path to the first of $1 and its parents up to /
+# that is not root-owned or that others can write; lstat, so a symlink is judged itself.
+# Write bits count for files and directories (a sticky directory's only when everything
+# below it on the path is root-owned, which the walk has checked); a symlink's never do.
 # Nothing privileged is printed (review round 5): detection only adds or misses a warning.
-find_first_unsafe_install_path() {
-    unsafe_install_path=""
-    checked_path="${INSTALL_PATH}/cca"
+find_first_unsafe_path() {
+    first_unsafe_path=""
+    checked_path=$1
     while :; do
-        owner_and_mode=$(stat -c '%u %a' "$checked_path" 2>/dev/null) || owner_and_mode="unknown 777"
-        checked_mode=${owner_and_mode##* }
-        # A sticky directory keeps others from replacing entries they do not own, and every
-        # entry below it on this path was already found root-owned, so its write bits are safe.
-        if [ "${owner_and_mode%% *}" != "0" ] \
-            || { [ $((0${checked_mode} & 022)) -ne 0 ] && [ $((0${checked_mode} & 01000)) -eq 0 ]; }; then
-            unsafe_install_path=$checked_path
+        owner_mode_type=$(stat -c '%u %a %F' -- "$checked_path" 2>/dev/null) || owner_mode_type="unknown 777 unknown"
+        mode_and_type=${owner_mode_type#* }
+        checked_mode=${mode_and_type%% *}
+        case "${mode_and_type#* }" in
+            "symbolic link") others_can_write=no ;;
+            directory) others_can_write=$(( (0${checked_mode} & 022) != 0 && (0${checked_mode} & 01000) == 0 )) ;;
+            *) others_can_write=$(( (0${checked_mode} & 022) != 0 )) ;;
+        esac
+        if [ "${owner_mode_type%% *}" != "0" ] || [ "$others_can_write" = "1" ]; then
+            first_unsafe_path=$checked_path
             return 0
         fi
         if [ "$checked_path" = "/" ]; then
@@ -220,9 +234,9 @@ find_first_unsafe_install_path() {
 }
 
 if [ "$operating_system" = "linux" ]; then
-    find_first_unsafe_install_path
-    if [ -n "$unsafe_install_path" ]; then
-        log_warn "$(shell_quoted "$unsafe_install_path") can be changed by someone other than root, and whoever can change it"
+    find_first_unsafe_path "${INSTALL_PATH}/cca"
+    if [ -n "$first_unsafe_path" ]; then
+        log_warn "$(shell_quoted "$first_unsafe_path") can be changed by someone other than root, and whoever can change it"
         log_warn "can change what systemd and sudo run as root. Use a directory writable only by root along its whole path,"
         log_warn "such as /usr/local/bin: https://ccattler.org/installation#quick-install"
     fi
@@ -233,21 +247,36 @@ fi
 SECURE_PATH_GUIDE_URL="https://ccattler.org/installation#prepare-a-fresh-host"
 # sudo_cca is how the next steps call cca with sudo: the quoted full path after the warning.
 sudo_cca="cca"
+# given_install_spelling is INSTALL_PATH as given, without trailing slashes.
+given_install_spelling=$requested_install_path
+while [ "$given_install_spelling" != "/" ] && [ "${given_install_spelling%/}" != "$given_install_spelling" ]; do
+    given_install_spelling=${given_install_spelling%/}
+done
 if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1; then
     # -n never prompts; without cached credentials sudo's PATH cannot be read.
     if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
         log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path: call"
         log_info "  sudo ${installed_binary_quoted}, or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
     else
+        install_directory_on_sudo_path=no
         case ":${sudo_path}:" in
-            # As given or as resolved (rpm-ostree links /usr/local to /var/usrlocal).
-            *":${INSTALL_PATH}:"* | *":${requested_install_path}:"* | *":${requested_install_path%/}:"*) ;;
-            *)
-                sudo_cca=$installed_binary_quoted
-                log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path."
-                log_warn "Call sudo ${sudo_cca}, or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
+            *":${INSTALL_PATH}:"*) install_directory_on_sudo_path=yes ;;
+            *":${given_install_spelling}:"*)
+                # As given (rpm-ostree links /usr/local to /var/usrlocal) only when that spelling is
+                # absolute and root alone controls each of its components, symlinks not followed.
+                case "$given_install_spelling" in
+                    /*)
+                        find_first_unsafe_path "$given_install_spelling"
+                        if [ -z "$first_unsafe_path" ]; then install_directory_on_sudo_path=yes; fi
+                        ;;
+                esac
                 ;;
         esac
+        if [ "$install_directory_on_sudo_path" = "no" ]; then
+            sudo_cca=$installed_binary_quoted
+            log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path."
+            log_warn "Call sudo ${sudo_cca}, or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
+        fi
     fi
 fi
 log_info "Run 'cca version' to verify."

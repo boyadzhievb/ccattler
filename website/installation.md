@@ -213,9 +213,12 @@ Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon). On SELinux hosts i
 When `/usr/local/bin` is not on sudo's `secure_path`, it warns and links to the fix in
 [step 1 of Prepare a fresh host](#prepare-a-fresh-host).
 With sudo it installs `cca` owned by root (mode 0755). If your user can write to the install directory itself (older
-Debian: `/usr/local/bin` owned by `root:staff`, mode 2775), it installs without sudo and `cca` stays owned by you;
-anyone in that group can already replace programs root runs from there, so on a cluster host make the directory
-root-only (`sudo chown root:root /usr/local/bin && sudo chmod 0755 /usr/local/bin`) and run the install again.
+Debian: `/usr/local` and `/usr/local/bin` owned by `root:staff`, mode 2775), it installs without sudo and `cca` stays
+owned by you; anyone in that group can already replace programs root runs from there, so on a cluster host make both
+directories root-only (`sudo chown root:root /usr/local /usr/local/bin && sudo chmod 0755 /usr/local /usr/local/bin`)
+and run the install again. The script warns when the binary, its directory or a parent can be changed by someone
+other than root. It checks owners and modes only, so it cannot see a filesystem a user controls, such as a
+loop-mounted image, FUSE or NFS: install `cca` on a local filesystem only root can change.
 
 Pin a specific version (the variable must be set for `bash`, which runs the script, not for `curl`):
 

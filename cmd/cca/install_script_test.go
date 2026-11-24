@@ -87,14 +87,27 @@ cat "$1" > "$2"
 chmod "$mode" "$2"
 `
 
-// installScriptFakeStat prints "uid mode" for its last argument from the FAKE_STAT_TABLE
-// lines "<path>\t<uid> <mode>" (tab, as paths may hold spaces), and "0 755" otherwise.
+// installScriptFakeStat prints "uid mode" for its last argument, plus the file type when
+// the -c format asks for %F, without following symlinks: owner and mode from the FAKE_STAT_TABLE lines
+// "<path>\t<uid> <mode>" (tab, as paths may hold spaces), "0 755" otherwise.
 const installScriptFakeStat = `#!/bin/sh
-for target_path; do :; done
+stat_format=""
+previous_argument=""
+for target_path; do
+  if [ "$previous_argument" = "-c" ]; then stat_format=$target_path; fi
+  previous_argument=$target_path
+done
+if [ -L "$target_path" ]; then file_type="symbolic link"
+elif [ -d "$target_path" ]; then file_type=directory
+else file_type="regular file"; fi
+owner_mode="0 755"
 while IFS='	' read -r table_path table_owner_mode; do
-  if [ "$table_path" = "$target_path" ]; then echo "$table_owner_mode"; exit 0; fi
+  if [ "$table_path" = "$target_path" ]; then owner_mode=$table_owner_mode; fi
 done < "$FAKE_STAT_TABLE"
-echo "0 755"
+case "$stat_format" in
+  *%F*) echo "$owner_mode $file_type" ;;
+  *) echo "$owner_mode" ;;
+esac
 `
 
 // installScriptFakeUname reports the kernel from FAKE_UNAME_S and an x86_64 machine.
@@ -127,32 +140,22 @@ type installScriptRun struct {
 	workDir    string   // temp directory holding every test file
 }
 
-// installPathSpelling is how a test spells INSTALL_PATH for the same directory.
-type installPathSpelling string
-
-const (
-	installPathPlain         installPathSpelling = ""               // the directory as created
-	installPathTrailingSlash installPathSpelling = "trailing slash" // "<dir>/"
-	installPathDoubleSlash   installPathSpelling = "double slash"   // "<work>//<name>"
-)
-
 // installScriptOptions selects which fakes exist and how they behave.
 type installScriptOptions struct {
-	withRestorecon     bool                // put fake restorecon and selinuxenabled on PATH
-	selinuxDisabled    bool                // make the fake selinuxenabled exit 1
-	statTable          map[string]string   // "uid mode" stat reports per path ({work}, {install}, {home}); others "0 755"
-	symlinkInstallDir  bool                // make the install directory a symlink to {work}/userdir
-	unameSystem        string              // kernel name from uname -s; "" means Linux
-	relativeInstall    bool                // pass INSTALL_PATH as the relative directory name
-	installDirName     string              // install directory name under {work}; "" means "install"
-	installPathForm    installPathSpelling // how INSTALL_PATH spells the install directory
-	installPathValue   string              // raw INSTALL_PATH ({work} expanded); overrides the directory spellings
-	unenterableDir     bool                // create {work}/locked with mode 000 (a directory that cannot be entered)
-	writableInstallDir bool                // leave the install directory writable, as for a root run (no sudo)
-	restoreconFails    bool                // make the fake restorecon exit 1
-	sudoSecurePath     string              // PATH that commands run through sudo see; {install} is the install dir
-	sudoPromptsForPass bool                // make "sudo -n" fail as if a password were needed
-	cniPluginDirectory string              // CNI directory (one of installScriptCNIDirectories) given a bridge plugin, "" for none
+	withRestorecon     bool              // put fake restorecon and selinuxenabled on PATH
+	selinuxDisabled    bool              // make the fake selinuxenabled exit 1
+	statTable          map[string]string // "uid mode" stat reports per path ({work}, {install}, {home}); others "0 755"
+	symlinkInstallDir  bool              // make the install directory a symlink to {work}/userdir
+	unameSystem        string            // kernel name from uname -s; "" means Linux
+	installDirName     string            // install directory name under {work}; "" means "install"
+	installPath        string            // INSTALL_PATH template ({install}, {work}, {name}); "" means {install}
+	newlineTarget      bool              // create {work}/link -> a directory whose name ends in a newline
+	unenterableDir     bool              // create {work}/locked with mode 000 (a directory that cannot be entered)
+	writableInstallDir bool              // leave the install directory writable, as for a root run (no sudo)
+	restoreconFails    bool              // make the fake restorecon exit 1
+	sudoSecurePath     string            // PATH that commands run through sudo see; {install} is the install dir
+	sudoPromptsForPass bool              // make "sudo -n" fail as if a password were needed
+	cniPluginDirectory string            // CNI directory (one of installScriptCNIDirectories) given a bridge plugin, "" for none
 }
 
 // writeFakeExecutable writes an executable shell script into directory.
@@ -243,6 +246,15 @@ func prepareInstallScriptBin(t *testing.T, workDirectory string, options install
 			t.Fatalf("mkdir: %v", mkdirError)
 		}
 	}
+	if options.newlineTarget {
+		newlineDirectory := filepath.Join(workDirectory, "target\n")
+		if mkdirError := os.Mkdir(newlineDirectory, 0o750); mkdirError != nil {
+			t.Fatalf("mkdir: %v", mkdirError)
+		}
+		if linkError := os.Symlink(newlineDirectory, filepath.Join(workDirectory, "link")); linkError != nil {
+			t.Fatalf("symlink: %v", linkError)
+		}
+	}
 	if options.unenterableDir {
 		lockedDirectory := filepath.Join(workDirectory, "locked")
 		if mkdirError := os.Mkdir(lockedDirectory, 0o000); mkdirError != nil {
@@ -296,17 +308,7 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 	statTablePath := writeFakeStatTable(t, workDirectory, installDirectory, options.statTable)
 	command := exec.Command("/bin/sh", writeInstallScriptCopy(t, workDirectory)) // #nosec G204 -- test copy of the repository script
 	command.Dir = workDirectory
-	installPathValue := installDirectory
-	switch {
-	case options.relativeInstall:
-		installPathValue = filepath.Base(installDirectory)
-	case options.installPathValue != "":
-		installPathValue = expandInstallTestPaths(options.installPathValue, workDirectory, installDirectory)
-	case options.installPathForm == installPathTrailingSlash:
-		installPathValue = installDirectory + "/"
-	case options.installPathForm == installPathDoubleSlash:
-		installPathValue = workDirectory + "//" + filepath.Base(installDirectory)
-	}
+	installPathValue := expandInstallTestPaths(valueOrDefault(options.installPath, "{install}"), workDirectory, installDirectory)
 	command.Env = []string{
 		"PATH=" + fakeBinDirectory,
 		"HOME=" + workDirectory,
@@ -341,10 +343,12 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 	}
 }
 
-// expandInstallTestPaths replaces {work}, {install} and {home} with the test's directories.
+// expandInstallTestPaths replaces {work}, {install}, {name} (the install directory's
+// base name) and {home} with the test's directories.
 func expandInstallTestPaths(text string, workDirectory string, installDirectory string) string {
 	return strings.NewReplacer(
 		"{install}", installDirectory,
+		"{name}", filepath.Base(installDirectory),
 		"{home}", filepath.Join(workDirectory, "home"),
 		"{work}", workDirectory,
 	).Replace(text)
@@ -486,16 +490,20 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 			wantNotice: true, wantWarning: true},
 		{name: "symlink into a user-owned dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", symlinkInstallDir: true,
 			statTable: map[string]string{"{work}/userdir": userOwned}}, wantNotice: true, wantWarning: true},
-		{name: "relative path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", relativeInstall: true}, wantNotice: true, wantWarning: true},
+		{name: "relative path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installPath: "{name}"}, wantNotice: true, wantWarning: true},
 		{name: "macOS", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true, unameSystem: "Darwin"}},
-		{name: "trailing slash on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", installPathForm: installPathTrailingSlash}},
-		{name: "double slash", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installPathForm: installPathDoubleSlash},
+		{name: "trailing slash on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", installPath: "{install}/"}},
+		{name: "double slash", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installPath: "{work}//{name}"},
 			wantNotice: true, wantWarning: true},
 		{name: "path with a space", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installDirName: "my install"},
 			wantNotice: true, wantWarning: true},
 		{name: "path with a quote", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installDirName: "it's install"},
 			wantNotice: true, wantWarning: true},
 		{name: "symlinked dir on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", symlinkInstallDir: true}},
+		{name: "relative given spelling on sudo's path", options: installScriptOptions{sudoSecurePath: "/sbin:{name}", installPath: "{name}"},
+			wantNotice: true, wantWarning: true},
+		{name: "symlink in a user-writable parent on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}",
+			symlinkInstallDir: true, statTable: map[string]string{"{work}": userOwned}}, wantNotice: true, wantWarning: true},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -610,20 +618,22 @@ func TestInstallScriptRefusesUnusableInstallPath(t *testing.T) {
 		name    string               // subcase name
 		options installScriptOptions // the INSTALL_PATH under test
 	}{
-		{name: "dash", options: installScriptOptions{installPathValue: "-"}},
-		{name: "newline", options: installScriptOptions{installPathValue: "{work}/new\nline"}},
-		{name: "cannot be entered", options: installScriptOptions{installPathValue: "{work}/locked", unenterableDir: true}},
+		{name: "dash", options: installScriptOptions{installPath: "-"}},
+		{name: "newline", options: installScriptOptions{installPath: "{work}/new\nline"}},
+		{name: "cannot be entered", options: installScriptOptions{installPath: "{work}/locked", unenterableDir: true}},
+		{name: "symlink to a target name with a newline", options: installScriptOptions{installPath: "{work}/link", newlineTarget: true}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			testCase.options.sudoSecurePath = "/usr/bin"
 			run := runInstallScriptWithFakes(t, testCase.options)
 			if run.exitError == nil {
-				t.Errorf("install.sh accepted INSTALL_PATH %q; output:\n%s", testCase.options.installPathValue, run.output)
+				t.Errorf("install.sh accepted INSTALL_PATH %q; output:\n%s", testCase.options.installPath, run.output)
 			}
-			givenPath := expandInstallTestPaths(testCase.options.installPathValue, run.workDir, run.installDir)
-			// The path must be in install.sh's own error (log_error's red marker), not only in a shell message.
+			givenPath := expandInstallTestPaths(testCase.options.installPath, run.workDir, run.installDir)
+			// install.sh's own error (log_error's red marker) must quote the given path; its fixed
+			// wording never contains a quoted path, so this can only come from the input.
 			errorIndex := strings.Index(run.output, installScriptErrorMarker)
-			if errorIndex < 0 || !strings.Contains(run.output[errorIndex:], givenPath) {
+			if errorIndex < 0 || !strings.Contains(run.output[errorIndex:], "directory "+shellQuotedForTest(givenPath)) {
 				t.Errorf("install.sh error does not contain the given path %q; output:\n%s", givenPath, run.output)
 			}
 			for _, toolCall := range run.toolCalls {
