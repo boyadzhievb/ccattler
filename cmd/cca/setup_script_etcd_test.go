@@ -329,12 +329,18 @@ func TestSetupScriptOpensEtcdClientPortOnlyToGivenNetworks(t *testing.T) {
 
 // TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks: without
 // --etcd-client-cidr no firewall rule mentions 2379, and setup.sh prints the
-// firewalld and ufw commands with a placeholder network, naming the flag.
+// firewalld and ufw commands with placeholders, naming the flag. The note says the
+// active firewall keeps the port closed, or that no firewall is active.
 func TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks(t *testing.T) {
 	for _, testCase := range []struct {
-		name      string   // subcase name
-		omitTools []string // the other firewall's fake is left off PATH
-	}{{name: "firewalld", omitTools: []string{"ufw"}}, {name: "ufw", omitTools: []string{"firewall-cmd"}}} {
+		name       string   // subcase name
+		omitTools  []string // firewall fakes left off PATH
+		wantedNote string   // what the note says about the host firewall
+	}{
+		{name: "firewalld", omitTools: []string{"ufw"}, wantedNote: "firewalld is active and setup.sh did not open the etcd client port"},
+		{name: "ufw", omitTools: []string{"firewall-cmd"}, wantedNote: "ufw is active and setup.sh did not open the etcd client port"},
+		{name: "no firewall", omitTools: []string{"ufw", "firewall-cmd"}, wantedNote: "No ufw or firewalld is active"},
+	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			stepRun := runSetupScriptStep(t, buildSetupScriptFirewallStep(nil), setupScriptStepOptions{omitFakeTools: testCase.omitTools})
 			if stepRun.exitError != nil {
@@ -344,8 +350,9 @@ func TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks(t *testing.T) {
 				t.Errorf("etcd client port opened without --etcd-client-cidr:\n%s", strings.Join(portCalls, "\n"))
 			}
 			for _, wantedText := range []string{
+				testCase.wantedNote,
 				"--etcd-client-cidr",
-				`firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<your node network>" port port="2379" protocol="tcp" accept'`,
+				`firewall-cmd --permanent --add-rich-rule='rule family="<ipv4 or ipv6>" source address="<your node network>" port port="2379" protocol="tcp" accept'`,
 				"ufw allow from '<your node network>' to any port 2379 proto tcp comment 'CCattler etcd clients'",
 			} {
 				if !strings.Contains(stepRun.output, wantedText) {

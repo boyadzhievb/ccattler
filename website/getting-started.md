@@ -38,7 +38,9 @@ This detects your OS and architecture, downloads the right binary, and installs 
 git clone https://github.com/boyadzhievb/ccattler
 cd ccattler
 go build -o cca ./cmd/cca/
-sudo mv cca /usr/local/bin/
+sudo install -o root -g root -m 0755 cca /usr/local/bin/
+# SELinux hosts (RHEL, AlmaLinux, Rocky): give it the label systemd needs
+if command -v selinuxenabled >/dev/null && selinuxenabled; then sudo restorecon /usr/local/bin/cca; fi
 ```
 
 ### Verify

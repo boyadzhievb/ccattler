@@ -212,6 +212,10 @@ curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/inst
 Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon). On SELinux hosts it restores the binary's SELinux label.
 When `/usr/local/bin` is not on sudo's `secure_path`, it warns and prints the fix from
 [step 1 of Prepare a fresh host](#prepare-a-fresh-host).
+With sudo it installs `cca` owned by root (mode 0755). If your user can write to the install directory itself (older
+Debian: `/usr/local/bin` owned by `root:staff`, mode 2775), it installs without sudo and `cca` stays owned by you;
+anyone in that group can already replace programs root runs from there, so on a cluster host make the directory
+root-only (`sudo chown root:root /usr/local/bin && sudo chmod 0755 /usr/local/bin`) and run the install again.
 
 Pin a specific version (the variable must be set for `bash`, which runs the script, not for `curl`):
 
@@ -236,7 +240,9 @@ Or download manually from [GitHub Releases](https://github.com/boyadzhievb/ccatt
 git clone https://github.com/boyadzhievb/ccattler
 cd ccattler
 go build -o cca ./cmd/cca/
-sudo mv cca /usr/local/bin/
+sudo install -o root -g root -m 0755 cca /usr/local/bin/
+# SELinux hosts (RHEL, AlmaLinux, Rocky): give it the label systemd needs
+if command -v selinuxenabled >/dev/null && selinuxenabled; then sudo restorecon /usr/local/bin/cca; fi
 ```
 
 ## Demo cluster (Vagrant + libvirt)

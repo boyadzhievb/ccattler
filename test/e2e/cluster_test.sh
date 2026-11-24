@@ -2193,7 +2193,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     log "Deploying new binary to all nodes..."
     for vm in "${VM_NAMES[@]}"; do
         scp_to_vm "$vm" "$ANSIBLE_DIR/cca-linux-amd64" "/tmp/cca"
-        ssh_vm "$vm" "sudo mv /tmp/cca /usr/local/bin/cca && sudo chmod 0755 /usr/local/bin/cca"
+        ssh_vm "$vm" "sudo install -o 0 -g 0 -m 0755 /tmp/cca /usr/local/bin/cca && rm -f /tmp/cca"
     done
 
     # M177: the server needs a secret root key and never creates one itself.

@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +25,7 @@ const installScriptPath = "../../install.sh"
 const installScriptTestVersion = "v0.0.0-test"
 
 // installScriptRealTools are host utilities install.sh needs that the tests do not fake.
-var installScriptRealTools = []string{"grep", "awk", "sha256sum", "tar", "gzip", "mktemp", "rm", "mv", "chmod", "mkdir", "cat"}
+var installScriptRealTools = []string{"readlink", "grep", "awk", "sha256sum", "tar", "gzip", "mktemp", "rm", "mv", "chmod", "mkdir", "cat"}
 
 // installScriptCNIDirectories are the CNI plugin directories install.sh checks; the
 // tests move them under a temp root so the host's own plugins do not count.
@@ -85,10 +86,14 @@ cat "$1" > "$2"
 chmod "$mode" "$2"
 `
 
-// installScriptFakeStat prints the install directory's owner uid and octal mode
-// from FAKE_STAT_OWNER_MODE, so a test can pose as a root-owned directory.
+// installScriptFakeStat prints "uid mode" for its last argument from the FAKE_STAT_TABLE
+// lines "<path> <uid> <mode>", and "0 755" (root-owned, safe) for any other path.
 const installScriptFakeStat = `#!/bin/sh
-echo "$FAKE_STAT_OWNER_MODE"
+for target_path; do :; done
+while read -r table_path table_owner table_mode; do
+  if [ "$table_path" = "$target_path" ]; then echo "$table_owner $table_mode"; exit 0; fi
+done < "$FAKE_STAT_TABLE"
+echo "0 755"
 `
 
 // installScriptFakeUname reports the kernel from FAKE_UNAME_S and an x86_64 machine.
@@ -123,16 +128,17 @@ type installScriptRun struct {
 
 // installScriptOptions selects which fakes exist and how they behave.
 type installScriptOptions struct {
-	withRestorecon     bool   // put fake restorecon and selinuxenabled on PATH
-	selinuxDisabled    bool   // make the fake selinuxenabled exit 1
-	statOwnerMode      string // install directory "uid mode" from stat; "" means "0 755" (root-owned)
-	unameSystem        string // kernel name from uname -s; "" means Linux
-	relativeInstall    bool   // pass INSTALL_PATH as the relative path "install"
-	writableInstallDir bool   // leave the install directory writable, as for a root run (no sudo)
-	restoreconFails    bool   // make the fake restorecon exit 1
-	sudoSecurePath     string // PATH that commands run through sudo see; {install} is the install dir
-	sudoPromptsForPass bool   // make "sudo -n" fail as if a password were needed
-	cniPluginDirectory string // CNI directory (one of installScriptCNIDirectories) given a bridge plugin, "" for none
+	withRestorecon     bool              // put fake restorecon and selinuxenabled on PATH
+	selinuxDisabled    bool              // make the fake selinuxenabled exit 1
+	statTable          map[string]string // "uid mode" stat reports per path ({work}, {install}, {home}); others "0 755"
+	symlinkInstallDir  bool              // make the install directory a symlink to {work}/userdir
+	unameSystem        string            // kernel name from uname -s; "" means Linux
+	relativeInstall    bool              // pass INSTALL_PATH as the relative path "install"
+	writableInstallDir bool              // leave the install directory writable, as for a root run (no sudo)
+	restoreconFails    bool              // make the fake restorecon exit 1
+	sudoSecurePath     string            // PATH that commands run through sudo see; {install} is the install dir
+	sudoPromptsForPass bool              // make "sudo -n" fail as if a password were needed
+	cniPluginDirectory string            // CNI directory (one of installScriptCNIDirectories) given a bridge plugin, "" for none
 }
 
 // writeFakeExecutable writes an executable shell script into directory.
@@ -214,17 +220,26 @@ func prepareInstallScriptBin(t *testing.T, workDirectory string, options install
 	t.Helper()
 	fakeBinDirectory := filepath.Join(workDirectory, "bin")
 	installDirectory := filepath.Join(workDirectory, "install")
-	for _, directory := range []string{fakeBinDirectory, installDirectory} {
+	realInstallDirectory := installDirectory
+	if options.symlinkInstallDir {
+		realInstallDirectory = filepath.Join(workDirectory, "userdir")
+	}
+	for _, directory := range []string{fakeBinDirectory, realInstallDirectory, filepath.Join(workDirectory, "home", ".local", "bin")} {
 		if mkdirError := os.MkdirAll(directory, 0o750); mkdirError != nil {
 			t.Fatalf("mkdir: %v", mkdirError)
 		}
 	}
+	if options.symlinkInstallDir {
+		if linkError := os.Symlink(realInstallDirectory, installDirectory); linkError != nil {
+			t.Fatalf("symlink: %v", linkError)
+		}
+	}
 	if !options.writableInstallDir {
-		if chmodError := os.Chmod(installDirectory, 0o555); chmodError != nil { // #nosec G302 -- read-only install dir forces the sudo path
+		if chmodError := os.Chmod(realInstallDirectory, 0o555); chmodError != nil { // #nosec G302 -- read-only install dir forces the sudo path
 			t.Fatalf("chmod: %v", chmodError)
 		}
 	}
-	t.Cleanup(func() { _ = os.Chmod(installDirectory, 0o750) }) // #nosec G302 -- restore so TempDir cleanup can remove it
+	t.Cleanup(func() { _ = os.Chmod(realInstallDirectory, 0o750) }) // #nosec G302 -- restore so TempDir cleanup can remove it
 	linkRealTools(t, fakeBinDirectory, installScriptRealTools)
 	writeFakeExecutable(t, fakeBinDirectory, "curl", installScriptFakeCurl)
 	writeFakeExecutable(t, fakeBinDirectory, "sudo", installScriptFakeSudo)
@@ -257,6 +272,7 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 		t.Fatalf("write checksums: %v", writeError)
 	}
 	callLogPath := filepath.Join(workDirectory, "calls.log")
+	statTablePath := writeFakeStatTable(t, workDirectory, options.statTable)
 	command := exec.Command("/bin/sh", writeInstallScriptCopy(t, workDirectory)) // #nosec G204 -- test copy of the repository script
 	command.Dir = workDirectory
 	installPathValue := installDirectory
@@ -269,13 +285,13 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 		"TMPDIR=" + workDirectory,
 		"CCATTLER_VERSION=" + installScriptTestVersion,
 		"INSTALL_PATH=" + installPathValue,
-		"FAKE_STAT_OWNER_MODE=" + valueOrDefault(options.statOwnerMode, "0 755"),
+		"FAKE_STAT_TABLE=" + statTablePath,
 		"FAKE_UNAME_S=" + valueOrDefault(options.unameSystem, "Linux"),
 		"FAKE_INSTALL_DIR=" + installDirectory,
 		"FAKE_RELEASE_ARCHIVE=" + archivePath,
 		"FAKE_CHECKSUMS=" + checksumsPath,
 		"FAKE_CALL_LOG=" + callLogPath,
-		"FAKE_SUDO_PATH=" + strings.ReplaceAll(options.sudoSecurePath, "{install}", installDirectory),
+		"FAKE_SUDO_PATH=" + expandInstallTestPaths(options.sudoSecurePath, workDirectory),
 	}
 	if options.restoreconFails {
 		command.Env = append(command.Env, "FAKE_RESTORECON_FAILS=1")
@@ -297,6 +313,34 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 	}
 }
 
+// expandInstallTestPaths replaces {work}, {install} and {home} with the test's
+// directories, symlinks resolved as readlink -f in install.sh resolves them.
+func expandInstallTestPaths(text string, workDirectory string) string {
+	resolvedWorkDirectory, resolveError := filepath.EvalSymlinks(workDirectory)
+	if resolveError != nil {
+		resolvedWorkDirectory = workDirectory
+	}
+	return strings.NewReplacer(
+		"{install}", filepath.Join(resolvedWorkDirectory, "install"),
+		"{home}", filepath.Join(resolvedWorkDirectory, "home"),
+		"{work}", resolvedWorkDirectory,
+	).Replace(text)
+}
+
+// writeFakeStatTable writes the fake stat's "<path> <uid> <mode>" lines and returns the file.
+func writeFakeStatTable(t *testing.T, workDirectory string, statTable map[string]string) string {
+	t.Helper()
+	var tableBuilder strings.Builder
+	for _, tablePath := range slices.Sorted(maps.Keys(statTable)) {
+		fmt.Fprintf(&tableBuilder, "%s %s\n", expandInstallTestPaths(tablePath, workDirectory), statTable[tablePath])
+	}
+	statTablePath := filepath.Join(workDirectory, "stat-table")
+	if writeError := os.WriteFile(statTablePath, []byte(tableBuilder.String()), 0o600); writeError != nil {
+		t.Fatalf("write stat table: %v", writeError)
+	}
+	return statTablePath
+}
+
 // valueOrDefault returns value, or defaultValue when value is empty.
 func valueOrDefault(value string, defaultValue string) string {
 	if value == "" {
@@ -305,10 +349,10 @@ func valueOrDefault(value string, defaultValue string) string {
 	return value
 }
 
-// installedTo reports whether a logged sudo call put a file at installedPath.
+// installedTo reports whether a logged sudo install call put a file at installedPath.
 func installedTo(toolCalls []string, installedPath string) bool {
 	for _, toolCall := range toolCalls {
-		if strings.HasPrefix(toolCall, "sudo ") && strings.HasSuffix(toolCall, " "+installedPath) {
+		if strings.HasPrefix(toolCall, "sudo install ") && strings.HasSuffix(toolCall, " "+installedPath) {
 			return true
 		}
 	}
@@ -385,25 +429,40 @@ func TestInstallScriptWithoutSELinuxTools(t *testing.T) {
 	}
 }
 
-// TestInstallScriptWarnsWhenSudoPathLacksInstallDir: install.sh warns, with the
-// sudoers drop-in fix, only when sudo's secure_path lacks the install directory,
-// and prints the general note when it cannot ask sudo without a password. Both
-// only on Linux, for an absolute, root-owned, not group/world-writable directory.
+// TestInstallScriptWarnsWhenSudoPathLacksInstallDir: on Linux, when sudo's secure_path
+// lacks the install directory, install.sh warns and its next steps call cca by its full
+// path. It prints a sudoers drop-in only when the install directory and every listed
+// sudo path entry are absolute and, symlinks resolved, root-owned and not group- or
+// world-writable with all their parents; it prints the general note when sudo prompts.
 func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
+	userOwned := "1000 755"
 	testCases := []struct {
-		name          string               // subcase name
-		options       installScriptOptions // fake sudo behaviour
-		wantDropIn    bool                 // the sudoers drop-in command is printed
-		wantAnyNotice bool                 // any secure_path notice is printed
+		name            string               // subcase name
+		options         installScriptOptions // fake sudo and filesystem
+		wantNotice      bool                 // any secure_path warning or note is printed
+		wantSecurePath  string               // the drop-in's secure_path value, "" for no drop-in
+		wantFullPathRun bool                 // the next steps call sudo <install>/cca
 	}{
-		{name: "missing", options: installScriptOptions{sudoSecurePath: "/sbin:/bin:/usr/sbin:/usr/bin"}, wantDropIn: true, wantAnyNotice: true},
+		{name: "missing", options: installScriptOptions{sudoSecurePath: "/sbin:/bin:/usr/sbin:/usr/bin"},
+			wantNotice: true, wantSecurePath: "/sbin:/bin:/usr/sbin:/usr/bin:{install}", wantFullPathRun: true},
 		{name: "on path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin:{install}:/usr/bin"}},
-		{name: "sudo prompts", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true}, wantAnyNotice: true},
-		{name: "user-owned dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statOwnerMode: "1000 755"}},
-		{name: "group-writable dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statOwnerMode: "0 775"}},
-		{name: "world-writable dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statOwnerMode: "0 1777"}},
-		{name: "relative path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", relativeInstall: true}},
-		{name: "macOS sudo prompts", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true, unameSystem: "Darwin"}},
+		{name: "sudo prompts", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true}, wantNotice: true},
+		{name: "unsafe sudo path entries", options: installScriptOptions{sudoSecurePath: "/sbin:{home}/.local/bin:.:/usr/bin",
+			statTable: map[string]string{"{home}/.local/bin": userOwned, "{home}": userOwned}},
+			wantNotice: true, wantSecurePath: "/sbin:/usr/bin:{install}", wantFullPathRun: true},
+		{name: "user-owned dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statTable: map[string]string{"{install}": userOwned}},
+			wantNotice: true, wantFullPathRun: true},
+		{name: "group-writable dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statTable: map[string]string{"{install}": "0 775"}},
+			wantNotice: true, wantFullPathRun: true},
+		{name: "world-writable dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statTable: map[string]string{"{install}": "0 1777"}},
+			wantNotice: true, wantFullPathRun: true},
+		{name: "user-owned parent", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", statTable: map[string]string{"{work}": userOwned}},
+			wantNotice: true, wantFullPathRun: true},
+		{name: "symlink into a user-owned dir", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", symlinkInstallDir: true,
+			statTable: map[string]string{"{work}/userdir": userOwned}}, wantNotice: true, wantFullPathRun: true},
+		{name: "relative path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", relativeInstall: true},
+			wantNotice: true, wantFullPathRun: true},
+		{name: "macOS", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true, unameSystem: "Darwin"}},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -411,15 +470,16 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 			if run.exitError != nil {
 				t.Fatalf("install.sh failed: %v\n%s", run.exitError, run.output)
 			}
-			hasNotice := strings.Contains(run.output, "secure_path")
-			hasDropIn := strings.Contains(run.output, "/etc/sudoers.d/") && strings.Contains(run.output, ":"+run.installDir)
-			if hasNotice != testCase.wantAnyNotice || hasDropIn != testCase.wantDropIn {
-				t.Errorf("notice=%v dropIn=%v, want notice=%v dropIn=%v; output:\n%s",
-					hasNotice, hasDropIn, testCase.wantAnyNotice, testCase.wantDropIn, run.output)
+			if hasNotice := strings.Contains(run.output, "secure_path"); hasNotice != testCase.wantNotice {
+				t.Errorf("secure_path notice = %v, want %v; output:\n%s", hasNotice, testCase.wantNotice, run.output)
 			}
-			// After the warning, the next steps call cca by its full path, which sudo finds.
+			hasDropIn := strings.Contains(run.output, "/etc/sudoers.d/")
+			wantedDropInLine := `Defaults secure_path="` + strings.ReplaceAll(testCase.wantSecurePath, "{install}", run.installDir) + `"`
+			if hasDropIn != (testCase.wantSecurePath != "") || (hasDropIn && !strings.Contains(run.output, wantedDropInLine)) {
+				t.Errorf("drop-in = %v, want %q; output:\n%s", hasDropIn, wantedDropInLine, run.output)
+			}
 			wantedNextStep := "4. sudo cca status"
-			if testCase.wantDropIn {
+			if testCase.wantFullPathRun {
 				wantedNextStep = "4. sudo " + run.installDir + "/cca status"
 			}
 			if testCase.options.unameSystem != "Darwin" && !strings.Contains(run.output, wantedNextStep) {

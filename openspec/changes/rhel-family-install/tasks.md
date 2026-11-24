@@ -87,7 +87,7 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   Result: A1: the RHEL block is split into separate code blocks: EL9 `dnf install -y containernetworking-plugins`
   (/usr/libexec/cni), EL10 the Debian tarball lines into /opt/cni/bin; the fallback sentence removed; Verify says
   `/opt/cni/bin/bridge` on Debian/Ubuntu and EL10, `/usr/libexec/cni/bridge` on EL9. Also the OS row and the
-  section intro say "9 and 10" (follows from the EL10 block). A2: "No EL9 or EL10 repository ships it". A3: red on
+  section intro say "9 and 10" (follows from the EL10 block; not asked for; user decision 2026-11-24: keep it). A2: "No EL9 or EL10 repository ships it". A3: red on
   73ae6ee: TestInstallScriptWarnsWhenSudoPathLacksInstallDir/missing (next steps lacked `4. sudo <dir>/cca status`;
   the other subcases assert `4. sudo cca status`); fix `sudo_cca`, set to `${INSTALL_PATH}/cca` with the warning;
   green under sh and bash; shellcheck sh and dash clean. Checks: gofmt, golangci-lint ./... 0 issues, go vet,
@@ -178,17 +178,22 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   | R2-8 | "No EL10 repository ships etcd" not backed by 3.2a | **fixed** by evidence: repoquery on Alma 10.3 found etcd in no enabled repo (BaseOS, AppStream, CRB, extras), and neither in EPEL 10 nor in Docker rhel/10 (main session, 2026-11-24) |
   | Codex | "Host bits silently masked widens access" | **rejected**: the operator writes the prefix; D5 and `TestInitParsesEtcdClientCIDRs` clear host bits on purpose |
 
-- [ ] 3o.1 R2-1: reject a prefix covering every address, checked on the unmapped form (`netip.ParsePrefix` +
+- [x] 3o.1 R2-1: reject a prefix covering every address, checked on the unmapped form (`netip.ParsePrefix` +
   `Unmap`). Add the three values to `TestInitRejectsInvalidEtcdClientCIDR`, red first.
-- [ ] 3o.2 R2-2: the guide's and getting-started's build-from-source install line, and `cluster_test.sh:2196`
+  Result: red on 6dfb619: TestInitRejectsInvalidEtcdClientCIDR/{0.0.0.0/0, ::/0, ::ffff:0.0.0.0/96} (exit 0, files written). Fix: `prefixCoversEveryAddress` (netip.ParsePrefix; Is4In6 subtracts the 96 mapped bits; bits <= 0 refused) with an error naming the value and "covers every address; name the cluster's networks". Green.
+- [x] 3o.2 R2-2: the guide's and getting-started's build-from-source install line, and `cluster_test.sh:2196`
   (`chown` or `install -o 0 -g 0`).
-- [ ] 3o.3 R2-3: the drop-in lists only directories that pass the safety check after resolving symlinks, all parents
+  Result: installation.md and getting-started.md build-from-source: `sudo install -o root -g root -m 0755 cca /usr/local/bin/` plus `restorecon` when `selinuxenabled` succeeds; cluster_test.sh binary swap: `sudo install -o 0 -g 0 -m 0755 /tmp/cca /usr/local/bin/cca && rm -f /tmp/cca` (bash -n ok; shellcheck warnings 6 before and after). No testbed run (test-only).
+- [x] 3o.3 R2-3: the drop-in lists only directories that pass the safety check after resolving symlinks, all parents
   included, plus the install dir. If the install dir fails, there is no drop-in, only the full-path advice. Subcases
   `unsafe sudo path entries`, a symlink into a user-owned dir, and a user-owned parent; red first.
-- [ ] 3o.4 R2-5: the M279 row in milestones.md names `--etcd-client-cidr` (etcd's port closed by default) and the
+  Result: red on 6dfb619: TestInstallScriptWarnsWhenSudoPathLacksInstallDir subcases unsafe sudo path entries, user-owned parent, symlink into a user-owned dir (drop-in printed), and user-owned/group-writable/world-writable dir and relative path (spec now wants the full-path advice there). Fix: `directory_is_safe_for_sudo` (absolute, plain chars, `readlink -f`, every parent to / root-owned and not g/o-writable); `safe_sudo_path_entries` filters sudo's PATH; unsafe install dir: warning and full path, no drop-in; next steps use the absolute path. Fake stat now per path, real readlink. Green 23/23 under sh and bash; shellcheck sh and dash clean.
+- [x] 3o.4 R2-5: the M279 row in milestones.md names `--etcd-client-cidr` (etcd's port closed by default) and the
   S1 fix with the remedy `sudo chown root:root /usr/local/bin/cca`.
-- [ ] 3o.5 R2-6 and R2-7: the test helper, the comment, the note wording (with and without a running firewall), the
+  Result: M279 row names the S1 fix with `sudo chown root:root /usr/local/bin/cca`, `--etcd-client-cidr` (port closed by default, allow-all refused), selinuxenabled, safe drop-in, enabled etcd unit, EnvironmentFile reset, EL9/10. Not marked BREAKING: the base setup.sh never opened 2379.
+- [x] 3o.5 R2-6 and R2-7: the test helper, the comment, the note wording (with and without a running firewall), the
   family in the note; one guide sentence for a group-writable install directory. Run the checks as in 3.1.
+  Result: installedTo matches only `sudo install `; install.sh relabel comment corrected; red on 6dfb619 then green: TestSetupScriptLeavesEtcdClientPortClosedWithoutNetworks/{firewalld, ufw, no firewall} (note names the active firewall or says none is active; family placeholder `<ipv4 or ipv6>`); guide sentence on a group-writable install dir (root:staff 2775). Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok, vitepress build of a copy.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

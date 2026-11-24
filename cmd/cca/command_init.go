@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,17 +104,40 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 }
 
 // parseEtcdClientCIDRs parses one --etcd-client-cidr value, a comma-separated list
-// of IPv4 or IPv6 CIDRs, and names the first item that is not one.
+// of IPv4 or IPv6 CIDRs, and names the first item that is not one or that covers
+// every address (which would open etcd to all sources).
 func parseEtcdClientCIDRs(flagValue string) ([]*net.IPNet, error) {
 	var parsedNetworks []*net.IPNet
 	for _, cidrItem := range strings.Split(flagValue, ",") {
-		_, parsedNetwork, parseError := net.ParseCIDR(strings.TrimSpace(cidrItem))
+		trimmedItem := strings.TrimSpace(cidrItem)
+		_, parsedNetwork, parseError := net.ParseCIDR(trimmedItem)
 		if parseError != nil {
 			return nil, fmt.Errorf("--etcd-client-cidr %q: %q is not an IPv4 or IPv6 CIDR", flagValue, cidrItem)
+		}
+		if prefixCoversEveryAddress(trimmedItem) {
+			return nil, fmt.Errorf("--etcd-client-cidr %q: %q covers every address; name the cluster's networks, not every source",
+				flagValue, cidrItem)
 		}
 		parsedNetworks = append(parsedNetworks, parsedNetwork)
 	}
 	return parsedNetworks, nil
+}
+
+// ipv4MappedPrefixBits is the length of the ::ffff:0:0/96 prefix of IPv4-mapped IPv6 addresses.
+const ipv4MappedPrefixBits = 96
+
+// prefixCoversEveryAddress reports whether a valid CIDR covers its whole address
+// family, judged on the unmapped form so ::ffff:0.0.0.0/96 counts as 0.0.0.0/0.
+func prefixCoversEveryAddress(cidr string) bool {
+	parsedPrefix, parseError := netip.ParsePrefix(cidr)
+	if parseError != nil {
+		return false
+	}
+	prefixBits := parsedPrefix.Bits()
+	if parsedPrefix.Addr().Is4In6() {
+		prefixBits -= ipv4MappedPrefixBits
+	}
+	return prefixBits <= 0
 }
 
 // executeInitCommand generates PKI material and writes a setup script that
@@ -424,7 +448,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 func buildSetupScriptFirewallStep(etcdClientNetworks []*net.IPNet) string {
 	var scriptBuilder strings.Builder
 	scriptBuilder.WriteString("echo '==> Opening VXLAN port (UDP 4789) in host firewall'\n")
+	scriptBuilder.WriteString("HOST_FIREWALL=\n")
 	scriptBuilder.WriteString("if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'active'; then\n")
+	scriptBuilder.WriteString("    HOST_FIREWALL=ufw\n")
 	scriptBuilder.WriteString("    ufw allow 4789/udp comment 'CCattler VXLAN'\n")
 	fmt.Fprintf(&scriptBuilder, "    ufw allow %s/tcp comment 'CCattler API'\n", defaultAPIListenPort)
 	for _, etcdClientNetwork := range etcdClientNetworks {
@@ -434,6 +460,7 @@ func buildSetupScriptFirewallStep(etcdClientNetworks []*net.IPNet) string {
 	scriptBuilder.WriteString("    ufw route allow in on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
 	scriptBuilder.WriteString("    ufw route allow out on cca-vxlan0 comment 'CCattler VXLAN forward'\n")
 	scriptBuilder.WriteString("elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running; then\n")
+	scriptBuilder.WriteString("    HOST_FIREWALL=firewalld\n")
 	scriptBuilder.WriteString("    firewall-cmd --permanent --add-port=4789/udp\n")
 	fmt.Fprintf(&scriptBuilder, "    firewall-cmd --permanent --add-port=%s/tcp\n", defaultAPIListenPort)
 	for _, etcdClientNetwork := range etcdClientNetworks {
@@ -453,6 +480,10 @@ func buildSetupScriptFirewallStep(etcdClientNetworks []*net.IPNet) string {
 // port to one network; its format verbs are the address family, the network and the port.
 const setupScriptFirewalldEtcdRule = `'rule family="%s" source address="%s" port port="%s" protocol="tcp" accept'`
 
+// setupScriptEtcdFamilyPlaceholder stands for the rich-rule family of the operator's
+// network, which the note cannot know.
+const setupScriptEtcdFamilyPlaceholder = "<ipv4 or ipv6>"
+
 // setupScriptEtcdPortPlaceholder stands for the operator's node network in the
 // printed commands when cca init got no --etcd-client-cidr.
 const setupScriptEtcdPortPlaceholder = "<your node network>"
@@ -465,15 +496,21 @@ func firewalldAddressFamily(network *net.IPNet) string {
 	return "ipv6"
 }
 
-// buildSetupScriptEtcdPortClosedNote returns the setup.sh lines that say 2379/tcp
-// stays closed without --etcd-client-cidr and print the commands that open it (D5).
+// buildSetupScriptEtcdPortClosedNote returns the setup.sh lines printed without
+// --etcd-client-cidr: whether the active firewall keeps 2379/tcp closed or no
+// firewall is active, and the commands that open it for one network (D5).
 func buildSetupScriptEtcdPortClosedNote() string {
 	var noteBuilder strings.Builder
+	noteBuilder.WriteString("if [ -n \"$HOST_FIREWALL\" ]; then\n")
+	fmt.Fprintf(&noteBuilder, "    echo \"NOTE: $HOST_FIREWALL is active and setup.sh did not open the etcd client port %s/tcp, because\"\n", setupScriptEtcdClientPort)
+	noteBuilder.WriteString("    echo 'cca init got no --etcd-client-cidr. Agents on worker hosts need it. Open it only for your node network:'\n")
+	noteBuilder.WriteString("else\n")
+	fmt.Fprintf(&noteBuilder, "    echo 'NOTE: No ufw or firewalld is active, so neither blocks the etcd client port %s/tcp. If you enable one,'\n", setupScriptEtcdClientPort)
+	noteBuilder.WriteString("    echo 'open the port only for your node network (cca init --etcd-client-cidr does this when one is active):'\n")
+	noteBuilder.WriteString("fi\n")
 	noteBuilder.WriteString("cat <<'ETCD_PORT_NOTE'\n")
-	fmt.Fprintf(&noteBuilder, "NOTE: the etcd client port %s/tcp is not opened in the host firewall, because cca init\n", setupScriptEtcdClientPort)
-	noteBuilder.WriteString("got no --etcd-client-cidr. Agents on worker hosts need it. Open it for your node network:\n")
 	fmt.Fprintf(&noteBuilder, "  firewalld: firewall-cmd --permanent --add-rich-rule="+setupScriptFirewalldEtcdRule+" && firewall-cmd --reload\n",
-		"ipv4", setupScriptEtcdPortPlaceholder, setupScriptEtcdClientPort)
+		setupScriptEtcdFamilyPlaceholder, setupScriptEtcdPortPlaceholder, setupScriptEtcdClientPort)
 	fmt.Fprintf(&noteBuilder, "  ufw:       ufw allow from '%s' to any port %s proto tcp comment 'CCattler etcd clients'\n",
 		setupScriptEtcdPortPlaceholder, setupScriptEtcdClientPort)
 	noteBuilder.WriteString("ETCD_PORT_NOTE\n\n")

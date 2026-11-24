@@ -11,7 +11,8 @@ import (
 )
 
 // TestInitRejectsInvalidEtcdClientCIDR: a --etcd-client-cidr value that is not an
-// IPv4 or IPv6 CIDR fails cca init with an error naming it, before any file is written.
+// IPv4 or IPv6 CIDR, or one that covers every address, fails cca init with an error
+// naming it, before any file is written.
 func TestInitRejectsInvalidEtcdClientCIDR(testContext *testing.T) {
 	for _, invalidValue := range []string{"192.0.2.0/33", "192.0.2.1", "not-a-network", "192.0.2.0/24,"} {
 		testContext.Run(invalidValue, func(subtestContext *testing.T) {
@@ -25,6 +26,22 @@ func TestInitRejectsInvalidEtcdClientCIDR(testContext *testing.T) {
 			}
 			if _, statError := os.Stat(outputDirectory); !os.IsNotExist(statError) {
 				subtestContext.Errorf("cca init wrote %s although the flag was invalid", outputDirectory)
+			}
+		})
+	}
+	// A prefix covering every address, also in its IPv4-mapped IPv6 form, would open etcd to all.
+	for _, allowAllValue := range []string{"0.0.0.0/0", "::/0", "::ffff:0.0.0.0/96"} {
+		testContext.Run(allowAllValue, func(subtestContext *testing.T) {
+			outputDirectory := filepath.Join(subtestContext.TempDir(), "cca-init")
+			_, stderrContent, exitCode := runCCA(subtestContext, "init", "--etcd-client-cidr", allowAllValue, "-o", outputDirectory)
+			if exitCode == 0 {
+				subtestContext.Fatalf("cca init accepted --etcd-client-cidr %q, which covers every address", allowAllValue)
+			}
+			if !strings.Contains(stderrContent, allowAllValue) || !strings.Contains(stderrContent, "every") {
+				subtestContext.Errorf("error does not name %q and say it covers every address: %s", allowAllValue, stderrContent)
+			}
+			if _, statError := os.Stat(outputDirectory); !os.IsNotExist(statError) {
+				subtestContext.Errorf("cca init wrote %s although the flag covers every address", outputDirectory)
 			}
 		})
 	}
