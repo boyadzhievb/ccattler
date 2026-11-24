@@ -103,8 +103,9 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   the source's `pending` after a move (its own node and state guard), and cleanup of an instance that left the
   desired set (only while it is not placed on another node; instance GC deletes `network/allocation/{id}` with the
   tree, B3). Host ports go in the state publish; when some do not fit under the transaction limit, the agent
-  publishes `starting` (node = self, guarded) first, then writes them in guarded chunks, then publishes; a failure in
-  either step skips the rest (round 6 R6-1, round 7 R7-1); start facts a store error
+  publishes `starting` (node = self, with the marker, service, IP and allocation, readiness deleted, guarded) first,
+  then writes them in guarded chunks, then publishes; a failure in either step skips the rest (round 6 R6-1, round 7
+  R7-1, round 8 R8-1); start facts a store error
   kept out are carried by the next running publish (B2) and dropped once the instance is no longer placed on this node
   (R6-4). A `stopped` write that fails because the instance moved during the stop is replaced by the source's
   `pending` (R6-3). A closed-world scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`, T1, R6-2) checks every
@@ -148,6 +149,12 @@ scale-down. With an overflow the agent publishes `starting` with node = self thr
 `publishInstanceStateUnlessStopped` (state-revision compare, placement guard, stopped check), then writes the overflow,
 then does the final publish. The residual above no longer exists; the sweep's exemption (`isOverflowHostPortFact`)
 is replaced by the invariant "`running` on node N ⇒ N's host ports". No requirement or spec scenario changed.
+
+Change during apply, recorded 2026-11-24 (user decision on round 8, option a: fix now; implemented by the
+lead-developer subagent in rework 3i): the intermediate `starting` publish carries the facts already resolved for
+the publish (marker, service, `ip`, `network/allocation/{id}`) and deletes readiness, in the same guarded
+transaction (at most 5 changes beside state and node, no host ports), so "a move can never land between the state
+and the IP" (3c.6) holds on the overflow path too (R8-1). No requirement or spec scenario changed.
 
 ## Failure cases
 

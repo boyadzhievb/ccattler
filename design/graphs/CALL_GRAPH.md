@@ -299,7 +299,8 @@ Transaction count, and `types` is resolved through the imports (3g R6-2). The au
 | `resolvePublishedContainerIP` | `publishInstanceStateToStore` (before any write, M267 3c.6) |
 | `placementGuard` | `publishInstanceStateUnlessStopped`, `instanceFactWriter.writeGuarded`, `createInstanceCreatedAtOnce` (placement_guard.go; M267 R2-1, R3-S1, 3e) |
 | `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish: `Agent.instanceFacts`, `ProbeScheduler.instanceFacts` (probe states, health, progress put and delete), `NodeReporter.instanceFacts` (telemetry); split into transactions of at most `maxInstanceFactChangesPerTransaction` (100); `inlineHostPortsAfterWritingOverflow` (host ports beyond the publish's room, 3g R6-1); returns whether every chunk committed |
-| `inlineHostPortsAfterWritingOverflow` | `publishInstanceStateToStore` (M267 3g R6-1; `starting` first, 3h R7-1) |
+| `inlineHostPortsAfterWritingOverflow` | `publishInstanceStateToStore` (M267 3g R6-1; `starting` first with marker, service, ip, allocation and readiness deleted, 3h R7-1, 3i R8-1) |
+| `instanceIdentityChanges` | `publishInstanceStateToStore` (marker, service, ip, allocation; M267 3i) |
 | `cleanupStaleUncommittedStartFacts` | `executeReconciliationCycle` (agent, after cleanupStaleCrashLoopBackoffs; M267 3g R6-4) |
 | `dropNoOpChanges` | `publishInstanceStateToStore`, `instanceFactWriter.writeGuarded`, `instanceFactWriter.deleteUnlessPlacedElsewhere` (unchanged puts and missing deletes dropped, M266) |
 | `instanceFactWriter.deleteUnlessPlacedElsewhere` | `teardownStaleInstance` (pull status), `releaseStaleInstanceNetwork` (allocation), pull-backoff sweep in `executeReconciliationCycle`, `clearLeftSecretDeliveryWait` (M267 3e) |

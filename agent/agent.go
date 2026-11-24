@@ -1038,19 +1038,26 @@ const publishStateAndNodeChangeCount = 2
 
 // inlineHostPortsAfterWritingOverflow returns the host-port changes that fit in
 // the state publish beside its publishFactCount changes. The rest it writes
-// first, after publishing starting with node = this node (no running next to
-// these ports, 3h R7-1); false when either failed: the caller skips the publish.
+// first, after publishing starting with node and identityFacts, readiness
+// deleted (3h R7-1, 3i R8-1); false when a step failed: no final publish.
 func (nodeAgent *Agent) inlineHostPortsAfterWritingOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op,
-	publishFactCount int) ([]store.Op, bool) {
+	identityFacts []store.Op, publishFactCount int) ([]store.Op, bool) {
 	effectiveHostPortChanges := dropNoOpChanges(ctx, nodeAgent.store, hostPortChanges)
 	inlineCount := min(len(effectiveHostPortChanges), max(0, maxInstanceFactChangesPerTransaction-publishStateAndNodeChangeCount-publishFactCount))
 	overflowChanges := effectiveHostPortChanges[inlineCount:]
 	if len(overflowChanges) == 0 {
 		return effectiveHostPortChanges, true
 	}
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, types.InstanceStarting, nil) ||
-		!nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, overflowChanges...) {
-		logging.Default().Info("host ports not all written, not publishing the instance state", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
+	// At most 4 identity changes and the readiness delete: far under the limit, no host ports in it.
+	startingFacts := append(slices.Clone(identityFacts), dropNoOpChanges(ctx, nodeAgent.store,
+		[]store.Op{{Type: store.OpDelete, Key: types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness)}})...)
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, types.InstanceStarting, startingFacts) {
+		logging.Default().Info("starting publish before the host-port overflow did not commit, not publishing the instance state",
+			"agent", nodeAgent.nodeID, "instance", instanceInfo.id)
+		return nil, false
+	}
+	if !nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, overflowChanges...) {
+		logging.Default().Info("host-port overflow not all written, instance left starting", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
 		return nil, false
 	}
 	return effectiveHostPortChanges[:inlineCount], true
@@ -2215,20 +2222,10 @@ func (nodeAgent *Agent) publishInstanceStateUnlessStopped(ctx context.Context, i
 // R2-1, 3c.6, 3e, 3g); created-at is create-only. Returns true when committed.
 func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceInfo placedInstanceInfo, state types.InstanceState, runtimeIP string,
 	hostPortChanges []store.Op, sameCycleFacts ...store.Op) bool {
-	instanceID, service := instanceInfo.id, instanceInfo.service
-	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceID, runtimeIP)
-	instanceFacts := []store.Op{
-		{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
-		{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(service)},
-	}
-	if publishedContainerIP != "" {
-		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceIP(instanceID), Value: []byte(publishedContainerIP)})
-	}
-	if ipFromNetworkProvider {
-		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyNetworkAllocation(instanceID), Value: []byte(publishedContainerIP)})
-	}
-	instanceFacts = dropNoOpChanges(ctx, nodeAgent.store, append(instanceFacts, sameCycleFacts...))
-	inlineHostPortChanges, hostPortsWritten := nodeAgent.inlineHostPortsAfterWritingOverflow(ctx, instanceInfo, hostPortChanges, len(instanceFacts))
+	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceInfo.id, runtimeIP)
+	identityFacts := dropNoOpChanges(ctx, nodeAgent.store, instanceIdentityChanges(instanceInfo, publishedContainerIP, ipFromNetworkProvider))
+	instanceFacts := append(slices.Clone(identityFacts), dropNoOpChanges(ctx, nodeAgent.store, sameCycleFacts)...)
+	inlineHostPortChanges, hostPortsWritten := nodeAgent.inlineHostPortsAfterWritingOverflow(ctx, instanceInfo, hostPortChanges, identityFacts, len(instanceFacts))
 	if !hostPortsWritten {
 		return false
 	}
@@ -2236,8 +2233,25 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 		return false
 	}
 	nodeAgent.createInstanceCreatedAtOnce(ctx, instanceInfo)
-	nodeAgent.registerEndpointIdentityIfSupported(ctx, publishedContainerIP, service)
+	nodeAgent.registerEndpointIdentityIfSupported(ctx, publishedContainerIP, instanceInfo.service)
 	return true
+}
+
+// instanceIdentityChanges returns the puts of the instance's marker, service,
+// published IP and (from a network provider) network/allocation/{id}: what
+// every state publish, the intermediate starting one too, carries (3c.6, 3i).
+func instanceIdentityChanges(instanceInfo placedInstanceInfo, publishedContainerIP string, ipFromNetworkProvider bool) []store.Op {
+	identityChanges := []store.Op{
+		{Type: store.OpPut, Key: types.KeyObservedInstance(instanceInfo.id), Value: []byte("")},
+		{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceInfo.id), Value: []byte(instanceInfo.service)},
+	}
+	if publishedContainerIP != "" {
+		identityChanges = append(identityChanges, store.Op{Type: store.OpPut, Key: types.KeyObservedInstanceIP(instanceInfo.id), Value: []byte(publishedContainerIP)})
+	}
+	if ipFromNetworkProvider {
+		identityChanges = append(identityChanges, store.Op{Type: store.OpPut, Key: types.KeyNetworkAllocation(instanceInfo.id), Value: []byte(publishedContainerIP)})
+	}
+	return identityChanges
 }
 
 // publishRunningInstance publishes a running container's state with its host

@@ -24,6 +24,10 @@ import (
 // the write it is told to fail (an etcd timeout as the agent sees it).
 var errInjectedWriteFailure = errors.New("etcd: request timed out (injected)")
 
+// errInjectedReadFailure is the store error auditedInstanceStore returns for
+// the state read it is told to fail (3i.3: told apart from a write failure).
+var errInjectedReadFailure = errors.New("etcd: read timed out (injected)")
+
 // sweepFaultKind is the kind of the one fault a sweep case injects (3g.0, 3h.1).
 type sweepFaultKind string
 
@@ -137,14 +141,13 @@ func (auditedStore *auditedInstanceStore) startWrite() (int, bool) {
 
 // Get fails the chosen read of an instance state (3h.1), else delegates.
 func (auditedStore *auditedInstanceStore) Get(ctx context.Context, key string) (*store.Fact, error) {
-	if rest, isInstanceKey := strings.CutPrefix(key, types.ScanObservedInstances); isInstanceKey && strings.Count(rest, "/") == 1 &&
-		strings.HasSuffix(rest, "/state") {
+	if instanceID, isInstanceKey := instanceIDOfKey(key); isInstanceKey && key == types.KeyObservedInstanceState(instanceID) {
 		auditedStore.mutex.Lock()
 		auditedStore.stateReadCount++
 		mustFail := auditedStore.fault.kind == faultStateReadError && auditedStore.stateReadCount == auditedStore.fault.number
 		auditedStore.mutex.Unlock()
 		if mustFail {
-			return nil, errInjectedWriteFailure
+			return nil, errInjectedReadFailure
 		}
 	}
 	return auditedStore.StateStore.Get(ctx, key)
@@ -399,8 +402,8 @@ func runPublishSweepCase(t *testing.T, scenario publishSweepScenario, fault inje
 
 // checkPublishRule checks the rule after one sweep case: running on node N
 // means every host port stored is N's (this node: the runtime's mapping,
-// another node: unchanged, 3h.1); a state publish that did not commit left the
-// instance facts as they were (and kept the start facts).
+// another node: unchanged, 3h.1); a final publish that did not commit left the
+// facts as they were, apart from an intermediate starting publish (3i.2).
 func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *store.MemoryStore, nodeAgent *Agent,
 	auditedStore *auditedInstanceStore, factsBefore map[string]string) {
 	t.Helper()
@@ -422,30 +425,95 @@ func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *
 	if publishedNode := factsAfter[types.KeyObservedInstanceNode("web-1")]; factsAfter[stateKey] == string(types.InstanceRunning) && publishedNode != scenario.nodeID {
 		checkHostPortsUnchanged(t, publishedNode, factsBefore, factsAfter)
 	}
-	_, committedWrites := auditedStore.writesCommitted()
-	statePublished := slices.ContainsFunc(committedWrites, func(committedWrite committedInstanceWrite) bool {
-		return slices.ContainsFunc(committedWrite.changes, func(change store.Op) bool { return change.Key == stateKey })
-	})
-	if statePublished {
+	finalPublished, startingPublish := committedStatePublishes(auditedStore)
+	if finalPublished {
 		return
+	}
+	startingKeys := make(map[string]bool) // keys the intermediate starting publish may write (3i.2)
+	if startingPublish != nil {
+		checkStartingPublish(t, scenario, nodeAgent, factsAfter)
+		startingKeys = startingPublishKeys("web-1")
 	}
 	var changedFacts []string
 	for _, key := range slices.Sorted(maps.Keys(factsAfter)) {
-		if factsAfter[key] != factsBefore[key] {
+		ownHostPort := startingPublish != nil && isRuntimeHostPortFact(key, factsAfter[key])
+		if factsAfter[key] != factsBefore[key] && !startingKeys[key] && !ownHostPort {
 			changedFacts = append(changedFacts, fmt.Sprintf("%s %q -> %q", key, factsBefore[key], factsAfter[key]))
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(factsBefore)) {
-		if _, stillThere := factsAfter[key]; !stillThere {
+		if _, stillThere := factsAfter[key]; !stillThere && !startingKeys[key] {
 			changedFacts = append(changedFacts, key+" deleted")
 		}
 	}
 	if len(changedFacts) > 0 {
-		t.Errorf("state publish did not commit, yet %d facts changed, first %s", len(changedFacts), changedFacts[0])
+		t.Errorf("final state publish did not commit, yet %d facts changed beyond the starting publish, first %s", len(changedFacts), changedFacts[0])
 	}
 	if scenario.startPath && len(nodeAgent.uncommittedStartFacts["web-1"]) == 0 {
-		t.Errorf("state publish did not commit and the start facts were not kept for the next cycle")
+		t.Errorf("final state publish did not commit and the start facts were not kept for the next cycle")
 	}
+}
+
+// committedStatePublishes reports whether a final state publish (any state
+// but starting) committed, and the intermediate starting publish of an
+// overflow (3h R7-1) if it committed.
+func committedStatePublishes(auditedStore *auditedInstanceStore) (bool, *committedInstanceWrite) {
+	_, committedWrites := auditedStore.writesCommitted()
+	finalPublished := false
+	var startingPublish *committedInstanceWrite
+	for writeIndex, committedWrite := range committedWrites {
+		for _, change := range committedWrite.changes {
+			if change.Type != store.OpPut || change.Key != types.KeyObservedInstanceState("web-1") {
+				continue
+			}
+			if string(change.Value) == string(types.InstanceStarting) {
+				startingPublish = &committedWrites[writeIndex]
+			} else {
+				finalPublished = true
+			}
+		}
+	}
+	return finalPublished, startingPublish
+}
+
+// startingPublishKeys are the keys the intermediate starting publish may
+// change (3h R7-1, 3i R8-1): state, node, the identity facts and readiness.
+func startingPublishKeys(instanceID string) map[string]bool {
+	return map[string]bool{
+		types.KeyObservedInstanceState(instanceID): true, types.KeyObservedInstanceNode(instanceID): true,
+		types.KeyObservedInstance(instanceID): true, types.KeyObservedInstanceService(instanceID): true,
+		types.KeyObservedInstanceIP(instanceID): true, types.KeyNetworkAllocation(instanceID): true,
+		types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness): true,
+	}
+}
+
+// checkStartingPublish checks the facts after an intermediate starting publish
+// whose final publish did not commit (3i.1): starting on this node with this
+// node's IP and allocation, no readiness, the start facts kept.
+func checkStartingPublish(t *testing.T, scenario publishSweepScenario, nodeAgent *Agent, factsAfter map[string]string) {
+	t.Helper()
+	nodeIP, allocateError := nodeAgent.networkProvider.AllocateIP(context.Background(), scenario.nodeID, "web-1")
+	if allocateError != nil {
+		t.Fatal(allocateError)
+	}
+	gotState, gotNode := factsAfter[types.KeyObservedInstanceState("web-1")], factsAfter[types.KeyObservedInstanceNode("web-1")]
+	gotIP, gotAllocation := factsAfter[types.KeyObservedInstanceIP("web-1")], factsAfter[types.KeyNetworkAllocation("web-1")]
+	readiness, hasReadiness := factsAfter[types.KeyObservedInstanceProbeState("web-1", types.ProbeReadiness)]
+	if gotState != string(types.InstanceStarting) || gotNode != scenario.nodeID || gotIP != nodeIP || gotAllocation != nodeIP || hasReadiness {
+		t.Errorf("after the starting publish: state=%q node=%q ip=%q allocation=%q readiness=%q (present %v), want starting on %s with ip %s, no readiness",
+			gotState, gotNode, gotIP, gotAllocation, readiness, hasReadiness, scenario.nodeID, nodeIP)
+	}
+	if scenario.startPath && len(nodeAgent.uncommittedStartFacts["web-1"]) == 0 {
+		t.Errorf("only the starting publish committed and the start facts were not kept for the next cycle")
+	}
+}
+
+// isRuntimeHostPortFact reports whether key = value is a host port of this
+// node's runtime mapping: overflow ports written after the starting publish.
+func isRuntimeHostPortFact(key string, value string) bool {
+	portText, isHostPort := strings.CutPrefix(key, types.KeyObservedInstanceHostPort("web-1")+"/")
+	containerPort, parseError := strconv.Atoi(portText)
+	return isHostPort && parseError == nil && value == strconv.Itoa(containerPort-9000+30000)
 }
 
 // checkHostPortsUnchanged fails when a host port changed while the instance

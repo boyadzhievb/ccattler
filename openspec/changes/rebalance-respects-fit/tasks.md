@@ -562,6 +562,53 @@ ports store 0 target ports next to node-1, 98 store 6, and 130 store 38.
   (2026-11-24): `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without
   tests; `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (29.9 s, 6.7 s, 10.9 s, 1.4 s);
   `openspec validate rebalance-respects-fit` valid.
+## 3i. Review round 8 (2026-11-24, on aea6f90..a21b462; code-reviewer Opus high + Codex job review-mwujwzpe-o06ixl: approve)
+
+No bugs. R7-1 holds for every single fault, and scale-down, endpoints, DNS, failure and rollout treat `starting` as
+non-serving. Red on aea6f90: 9 sweep subtests and the audit control ("2 violations, want 3"). Green on a21b462: 59
+pass, `-count=10 -race` ok. Codex had no findings. The main session checked R8-1 and R8-2 in the code
+(agent.go:1051 passes nil to the `starting` publish; the test returns early at audit_test.go:430). User decision
+2026-11-24: fix both now (option a). The closing runs restart on the fixed commit, so run 45375028560 (5adf58d)
+does not count for M267 3.4.
+
+| # | Finding | Resolution |
+|---|---|---|
+| R8-1 | The `starting` publish writes only state and node. On a move target whose overflow write fails, the source's `ip`/`network/allocation`/readiness/host ports stay next to `starting`/node-2 until the next cycle. Harmless (every consumer needs `running`), but D4's "a move can never land between the state and the IP" (3c.6) no longer holds as written | **fix** 3i.1 |
+| R8-2 | `checkPublishRule` returns early when any state was published, so in the overflow-fault cases the intermediate `starting` publish skips the "start facts kept" and "nothing else changed" checks | **fix** 3i.2 |
+| R8-3 | Suggestions: `errInjectedWriteFailure` reused for read errors; the `Get` filter matches by key shape instead of `types.KeyObservedInstanceState(id)`; the log says "host ports not all written" when the `starting` publish failed | **fix** 3i.3 |
+
+- [x] 3i.1 R8-1: the `starting` publish carries the instance facts already resolved for this publish (marker,
+  service, `ip`, `network/allocation/{id}`, readiness reset) in the same guarded transaction, so state, node and IP
+  stay together on every path. Sweep: after a failed overflow on the move target, `starting` with node = self has
+  this node's IP and allocation and no readiness. Red on a21b462 first, then green.
+  Result: `instanceIdentityChanges` builds marker, service, `ip`, `network/allocation/{id}`; the `starting` publish in
+  `inlineHostPortsAfterWritingOverflow` carries them (no-ops dropped) and the readiness delete in its guarded
+  transaction (at most 5 changes + state/node, no host ports). Sweep: `checkStartingPublish` asserts `starting` on
+  this node with this node's IP and allocation and no readiness. Red on a21b462 (worktree
+  `scratchpad/rework3i-red`, log `scratchpad/red-3i1.log`): 15 subtests fail (start, running, move target × 130
+  ports × fail write 2/3, lose compare 2/3, fail state read 3), e.g. move target fail write 2: `state="starting"
+  node="node-2" ip="127.0.0.1" allocation="" readiness="ready"`. Green: 59 subtests pass.
+- [x] 3i.2 R8-2: `checkPublishRule` checks the intermediate `starting` state too: start facts kept when the final
+  publish did not commit, and nothing else changed beyond the `starting` publish's own facts. Red first (a
+  mutation shows the check now runs), then green.
+  Result: `committedStatePublishes` tells the final publish from the intermediate `starting`; when only `starting`
+  committed, the checks run with the starting publish's own keys (`startingPublishKeys`: state, node, marker, service,
+  ip, allocation, readiness) and this node's overflow host ports allowed, and the start facts must be kept. Red by
+  mutation (fixed code with the `starting` publish also writing status-reason, log `scratchpad/red-3i2.log`): the
+  a21b462 check passes (`ok`), the new one fails 15 subtests with `final state publish did not commit, yet 1 facts
+  changed beyond the starting publish, first …/status-reason "" -> "mutation"`. Green on the unmutated code.
+- [x] 3i.3 R8-3: a separate injected read error, a key match with `types.KeyObservedInstanceState(id)`, and a log
+  message that says which step failed.
+  Result: `errInjectedReadFailure` for the injected state read; the `Get` filter matches
+  `key == types.KeyObservedInstanceState(id)` (id from `instanceIDOfKey`); separate logs "starting publish before
+  the host-port overflow did not commit" and "host-port overflow not all written, instance left starting".
+- [x] 3i.4 Docs (D4 dated note if the wording changes, Flow 35, graphs) and the checks as in 3.1.
+  Result: D4 bullet and dated note (2026-11-24, R8-1: the `starting` publish carries the identity facts, 3c.6 holds);
+  Flow 35 rule bullet (starting facts, sweep checks); INSTANCE_LIFECYCLE_GRAPH (publish tree, reverse index,
+  `instanceIdentityChanges`, line numbers), CALL_GRAPH reverse index, OBSERVABILITY_GRAPH line numbers. Checks
+  (2026-11-24): `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without
+  tests; `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.0 s, 6.7 s, 10.9 s, 1.4 s);
+  `openspec validate rebalance-respects-fit` valid.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
