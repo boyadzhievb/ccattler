@@ -54,7 +54,7 @@ executeReconciliationCycle
 │           ├── observeInstanceState             [running | starting, never failed (M238)]
 │           └── publishInstanceStateToStore(state, ip, host ports, uncommittedStartFacts[id] + DELETE exit-reason)
 │               [one guarded transaction with the host ports (an overflow first, after a `starting` publish:
-│                finalPublishChangesAfterOverflow, 3g R6-1, 3h R7-1); committed → uncommittedStartFacts entry dropped, 3f B2]
+│                preparePublishChangesWithHostPorts, 3g R6-1, 3h R7-1); committed → uncommittedStartFacts entry dropped, 3f B2]
 │
 ├── cleanup: remove containers not in desired set
 │   ├── running → cleanupUndesiredInstance       [pre_stop hook, graceful stop]
@@ -265,7 +265,7 @@ Transaction count, and `types` is resolved through the imports (3g R6-2). The au
 | `network/allocation/{id}` | publishInstanceStateToStore (with a network provider; guarded publish transaction); DELETE by releaseStaleInstanceNetwork → instanceFactWriter.deleteUnlessPlacedElsewhere |
 | `observed/instance/{id}/image`, `/config-hash` | instanceImageChange / instanceConfigHashChange in the start publish (startInstanceAndPublishState), the failed publish, or instanceFacts.writeGuarded (process start failure) |
 | `observed/instance/{id}/started_at` | start publish of startInstanceAndPublishState (every start; read by the rollout controller, M241 D10) |
-| `observed/instance/{id}/hostport/{port}` | hostPortChanges in the start publish and the running-path publish (same transaction; beyond the limit, finalPublishChangesAfterOverflow writes them first after a `starting` publish, 3g R6-1, 3h R7-1) |
+| `observed/instance/{id}/hostport/{port}` | hostPortChanges in the start publish and the running-path publish (same transaction; beyond the limit, preparePublishChangesWithHostPorts writes them first after a `starting` publish, 3g R6-1, 3h R7-1) |
 | `observed/instance/{id}/probe/readiness` | DELETE in the start publish (M241 B4) and by markMovedInstancePending (M267 D4); PUT by the probe scheduler through writeInstanceFact (guarded, M267 R3-S1) |
 | `observed/instance/{id}/last_exit`, `/exit-reason` | crash-loop publish of beginCrashLoopWait (exitReasonChanges / exitReasonChange); exit-reason DELETE in the running-path publish |
 | `observed/instance/{id}/restarts` | incrementRestartCountInStore → instanceFacts.writeGuarded |
@@ -298,8 +298,8 @@ Transaction count, and `types` is resolved through the imports (3g R6-2). The au
 | `publishInstanceStateUnlessStopped` | `publishInstanceStateToStore` (CAS on the state and on the scanned `placement/node/{self}/{id}` revision, node in the same transaction; never over another component's stopped, M241 2i.1, M267 D4, R2-1) |
 | `resolvePublishedContainerIP` | `publishInstanceStateToStore` (before any write, M267 3c.6) |
 | `placementGuard` | `publishInstanceStateUnlessStopped`, `instanceFactWriter.writeGuarded`, `createInstanceCreatedAtOnce` (placement_guard.go; M267 R2-1, R3-S1, 3e) |
-| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish: `Agent.instanceFacts`, `ProbeScheduler.instanceFacts` (probe states, health, progress put and delete), `NodeReporter.instanceFacts` (telemetry); split into transactions of at most `maxInstanceFactChangesPerTransaction` (100); `finalPublishChangesAfterOverflow` (host ports beyond the publish's room, 3g R6-1); returns whether every chunk committed |
-| `finalPublishChangesAfterOverflow` | `publishInstanceStateToStore` (M267 3g R6-1; `starting` first with marker, service, ip, allocation and readiness deleted, 3h R7-1, 3i R8-1; the final publish leaves out what that committed, 3j S1) |
+| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish: `Agent.instanceFacts`, `ProbeScheduler.instanceFacts` (probe states, health, progress put and delete), `NodeReporter.instanceFacts` (telemetry); split into transactions of at most `maxInstanceFactChangesPerTransaction` (100); `preparePublishChangesWithHostPorts` (host ports beyond the publish's room, 3g R6-1); returns whether every chunk committed |
+| `preparePublishChangesWithHostPorts` | `publishInstanceStateToStore` (M267 3g R6-1; `starting` first with marker, service, ip, allocation and readiness deleted, 3h R7-1, 3i R8-1; the final publish leaves out what that committed, 3j S1) |
 | `instanceIdentityChanges` | `publishInstanceStateToStore` (marker, service, ip, allocation; M267 3i) |
 | `cleanupStaleUncommittedStartFacts` | `executeReconciliationCycle` (agent, after cleanupStaleCrashLoopBackoffs; M267 3g R6-4) |
 | `dropNoOpChanges` | `publishInstanceStateToStore`, `instanceFactWriter.writeGuarded`, `instanceFactWriter.deleteUnlessPlacedElsewhere` (unchanged puts and missing deletes dropped, M266) |

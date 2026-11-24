@@ -660,6 +660,37 @@ milestone, M278.
   `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
   `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.1 s, 6.6 s, 10.6 s, 1.4 s);
   `openspec validate rebalance-respects-fit` valid.
+## 3k. Review round 10 (2026-11-24, on 599db1e..0f723c8; code-reviewer Opus high + Codex job review-mwuoqjs6-b3t2yb: approve)
+
+No bugs; the findings are in test code only. 3j.1 is red on 599db1e (12 failures) and 3j.2 red by mutation (15
+subtests). Green on HEAD, `-count=3 -race` ok. The main session checked R10-1 in the code (`isAllowedChange` accepts
+a host port at whatever value committed). User decision 2026-11-24: fix 1–4 first, review again, then push and run
+(option b).
+
+| # | Finding | Resolution |
+|---|---|---|
+| R10-1 | In the fault cases, `isAllowedChange` (audit_test.go:572) accepts committed host-port values without checking them against the runtime mapping; the removed `isRuntimeHostPortFact` did check them (Codex: medium, reviewer: low) | **fix** 3k.1 |
+| R10-2 | The comment at audit_test.go:497 says state and node are "the publish's compare", but only state is compared, and the exception covers every write | **fix** 3k.2 (accurate comment; the exception limited to transactions that compare the state key) |
+| R10-3 | The variable `got` (audit_test.go:681) breaks the long-names rule | **fix** 3k.2 |
+| R10-4 | The name `finalPublishChangesAfterOverflow` is also used on the path with no overflow | **fix** 3k.2 (a name for both paths) |
+
+- [x] 3k.1 R10-1: a host-port change is allowed only when its value equals `fakeHostPortFor(port)`. Red by
+  mutation (an overflow write with a wrong port value on a fault path passes the 0f723c8 check), then green.
+  Result: `isAllowedChange` also requires a host-port value to equal `fakeHostPortFor(port)`. Red by mutation (the
+  overflow chunk written with value "1"; worktree `scratchpad/rework3k-red`, logs `scratchpad/red-3k1-old.log`,
+  `red-3k1-new.log`): the 0f723c8 check passes the 9 fault cases where only `starting` and the overflow commit
+  (130 ports × fail write 3, lose compare 3, fail state read 3, for start, running and move target); the new check
+  fails them with `final state publish did not commit, yet 38 facts changed beyond the starting publish, first
+  …/hostport/9092 "" (present false) -> "1"`. Green on the unmutated code.
+- [x] 3k.2 R10-2 to R10-4: comment and exception scope, the rename, `got` → `identifiedWriteNumber`. Graphs if the
+  rename touches them; the checks as in 3.1.
+  Result: `checkNoUnchangedPuts` comment states that only a state publish (a transaction comparing the state key)
+  may put an unchanged state and node, and the exception applies only to such transactions. `finalPublishChangesAfterOverflow`
+  renamed `preparePublishChangesWithHostPorts` (local `publishChanges`; pure rename, comment updated, no logic
+  change), CALL_GRAPH and INSTANCE_LIFECYCLE_GRAPH updated; `got` → `identifiedWriteNumber`. Checks (2026-11-24):
+  `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without tests;
+  `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.1 s, 6.6 s, 10.3 s, 1.4 s);
+  `openspec validate rebalance-respects-fit` valid.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing

@@ -318,7 +318,7 @@ reconcileDesiredInstance(instanceInfo)                        :736
     │   │   else a valid runtime IP, else none — resolved BEFORE anything is written (M267 3c.6)
     │   ├── dropNoOpChanges(instanceIdentityChanges: marker, service, ip, allocation) and (sameCycleFacts):
     │   │   Get each, keep the changed ones (no more key writes than idempotent Puts on etcd, M266)
-    │   ├── finalPublishChangesAfterOverflow(hostPortChanges, identity facts, other facts)  [M267 3g R6-1, 3h R7-1, 3i R8-1, 3j S1]
+    │   ├── preparePublishChangesWithHostPorts(hostPortChanges, identity facts, other facts)  [M267 3g R6-1, 3h R7-1, 3i R8-1, 3j S1]
     │   │   dropNoOpChanges(host ports); those that fit beside the publish (100 − 2 state/node − facts)
     │   │   go into the publish TXN; an overflow first: publishInstanceStateUnlessStopped(starting,
     │   │   node = self, identity facts, DELETE readiness; not serving), then instanceFacts.writeGuarded
@@ -844,8 +844,8 @@ executeReconciliationCycle: container not in this node's desired set
 | `handleInstanceStartError` | startInstanceAndPublishState |
 | `instanceConfigHashChange` / `instanceImageChange` | startInstanceAndPublishState (start publish), handleInstanceStartError (M267 3e) |
 | `replaceContainerOnAnotherImage` | executeReconciliationCycle (running path, before detectConfigChange; M241 2e.1) |
-| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish (Agent, ProbeScheduler, NodeReporter each hold an instanceFactWriter; M267 3e, 3f), and the host-port overflow (finalPublishChangesAfterOverflow, 3g); returns whether every chunk committed |
-| `finalPublishChangesAfterOverflow` | publishInstanceStateToStore (the final publish's changes; host ports beyond the publish's room written first after a `starting` publish with the identity facts, which the final publish then leaves out; M267 3g R6-1, 3h R7-1, 3i R8-1, 3j S1) |
+| `instanceFactWriter.writeGuarded` | every agent write of observed/instance/{id}/* outside a publish (Agent, ProbeScheduler, NodeReporter each hold an instanceFactWriter; M267 3e, 3f), and the host-port overflow (preparePublishChangesWithHostPorts, 3g); returns whether every chunk committed |
+| `preparePublishChangesWithHostPorts` | publishInstanceStateToStore (the state publish's changes with the host ports that fit; host ports beyond the publish's room written first after a `starting` publish with the identity facts, which the final publish then leaves out; M267 3g R6-1, 3h R7-1, 3i R8-1, 3j S1) |
 | `instanceIdentityChanges` | publishInstanceStateToStore (marker, service, ip, allocation; also the starting publish, M267 3i) |
 | `cleanupStaleUncommittedStartFacts` | executeReconciliationCycle (after cleanupStaleCrashLoopBackoffs; M267 3g R6-4) |
 | `newContainerdTaskStartError` / `extractRuncProcessExecFailure` | ContainerdRuntime.Start (create task, start task) |

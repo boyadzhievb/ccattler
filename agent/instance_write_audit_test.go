@@ -494,13 +494,18 @@ func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *
 
 // checkNoUnchangedPuts fails for every committed put of a value already
 // stored: D4's "etcd sees no extra writes", on the overflow path too (3j.1).
-// State and node are the publish itself (its compare), always written.
+// Only a state publish (a transaction comparing the state's revision) may put
+// an unchanged state and node: publishInstanceStateUnlessStopped always does.
 func checkNoUnchangedPuts(t *testing.T, auditedStore *auditedInstanceStore) {
 	t.Helper()
-	publishKeys := []string{types.KeyObservedInstanceState("web-1"), types.KeyObservedInstanceNode("web-1")}
+	stateKey := types.KeyObservedInstanceState("web-1")
+	publishKeys := []string{stateKey, types.KeyObservedInstanceNode("web-1")}
 	_, committedWrites := auditedStore.writesCommitted()
 	for _, committedWrite := range committedWrites {
-		extraPutKeys := slices.DeleteFunc(slices.Clone(committedWrite.unchangedPutKeys), func(key string) bool { return slices.Contains(publishKeys, key) })
+		isStatePublish := slices.ContainsFunc(committedWrite.compares, func(compare store.Compare) bool { return compare.Key == stateKey })
+		extraPutKeys := slices.DeleteFunc(slices.Clone(committedWrite.unchangedPutKeys), func(key string) bool {
+			return isStatePublish && slices.Contains(publishKeys, key)
+		})
 		if len(extraPutKeys) > 0 {
 			t.Errorf("write %d put %d unchanged values, first %s", committedWrite.writeNumber, len(extraPutKeys), extraPutKeys[0])
 		}
@@ -568,7 +573,8 @@ func allHostPortKeys(keys []string) bool {
 }
 
 // isAllowedChange reports whether the fact's state after the run is exactly
-// what the starting publish or the overflow after it committed for key.
+// what the starting publish or the overflow after it committed for key, and a
+// host port is this node's (fakeHostPortFor, 3k R10-1).
 func isAllowedChange(startingChanges map[string]store.Op, key string, valueAfter string, presentAfter bool) bool {
 	change, committed := startingChanges[key]
 	switch {
@@ -576,9 +582,15 @@ func isAllowedChange(startingChanges map[string]store.Op, key string, valueAfter
 		return false
 	case change.Type == store.OpDelete:
 		return !presentAfter
-	default:
-		return presentAfter && valueAfter == string(change.Value)
+	case !presentAfter || valueAfter != string(change.Value):
+		return false
 	}
+	portText, isHostPort := strings.CutPrefix(key, types.KeyObservedInstanceHostPort("web-1")+"/")
+	if !isHostPort {
+		return true
+	}
+	containerPort, parseError := strconv.Atoi(portText)
+	return parseError == nil && valueAfter == strconv.Itoa(fakeHostPortFor(containerPort))
 }
 
 // checkStartingPublish checks the intermediate starting publish whose final
@@ -682,8 +694,8 @@ func TestStartingPublishIdentifiedByItsTransaction(t *testing.T) {
 				Value: []byte(types.InstanceStarting)}}, nil)
 			_, _ = auditedStore.Transaction(ctx, nil, []store.Op{{Type: store.OpPut, Key: testCase.nextKey, Value: []byte("x")}}, nil)
 			_, committedWrites := auditedStore.writesCommitted()
-			if got := auditedStore.startingPublishWriteNumber(committedWrites); got != testCase.wantWriteNumber {
-				t.Errorf("starting publish identified as write %d, want %d", got, testCase.wantWriteNumber)
+			if identifiedWriteNumber := auditedStore.startingPublishWriteNumber(committedWrites); identifiedWriteNumber != testCase.wantWriteNumber {
+				t.Errorf("starting publish identified as write %d, want %d", identifiedWriteNumber, testCase.wantWriteNumber)
 			}
 		})
 	}

@@ -1036,11 +1036,11 @@ func (nodeAgent *Agent) hostPortChangesIfSupported(instanceID string) []store.Op
 // publishInstanceStateUnlessStopped adds to a state publish.
 const publishStateAndNodeChangeCount = 2
 
-// finalPublishChangesAfterOverflow returns the final publish's changes: the
-// facts and the host ports that fit. Ports beyond the limit it writes first,
-// after a starting publish of identityFacts (3h R7-1, 3i R8-1), and then drops
-// what that committed (3j S1); false when a step failed: no final publish.
-func (nodeAgent *Agent) finalPublishChangesAfterOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op,
+// preparePublishChangesWithHostPorts returns the state publish's changes: the
+// facts and the host ports that fit (all of them without an overflow). Ports
+// beyond the limit it writes first, after a starting publish of identityFacts
+// (3h, 3i), then drops what that committed (3j S1); false: no publish.
+func (nodeAgent *Agent) preparePublishChangesWithHostPorts(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op,
 	identityFacts []store.Op, otherFacts []store.Op) ([]store.Op, bool) {
 	publishFacts := append(slices.Clone(identityFacts), otherFacts...)
 	effectiveHostPortChanges := dropNoOpChanges(ctx, nodeAgent.store, hostPortChanges)
@@ -2225,12 +2225,12 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	hostPortChanges []store.Op, sameCycleFacts ...store.Op) bool {
 	publishedContainerIP, ipFromNetworkProvider := nodeAgent.resolvePublishedContainerIP(ctx, instanceInfo.id, runtimeIP)
 	identityFacts := dropNoOpChanges(ctx, nodeAgent.store, instanceIdentityChanges(instanceInfo, publishedContainerIP, ipFromNetworkProvider))
-	finalPublishChanges, hostPortsWritten := nodeAgent.finalPublishChangesAfterOverflow(ctx, instanceInfo, hostPortChanges, identityFacts,
+	publishChanges, hostPortsWritten := nodeAgent.preparePublishChangesWithHostPorts(ctx, instanceInfo, hostPortChanges, identityFacts,
 		dropNoOpChanges(ctx, nodeAgent.store, sameCycleFacts))
 	if !hostPortsWritten {
 		return false
 	}
-	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, finalPublishChanges) {
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, state, publishChanges) {
 		return false
 	}
 	nodeAgent.createInstanceCreatedAtOnce(ctx, instanceInfo)
