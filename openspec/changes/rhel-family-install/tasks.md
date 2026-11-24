@@ -51,6 +51,39 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   journal free of `203/EXEC`. Record the commands and output (check `install-host:rhel-family`).
 - [ ] 3.3 Debian docs host (192.168.100.103): the same guide's Debian path on a fresh install; the cluster up and the
   service running. Record it.
+- [x] 3.2a Extra check (user request, 2026-11-24): AlmaLinux 10.3 VM (192.168.100.109, fresh, snapshot taken;
+  SELinux enforcing, firewalld on, kernel 6.12). The branch guide was followed literally from step 1, with two
+  recorded deviations:
+  - the quick install ran the branch's `install.sh` (scp'd), because the published one is the unfixed v1.97;
+  - `cca` was then replaced by a branch build (d0657df, built like release.yml), because v1.97 lacks the setup.sh
+    fixes.
+
+  Results:
+  - **Step 1 sudo:** the passwordless and secure_path snippets parse OK and work (`sudo cca version`).
+  - **Step 2:** OK.
+  - **Step 3:** the Docker repo resolves to rhel/10; containerd.io and nftables install, containerd is active.
+    **`dnf install containernetworking-plugins` fails: `Unable to find a match`.** EL10 packages no CNI in BaseOS,
+    AppStream, CRB, extras or EPEL 10 (checked with repoquery). The guide's tarball fallback works.
+  - **etcd:** the pinned SHA-256 gives `OK`; the binaries are root:root and `bin_t`.
+  - **install.sh:** `cca` is uid 0, mode 0755, `bin_t`. The secure_path warning comes with the checked drop-in. The
+    prerequisite check finds everything.
+  - **setup.sh** (exit 0):
+    - "No etcd.service found: creating the etcd user and unit";
+    - etcd is healthy over TLS and `enabled`;
+    - 2379 is NOT opened, and the NOTE with both commands is printed; firewalld ports are 9770/tcp and 4789/udp.
+  - **Cluster:** cca-server and cca-agent active, node `ctrl` alive. The Getting Started example (3 instances) runs
+    3/3, the VIP answers 200, `ausearch` shows 0 AVC, the journal has 0 `203/EXEC` and 0 warnings.
+
+  Findings, fixed in 3n:
+  - A1: CNI on EL10 has no package;
+  - A2: the "No EL9 repository" wording;
+  - A3: install.sh's next steps say `sudo cca status` right after the secure_path warning.
+- [ ] 3n A1–A3:
+  - the guide's RHEL CNI lines split per release: EL9 uses the AppStream package, EL10 the tarball into
+    `/opt/cni/bin`, and the Verify line matches;
+  - the etcd comment says EL9 and EL10;
+  - install.sh prints `sudo /usr/local/bin/cca status` in its next steps when it warned about secure_path, with a
+    test subcase, red first.
 - [ ] 3.4 Independent review: `code-reviewer` (correctness) and a patterns review against `design/Anti-pattern.md`;
   each finding recorded as fixed or rejected.
   Round 1 (2026-11-24, on e330546..4a93ca2):
