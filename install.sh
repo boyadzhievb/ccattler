@@ -138,6 +138,18 @@ if [ ! -d "$INSTALL_PATH" ]; then
     fi
 fi
 
+# Normalize once: absolute, no trailing or double slash, symlinks resolved, so every
+# comparison and printed path below uses the directory's one real name.
+if ! INSTALL_PATH=$(CDPATH='' cd -P -- "$INSTALL_PATH" && pwd -P); then
+    log_error "Cannot enter the install directory ${INSTALL_PATH}."
+    exit 1
+fi
+
+# shell_quoted prints $1 in single quotes, so a printed command stays one word when pasted.
+shell_quoted() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 # run_as_installer runs a command with sudo when the install directory needed it.
 use_sudo="no"
 run_as_installer() {
@@ -164,7 +176,7 @@ if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled \
     && command -v restorecon >/dev/null 2>&1; then
     if ! run_as_installer restorecon "${INSTALL_PATH}/cca"; then
         log_warn "Could not restore the SELinux label of ${INSTALL_PATH}/cca; systemd cannot start it until you run:"
-        log_warn "  sudo restorecon ${INSTALL_PATH}/cca"
+        log_warn "  sudo restorecon $(shell_quoted "${INSTALL_PATH}/cca")"
     fi
 fi
 
@@ -175,32 +187,32 @@ if [ "$operating_system" = "linux" ]; then
     installed_owner=$(stat -c '%u' "${INSTALL_PATH}/cca" 2>/dev/null || echo unknown)
     installed_owner=${installed_owner%% *}
     if [ "$installed_owner" != "0" ]; then
-        log_warn "${INSTALL_PATH}/cca is owned by uid ${installed_owner}, not root; whoever owns it can change what"
-        log_warn "systemd and sudo run as root. Before running it as root: sudo chown root:root ${INSTALL_PATH}/cca"
+        install_directory_quoted=$(shell_quoted "$INSTALL_PATH")
+        log_warn "$(shell_quoted "${INSTALL_PATH}/cca") is owned by uid ${installed_owner}, not root."
+        log_warn "Whoever owns it or can write ${install_directory_quoted} can change what systemd and sudo run as root,"
+        log_warn "so that directory must be writable only by root:"
+        log_warn "  sudo chown root:root ${install_directory_quoted} && sudo chmod 0755 ${install_directory_quoted}"
+        log_warn "Then run this install again."
     fi
 fi
 
 # --- sudo's secure_path (Linux): 'sudo cca' fails when INSTALL_PATH is not on it ---
 # No sudoers text is printed: the guide has the one fixed snippet (review round 3).
 SECURE_PATH_GUIDE_URL="https://ccattler.org/installation#prepare-a-fresh-host"
-# sudo_cca is how the next steps call cca with sudo: the full path after the warning.
+# sudo_cca is how the next steps call cca with sudo: the quoted full path after the warning.
 sudo_cca="cca"
-case "$INSTALL_PATH" in
-    /*) install_directory_absolute=$INSTALL_PATH ;;
-    *) install_directory_absolute=$(CDPATH='' cd -P -- "$INSTALL_PATH" && pwd -P) ;;
-esac
 if [ "$operating_system" = "linux" ] && command -v sudo >/dev/null 2>&1; then
     # -n never prompts; without cached credentials sudo's PATH cannot be read.
     if ! sudo_path=$(sudo -n sh -c 'echo "$PATH"' 2>/dev/null); then
         log_info "If 'sudo cca' says 'command not found', ${INSTALL_PATH} is not on sudo's secure_path: call"
-        log_info "  'sudo ${install_directory_absolute}/cca', or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
+        log_info "  sudo $(shell_quoted "${INSTALL_PATH}/cca"), or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
     else
         case ":${sudo_path}:" in
-            *":${INSTALL_PATH}:"* | *":${install_directory_absolute}:"*) ;;
+            *":${INSTALL_PATH}:"*) ;;
             *)
-                sudo_cca="${install_directory_absolute}/cca"
+                sudo_cca=$(shell_quoted "${INSTALL_PATH}/cca")
                 log_warn "'sudo cca' will not find cca: ${INSTALL_PATH} is not on sudo's secure_path."
-                log_warn "Call 'sudo ${sudo_cca}', or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
+                log_warn "Call sudo ${sudo_cca}, or see the guide's secure_path step: ${SECURE_PATH_GUIDE_URL}"
                 ;;
         esac
     fi

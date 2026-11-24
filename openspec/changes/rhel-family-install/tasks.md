@@ -283,19 +283,33 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   | R4-7 | The warning calls link-local and shared ranges (169.254/16, 100.64/10, fe80::/10) "public" (Codex, confirmed) | **fix** 3q.2: wording "not private or loopback", which matches the spec's definition |
   | — | Only an exact cover of a family is refused; wider sets get warnings | **by design** (design.md "Structural changes after review round 3") |
 
-- [ ] 3q.1 R4-1, R4-2, R4-3 in install.sh:
+- [x] 3q.1 R4-1, R4-2, R4-3 in install.sh:
   - the ownership warning names the root-only directory fix and quotes the path;
   - every printed command quotes the path;
   - every INSTALL_PATH is normalized with `CDPATH='' cd -P -- … && pwd -P`.
 
   Red first: subcases for a trailing slash, a double slash and a path with a space. Keep shellcheck clean under sh and
   dash.
-- [ ] 3q.2 R4-5 to R4-7:
+  Result: red on cdaccc9: TestInstallScriptWarnsWhenSudoPathLacksInstallDir new subcases `trailing slash on path`
+  (false warning), `double slash` (`//` path), `path with a space` (unquoted), plus the quoted next step in the other
+  warning subcases; TestInstallScriptWarnsWhenBinaryNotRootOwned `user-owned` and `user-owned, path with a space`
+  (scenario: owner or directory writer, "writable only by root", quoted paths). Fix: INSTALL_PATH normalized once
+  after the directory exists (`CDPATH='' cd -P -- … && pwd -P`, error if it fails); `shell_quoted` (single quotes,
+  `'` escaped; round-trip checked under dash and bash) for every printed command (restorecon, ownership, secure_path
+  call, next steps); the ownership warning gives `sudo chown root:root '<dir>' && sudo chmod 0755 '<dir>'` and "run
+  this install again". Test fakes: stat table tab-separated (paths with spaces), `sed` linked; the `restorecon fails`
+  subcase now expects the quoted command. Green 29/29 under sh and bash; shellcheck sh and dash clean.
+- [x] 3q.2 R4-5 to R4-7:
   - `TestInitRejectsInvalidEtcdClientCIDR` asserts the error names the value;
   - `installation.md:213` wording;
   - the warning says "not private or loopback".
 
   Then run the checks as in 3.1.
+  Result: red on cdaccc9: TestInitRejectsInvalidEtcdClientCIDR union subcases (error printed `[a b]`, not the value);
+  TestInitWarnsOnWideEtcdClientCIDR asserts "is not private or loopback" (new `169.254.0.0/16` subcase). Fix: the
+  union error names the networks joined by commas; reason text "is not private or loopback"; installation.md "links
+  to the fix". Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok,
+  vitepress build of a copy.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

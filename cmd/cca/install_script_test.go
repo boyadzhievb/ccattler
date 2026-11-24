@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ const installScriptPath = "../../install.sh"
 const installScriptTestVersion = "v0.0.0-test"
 
 // installScriptRealTools are host utilities install.sh needs that the tests do not fake.
-var installScriptRealTools = []string{"grep", "awk", "sha256sum", "tar", "gzip", "mktemp", "rm", "mv", "chmod", "mkdir", "cat"}
+var installScriptRealTools = []string{"sed", "grep", "awk", "sha256sum", "tar", "gzip", "mktemp", "rm", "mv", "chmod", "mkdir", "cat"}
 
 // installScriptCNIDirectories are the CNI plugin directories install.sh checks; the
 // tests move them under a temp root so the host's own plugins do not count.
@@ -87,11 +88,11 @@ chmod "$mode" "$2"
 `
 
 // installScriptFakeStat prints "uid mode" for its last argument from the FAKE_STAT_TABLE
-// lines "<path> <uid> <mode>", and "0 755" (root-owned, safe) for any other path.
+// lines "<path>\t<uid> <mode>" (tab, as paths may hold spaces), and "0 755" otherwise.
 const installScriptFakeStat = `#!/bin/sh
 for target_path; do :; done
-while read -r table_path table_owner table_mode; do
-  if [ "$table_path" = "$target_path" ]; then echo "$table_owner $table_mode"; exit 0; fi
+while IFS='	' read -r table_path table_owner_mode; do
+  if [ "$table_path" = "$target_path" ]; then echo "$table_owner_mode"; exit 0; fi
 done < "$FAKE_STAT_TABLE"
 echo "0 755"
 `
@@ -133,7 +134,9 @@ type installScriptOptions struct {
 	statTable          map[string]string // "uid mode" stat reports per path ({work}, {install}, {home}); others "0 755"
 	symlinkInstallDir  bool              // make the install directory a symlink to {work}/userdir
 	unameSystem        string            // kernel name from uname -s; "" means Linux
-	relativeInstall    bool              // pass INSTALL_PATH as the relative path "install"
+	relativeInstall    bool              // pass INSTALL_PATH as the relative directory name
+	installDirName     string            // install directory name under {work}; "" means "install"
+	installPathForm    string            // INSTALL_PATH spelling: "trailing slash", "double slash" or "" (plain)
 	writableInstallDir bool              // leave the install directory writable, as for a root run (no sudo)
 	restoreconFails    bool              // make the fake restorecon exit 1
 	sudoSecurePath     string            // PATH that commands run through sudo see; {install} is the install dir
@@ -219,7 +222,7 @@ func writeInstallScriptCopy(t *testing.T, rootPath string) string {
 func prepareInstallScriptBin(t *testing.T, workDirectory string, options installScriptOptions) (string, string) {
 	t.Helper()
 	fakeBinDirectory := filepath.Join(workDirectory, "bin")
-	installDirectory := filepath.Join(workDirectory, "install")
+	installDirectory := filepath.Join(workDirectory, valueOrDefault(options.installDirName, "install"))
 	realInstallDirectory := installDirectory
 	if options.symlinkInstallDir {
 		realInstallDirectory = filepath.Join(workDirectory, "userdir")
@@ -272,12 +275,17 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 		t.Fatalf("write checksums: %v", writeError)
 	}
 	callLogPath := filepath.Join(workDirectory, "calls.log")
-	statTablePath := writeFakeStatTable(t, workDirectory, options.statTable)
+	statTablePath := writeFakeStatTable(t, workDirectory, installDirectory, options.statTable)
 	command := exec.Command("/bin/sh", writeInstallScriptCopy(t, workDirectory)) // #nosec G204 -- test copy of the repository script
 	command.Dir = workDirectory
 	installPathValue := installDirectory
-	if options.relativeInstall {
-		installPathValue = "install"
+	switch {
+	case options.relativeInstall:
+		installPathValue = filepath.Base(installDirectory)
+	case options.installPathForm == "trailing slash":
+		installPathValue = installDirectory + "/"
+	case options.installPathForm == "double slash":
+		installPathValue = workDirectory + "//" + filepath.Base(installDirectory)
 	}
 	command.Env = []string{
 		"PATH=" + fakeBinDirectory,
@@ -291,7 +299,7 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 		"FAKE_RELEASE_ARCHIVE=" + archivePath,
 		"FAKE_CHECKSUMS=" + checksumsPath,
 		"FAKE_CALL_LOG=" + callLogPath,
-		"FAKE_SUDO_PATH=" + expandInstallTestPaths(options.sudoSecurePath, workDirectory),
+		"FAKE_SUDO_PATH=" + expandInstallTestPaths(options.sudoSecurePath, workDirectory, installDirectory),
 	}
 	if options.restoreconFails {
 		command.Env = append(command.Env, "FAKE_RESTORECON_FAILS=1")
@@ -314,20 +322,20 @@ func runInstallScriptWithFakes(t *testing.T, options installScriptOptions) insta
 }
 
 // expandInstallTestPaths replaces {work}, {install} and {home} with the test's directories.
-func expandInstallTestPaths(text string, workDirectory string) string {
+func expandInstallTestPaths(text string, workDirectory string, installDirectory string) string {
 	return strings.NewReplacer(
-		"{install}", filepath.Join(workDirectory, "install"),
+		"{install}", installDirectory,
 		"{home}", filepath.Join(workDirectory, "home"),
 		"{work}", workDirectory,
 	).Replace(text)
 }
 
-// writeFakeStatTable writes the fake stat's "<path> <uid> <mode>" lines and returns the file.
-func writeFakeStatTable(t *testing.T, workDirectory string, statTable map[string]string) string {
+// writeFakeStatTable writes the fake stat's "<path>\t<uid> <mode>" lines and returns the file.
+func writeFakeStatTable(t *testing.T, workDirectory string, installDirectory string, statTable map[string]string) string {
 	t.Helper()
 	var tableBuilder strings.Builder
 	for _, tablePath := range slices.Sorted(maps.Keys(statTable)) {
-		fmt.Fprintf(&tableBuilder, "%s %s\n", expandInstallTestPaths(tablePath, workDirectory), statTable[tablePath])
+		fmt.Fprintf(&tableBuilder, "%s\t%s\n", expandInstallTestPaths(tablePath, workDirectory, installDirectory), statTable[tablePath])
 	}
 	statTablePath := filepath.Join(workDirectory, "stat-table")
 	if writeError := os.WriteFile(statTablePath, []byte(tableBuilder.String()), 0o600); writeError != nil {
@@ -406,7 +414,7 @@ func TestInstallScriptRestoresSELinuxLabel(t *testing.T) {
 		if run.exitError != nil {
 			t.Fatalf("install.sh must succeed when only restorecon fails: %v\n%s", run.exitError, run.output)
 		}
-		if !strings.Contains(run.output, "restorecon "+filepath.Join(run.installDir, "cca")) {
+		if !strings.Contains(run.output, "sudo restorecon '"+filepath.Join(physicalPath(t, run.installDir), "cca")+"'") {
 			t.Errorf("want a warning naming the restorecon command; output:\n%s", run.output)
 		}
 	})
@@ -428,6 +436,9 @@ func TestInstallScriptWithoutSELinuxTools(t *testing.T) {
 		t.Errorf("output mentions SELinux on a host without it:\n%s", run.output)
 	}
 }
+
+// installScriptDoubleSlashPattern finds a path with "//" (not a URL scheme's "://").
+var installScriptDoubleSlashPattern = regexp.MustCompile(`[^:/]//`)
 
 // installScriptSecurePathGuideLink is the guide step install.sh names for secure_path.
 const installScriptSecurePathGuideLink = "https://ccattler.org/installation#prepare-a-fresh-host"
@@ -457,6 +468,11 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 			statTable: map[string]string{"{work}/userdir": userOwned}}, wantNotice: true, wantWarning: true},
 		{name: "relative path", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", relativeInstall: true}, wantNotice: true, wantWarning: true},
 		{name: "macOS", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", sudoPromptsForPass: true, unameSystem: "Darwin"}},
+		{name: "trailing slash on path", options: installScriptOptions{sudoSecurePath: "/sbin:{install}", installPathForm: "trailing slash"}},
+		{name: "double slash", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installPathForm: "double slash"},
+			wantNotice: true, wantWarning: true},
+		{name: "path with a space", options: installScriptOptions{sudoSecurePath: "/sbin:/bin", installDirName: "my install"},
+			wantNotice: true, wantWarning: true},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -470,9 +486,13 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 			if hasNotice := strings.Contains(run.output, "secure_path"); hasNotice != testCase.wantNotice {
 				t.Errorf("secure_path notice = %v, want %v; output:\n%s", hasNotice, testCase.wantNotice, run.output)
 			}
+			if installScriptDoubleSlashPattern.MatchString(run.output) {
+				t.Errorf("output has an unnormalized path:\n%s", run.output)
+			}
 			wantedNextStep := "4. sudo cca status"
 			if testCase.wantWarning {
-				wantedNextStep = "4. sudo " + run.installDir + "/cca status"
+				// The path is normalized (symlinks resolved) and quoted in the printed command.
+				wantedNextStep = "4. sudo '" + physicalPath(t, run.installDir) + "/cca' status"
 				if !strings.Contains(run.output, "secure_path step: "+installScriptSecurePathGuideLink) {
 					t.Errorf("warning does not name the guide's secure_path step; output:\n%s", run.output)
 				}
@@ -484,28 +504,50 @@ func TestInstallScriptWarnsWhenSudoPathLacksInstallDir(t *testing.T) {
 	}
 }
 
-// TestInstallScriptWarnsWhenBinaryNotRootOwned: after the install, install.sh warns
-// with the chown remedy when the binary is not owned by uid 0 (an install without
-// sudo into a directory the user can write), and stays quiet when root owns it.
+// physicalPath returns path with symlinks resolved, as pwd -P prints it.
+func physicalPath(t *testing.T, path string) string {
+	t.Helper()
+	resolvedPath, resolveError := filepath.EvalSymlinks(path)
+	if resolveError != nil {
+		t.Fatalf("resolve %s: %v", path, resolveError)
+	}
+	return resolvedPath
+}
+
+// TestInstallScriptWarnsWhenBinaryNotRootOwned: on Linux, when the binary is not owned
+// by uid 0 (installed without sudo into a directory the user can write), install.sh
+// warns that whoever owns it or can write its directory can change what systemd and
+// sudo run as root, and that the directory must be writable only by root; every path
+// in the warning is quoted. It stays quiet when root owns the binary.
 func TestInstallScriptWarnsWhenBinaryNotRootOwned(t *testing.T) {
 	for _, testCase := range []struct {
-		name        string            // subcase name
-		statTable   map[string]string // owner stat reports for the installed binary
-		wantWarning bool              // the ownership warning is printed
+		name           string            // subcase name
+		installDirName string            // install directory name, "" for "install"
+		statTable      map[string]string // owner stat reports for the installed binary
+		wantWarning    bool              // the ownership warning is printed
 	}{
 		{name: "root-owned"},
 		{name: "user-owned", statTable: map[string]string{"{install}/cca": "1000 755"}, wantWarning: true},
+		{name: "user-owned, path with a space", installDirName: "my install",
+			statTable: map[string]string{"{install}/cca": "1000 755"}, wantWarning: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			run := runInstallScriptWithFakes(t, installScriptOptions{sudoSecurePath: "/usr/bin:{install}", writableInstallDir: true,
-				statTable: testCase.statTable})
+				installDirName: testCase.installDirName, statTable: testCase.statTable})
 			if run.exitError != nil {
 				t.Fatalf("install.sh failed: %v\n%s", run.exitError, run.output)
 			}
-			hasWarning := strings.Contains(run.output, "owned by uid 1000") &&
-				strings.Contains(run.output, "sudo chown root:root "+filepath.Join(run.installDir, "cca"))
-			if hasWarning != testCase.wantWarning {
-				t.Errorf("ownership warning = %v, want %v; output:\n%s", hasWarning, testCase.wantWarning, run.output)
+			installDirectory := physicalPath(t, run.installDir)
+			wantedParts := []string{
+				"'" + installDirectory + "/cca' is owned by uid 1000",
+				"can write '" + installDirectory + "'",
+				"writable only by root",
+				"sudo chown root:root '" + installDirectory + "' && sudo chmod 0755 '" + installDirectory + "'",
+			}
+			for _, wantedPart := range wantedParts {
+				if hasPart := strings.Contains(run.output, wantedPart); hasPart != testCase.wantWarning {
+					t.Errorf("warning part %q present = %v, want %v; output:\n%s", wantedPart, hasPart, testCase.wantWarning, run.output)
+				}
 			}
 		})
 	}

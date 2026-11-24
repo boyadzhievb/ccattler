@@ -210,7 +210,7 @@ curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/inst
 ```
 
 Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon). On SELinux hosts it restores the binary's SELinux label.
-When `/usr/local/bin` is not on sudo's `secure_path`, it warns and prints the fix from
+When `/usr/local/bin` is not on sudo's `secure_path`, it warns and links to the fix in
 [step 1 of Prepare a fresh host](#prepare-a-fresh-host).
 With sudo it installs `cca` owned by root (mode 0755). If your user can write to the install directory itself (older
 Debian: `/usr/local/bin` owned by `root:staff`, mode 2775), it installs without sudo and `cca` stays owned by you;

@@ -84,8 +84,12 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 		return parsedConfig, parseError
 	}
 	if etcdClientNetworksCoverFamily(parsedConfig.etcdClientNetworks) {
-		return parsedConfig, fmt.Errorf("--etcd-client-cidr: the networks %v together cover every address; "+
-			"name the cluster's networks, not every source", parsedConfig.etcdClientNetworks)
+		networkTexts := make([]string, 0, len(parsedConfig.etcdClientNetworks))
+		for _, network := range parsedConfig.etcdClientNetworks {
+			networkTexts = append(networkTexts, network.String())
+		}
+		return parsedConfig, fmt.Errorf("--etcd-client-cidr %s: these networks together cover every address; "+
+			"name the cluster's networks, not every source", strings.Join(networkTexts, ","))
 	}
 
 	if parsedConfig.nodeID == "" {
@@ -179,14 +183,14 @@ func etcdClientNetworksCoverFamily(networks []*net.IPNet) bool {
 }
 
 // etcdClientWideIPv4Bits and etcdClientWideIPv6Bits: networks shorter than these
-// prefixes get a warning (D5), as do networks with public addresses.
+// prefixes get a warning (D5), as do networks that are not private or loopback.
 const (
 	etcdClientWideIPv4Bits = 8
 	etcdClientWideIPv6Bits = 32
 )
 
 // etcdClientNetworkWarnings returns one warning per network that is wider than /8
-// (IPv4) or /32 (IPv6) or holds public addresses: until M280 every certificate the
+// (IPv4) or /32 (IPv6) or is not private or loopback: until M280 every certificate the
 // cluster CA issues can use etcd, so those sources can reach it with any of them.
 func etcdClientNetworkWarnings(networks []*net.IPNet) []string {
 	var warnings []string
@@ -201,7 +205,7 @@ func etcdClientNetworkWarnings(networks []*net.IPNet) []string {
 			reasons = append(reasons, fmt.Sprintf("is wider than /%d", wideLimit))
 		}
 		if !networkIsPrivateOrLoopback(network) {
-			reasons = append(reasons, "holds public addresses")
+			reasons = append(reasons, "is not private or loopback")
 		}
 		if len(reasons) > 0 {
 			warnings = append(warnings, fmt.Sprintf("WARNING: --etcd-client-cidr %s %s; every certificate the cluster CA "+

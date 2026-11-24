@@ -41,7 +41,7 @@ func TestInitRejectsInvalidEtcdClientCIDR(testContext *testing.T) {
 			if exitCode == 0 {
 				subtestContext.Fatalf("cca init accepted --etcd-client-cidr %q, which covers every address", allowAllValue)
 			}
-			if !strings.Contains(stderrContent, "every address") {
+			if !strings.Contains(stderrContent, "every address") || !strings.Contains(stderrContent, allowAllValue) {
 				subtestContext.Errorf("error does not name %q and say it covers every address: %s", allowAllValue, stderrContent)
 			}
 			if _, statError := os.Stat(outputDirectory); !os.IsNotExist(statError) {
@@ -52,17 +52,20 @@ func TestInitRejectsInvalidEtcdClientCIDR(testContext *testing.T) {
 }
 
 // TestInitWarnsOnWideEtcdClientCIDR: a network wider than /8 (IPv4) or /32 (IPv6), or
-// one with public addresses, is accepted with a warning naming it and M280, and its
-// rule is written; a private network gets no warning.
+// one with addresses that are not private or loopback (link-local included), is
+// accepted with a warning naming it and M280, and its rule is written; a private
+// network gets no warning.
 func TestInitWarnsOnWideEtcdClientCIDR(testContext *testing.T) {
 	for _, testCase := range []struct {
-		value       string // --etcd-client-cidr value
-		wantWarning bool   // a warning naming the value is printed
+		value          string // --etcd-client-cidr value
+		wantWarning    bool   // a warning naming the value is printed
+		wantNotPrivate bool   // the warning says the network is not private or loopback
 	}{
-		{value: "10.0.0.0/7", wantWarning: true},
-		{value: "203.0.113.0/24", wantWarning: true},
-		{value: "2001::/16", wantWarning: true},
-		{value: "0.0.0.0/1", wantWarning: true},
+		{value: "10.0.0.0/7", wantWarning: true, wantNotPrivate: true},
+		{value: "203.0.113.0/24", wantWarning: true, wantNotPrivate: true},
+		{value: "169.254.0.0/16", wantWarning: true, wantNotPrivate: true},
+		{value: "2001::/16", wantWarning: true, wantNotPrivate: true},
+		{value: "0.0.0.0/1", wantWarning: true, wantNotPrivate: true},
 		{value: "10.0.0.0/8"},
 		{value: "192.168.1.0/24"},
 		{value: "fd00:1234::/48"},
@@ -79,6 +82,9 @@ func TestInitWarnsOnWideEtcdClientCIDR(testContext *testing.T) {
 				strings.Contains(combinedOutput, "M280")
 			if hasWarning != testCase.wantWarning {
 				subtestContext.Errorf("warning = %v, want %v; output:\n%s", hasWarning, testCase.wantWarning, combinedOutput)
+			}
+			if saysNotPrivate := strings.Contains(combinedOutput, "is not private or loopback"); saysNotPrivate != testCase.wantNotPrivate {
+				subtestContext.Errorf("\"not private or loopback\" = %v, want %v; output:\n%s", saysNotPrivate, testCase.wantNotPrivate, combinedOutput)
 			}
 			setupScript, readError := os.ReadFile(filepath.Join(outputDirectory, "setup.sh")) // #nosec G304 -- test temp file
 			if readError != nil || !strings.Contains(string(setupScript), "port port=\"2379\"") {
