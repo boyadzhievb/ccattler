@@ -156,6 +156,39 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   with both commands, `<your node network>` and the flag. Guide: step 1 paragraph, worker-section note with the
   firewalld command, SELinux/firewalld paragraph corrected; cli-reference lists the flag. Green; TestDocCrossCheck*,
   vitepress build, gofmt, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok.
+  Round 2 (2026-11-24, on 4a93ca2..194c66e):
+  - **code-reviewer (Opus high, Codex job review-mwutw74q-kvvebi): request changes.** No correctness bug in setup.sh
+    or the CIDR flag. Red on 4a93ca2 for every new test; green 21/21 install and 21/21 setup-step tests under dash and
+    bash.
+  - **security-audit (Opus high): needs work.** S3, S4, S6 and S7 are closed; no injection path (rules are built from
+    canonical `IPNet.String()`).
+
+  The main session reproduced R2-1 (`--etcd-client-cidr 0.0.0.0/0` exits 0 and writes an allow-all ufw and firewalld
+  rule) and checked R2-2 in the docs (`installation.md:239`, `getting-started.md:41`).
+
+  | # | Finding | Resolution |
+  |---|---|---|
+  | R2-1 | `0.0.0.0/0`, `::/0`, `::ffff:0.0.0.0/96` accepted: etcd opened to all (security, reproduced) | **fix** 3o.1; spec scenario added |
+  | R2-2 | Build-from-source snippets still `sudo mv cca /usr/local/bin/` (the S1 mechanism, no relabel) | **fix** 3o.2 (`sudo install -o root -g root -m 0755` + `restorecon` when SELinux is enabled); `test/e2e/cluster_test.sh:2196` too |
+  | R2-3 | The secure_path drop-in copies sudo's PATH unchecked (`~/.local/bin`, `.`); `stat -L` follows symlinks and parents are not checked (both reviewers, reproduced) | **fix** 3o.3 (spec requirement split) |
+  | R2-4 | binary-install spec stale (no S1 requirement, secure_path rule, selinuxenabled) | **fixed** by the main session (design.md note) |
+  | R2-5 | The milestones.md M279 row (changelog text) lacks `--etcd-client-cidr` and the S1 remedy | **fix** 3o.4 |
+  | R2-6 | Suggestions: the `installedTo` test helper matches any sudo call; install.sh:160 comment wrong about the label; the setup.sh note says "not opened in the host firewall" when no firewall runs; the note always prints `ipv4` | **fix** 3o.5 |
+  | R2-7 | Group-writable install dir (old Debian root:staff 2775) leaves a user-owned binary | **document** in the guide (writing there is already near root) |
+  | R2-8 | "No EL10 repository ships etcd" not backed by 3.2a | **fixed** by evidence: repoquery on Alma 10.3 found etcd in no enabled repo (BaseOS, AppStream, CRB, extras), and neither in EPEL 10 nor in Docker rhel/10 (main session, 2026-11-24) |
+  | Codex | "Host bits silently masked widens access" | **rejected**: the operator writes the prefix; D5 and `TestInitParsesEtcdClientCIDRs` clear host bits on purpose |
+
+- [ ] 3o.1 R2-1: reject a prefix covering every address, checked on the unmapped form (`netip.ParsePrefix` +
+  `Unmap`). Add the three values to `TestInitRejectsInvalidEtcdClientCIDR`, red first.
+- [ ] 3o.2 R2-2: the guide's and getting-started's build-from-source install line, and `cluster_test.sh:2196`
+  (`chown` or `install -o 0 -g 0`).
+- [ ] 3o.3 R2-3: the drop-in lists only directories that pass the safety check after resolving symlinks, all parents
+  included, plus the install dir. If the install dir fails, there is no drop-in, only the full-path advice. Subcases
+  `unsafe sudo path entries`, a symlink into a user-owned dir, and a user-owned parent; red first.
+- [ ] 3o.4 R2-5: the M279 row in milestones.md names `--etcd-client-cidr` (etcd's port closed by default) and the
+  S1 fix with the remedy `sudo chown root:root /usr/local/bin/cca`.
+- [ ] 3o.5 R2-6 and R2-7: the test helper, the comment, the note wording (with and without a running firewall), the
+  family in the note; one guide sentence for a group-writable install directory. Run the checks as in 3.1.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

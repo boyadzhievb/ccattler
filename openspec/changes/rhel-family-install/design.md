@@ -38,6 +38,18 @@ key is read or written differently, so there are no writers to fence and no chan
 
 ## Decisions
 
+**Spec changes during apply, 2026-11-24 (main session, from review round 2).** These follow the user's decisions
+(S1 option a, S2 option b) and the security findings:
+- **`binary-install`:**
+  - a root-ownership requirement (S1);
+  - the SELinux requirement now needs `selinuxenabled` (R2);
+  - the secure_path rule is split in two: the full-path advice, and a drop-in that may list only safe directories
+    (S5 and the round-2 sudo-path finding).
+- **`host-setup`:** a scenario refusing networks that cover every address (`0.0.0.0/0`, `::/0`,
+  `::ffff:0.0.0.0/96`). It was reproduced opening etcd to all.
+
+No requirement was weakened.
+
 **Order of the proof, 2026-11-24 (user decision, option c).**
 - **The problem:** `install.sh` always downloads from a GitHub release (`install.sh:94`), so the guide can be
   followed literally only with a release that contains this change.

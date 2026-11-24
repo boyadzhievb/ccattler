@@ -66,6 +66,14 @@ the flag it SHALL leave the port closed and print the exact firewalld or ufw com
 - **THEN** it exits with an error naming the value, and writes no files
 - Test: `TestInitRejectsInvalidEtcdClientCIDR`
 
+#### Scenario: A network that covers every address
+- **GIVEN** `cca init --etcd-client-cidr 0.0.0.0/0`, `::/0` or `::ffff:0.0.0.0/96` (an IPv4-mapped form of every IPv4
+  address)
+- **WHEN** `cca init` runs
+- **THEN** it exits with an error saying the flag must name the cluster's networks, not every source, and writes no
+  files (added during apply, 2026-11-24: security round-2 finding, which reproduced `0.0.0.0/0` opening etcd to all)
+- Test: `TestInitRejectsInvalidEtcdClientCIDR` (subcases for the three values)
+
 ### Requirement: The agent finds CNI plugins in distribution directories
 The containerd runtime SHALL look for CNI plugin binaries in `/opt/cni/bin` first, then in `/usr/libexec/cni` and
 `/usr/lib/cni`, where distribution packages install them (EL9 `containernetworking-plugins`).
