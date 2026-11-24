@@ -612,17 +612,17 @@ CREATE / ROTATE
 
 STOP — directory KEPT (removeContainerResources :863 forgets tracking only)
 ├── Stop / StopWithGracePeriod                      :771 / :807
-│   callers: Start (restart in place, Flow 33), detectConfigChange agent.go:1554,
+│   callers: Start (restart in place, Flow 33), detectConfigChange agent.go:1564,
 │   resize restart, cleanup paths below
 └── StopAll                                         :1423
     callers: cca agent shutdown (command_agent.go:562), cca run-container (command_run.go:220)
 
 REMOVE — directory DELETED (RemoveInstanceData :874 → removeInstanceLogDirectory container_log.go:82)
-├── agent cleanupUndesiredInstance                  agent.go:1264  (placed elsewhere / removed, running)
-├── agent cleanupStoppedStaleInstance               agent.go:1058  (same, container exited)
-│   both → teardownStaleInstance                    agent.go:1071
-│          → removeInstanceDataIfSupported          agent.go:1220
-└── agent sweepInstanceData, every reconcile cycle  agent.go:1234 (called :627)
+├── agent cleanupUndesiredInstance                  agent.go:1274  (placed elsewhere / removed, running)
+├── agent cleanupStoppedStaleInstance               agent.go:1063  (same, container exited)
+│   both → teardownStaleInstance                    agent.go:1076
+│          → removeInstanceDataIfSupported          agent.go:1230
+└── agent sweepInstanceData, every reconcile cycle  agent.go:1244 (called :627)
     ListInstanceDataIDs :880 → listInstanceLogDirectories container_log.go:92
     (skips cca-init-* dirs of running init steps); removes every ID neither
     desired on the node nor known to runtime.List (exited included)

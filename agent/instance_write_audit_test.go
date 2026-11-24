@@ -24,6 +24,23 @@ import (
 // the write it is told to fail (an etcd timeout as the agent sees it).
 var errInjectedWriteFailure = errors.New("etcd: request timed out (injected)")
 
+// sweepFaultKind is the kind of the one fault a sweep case injects (3g.0, 3h.1).
+type sweepFaultKind string
+
+// The sweep's fault kinds: a store error on write N, a lost compare on
+// transaction N, a store error on the Nth read of an instance state.
+const (
+	faultWriteError     sweepFaultKind = "fail write"
+	faultLostCompare    sweepFaultKind = "lose compare of write"
+	faultStateReadError sweepFaultKind = "fail state read"
+)
+
+// injectedFault is the fault of one sweep case: its kind and its 1-based number.
+type injectedFault struct {
+	kind   sweepFaultKind // kind is what goes wrong.
+	number int            // number is the write or state read it hits (0: none).
+}
+
 // instanceKeyPrefixes are the prefixes of per-instance keys the audit checks:
 // observed/instance/{id}[/...], its telemetry and network/allocation/{id}.
 var instanceKeyPrefixes = []string{types.ScanObservedInstances, types.ScanObservedTelemetryInstances, types.ScanNetworkAllocations}
@@ -46,9 +63,12 @@ var placementRuleExceptions = []placementRuleException{
 		},
 	},
 	{
-		reason: "cleanup of an instance that left the desired set, deletes on placement/instance/{id} (3e, B2)",
+		reason: "cleanup of an instance that left the desired set: deletes of its pull status, network allocation and " +
+			"secret wait on placement/instance/{id} (3e, B2; only these keys, 3h R7-4)",
 		allows: func(change store.Op, compared map[string]bool, instanceID string) bool {
-			return compared[types.KeyPlacementInstance(instanceID)] && change.Type == store.OpDelete
+			cleanupKeys := []string{types.KeyObservedInstancePullStatus(instanceID), types.KeyNetworkAllocation(instanceID),
+				types.KeyObservedInstanceSecretWait(instanceID)}
+			return compared[types.KeyPlacementInstance(instanceID)] && change.Type == store.OpDelete && slices.Contains(cleanupKeys, change.Key)
 		},
 	},
 	{
@@ -70,24 +90,26 @@ type committedInstanceWrite struct {
 	compares    []store.Compare // compares are the transaction's compares (none for a plain Put or Delete).
 }
 
-// auditedInstanceStore is the agent-test store decorator of M267 3g.0: it fails
-// write number failingWriteNumber (1-based, 0: none) with a store error and
+// auditedInstanceStore is the agent-test store decorator of M267 3g.0: it
+// injects one fault (a failed write, a lost compare, a failed state read) and
 // records every committed write of an instance key, so tests check the
 // placement rule on real store operations, not on source syntax.
 type auditedInstanceStore struct {
-	store.StateStore                            // StateStore serves every call that is not failed.
-	nodeID             string                   // nodeID is the agent's node, whose placement every write must compare.
-	failingWriteNumber int                      // failingWriteNumber is the write to fail (0: none).
-	mutex              sync.Mutex               // mutex guards the counters below (probes write concurrently).
-	writeCount         int                      // writeCount counts Put, Delete, PutWithLease and Transaction calls.
-	committedWrites    []committedInstanceWrite // committedWrites are the committed writes of instance keys.
+	store.StateStore                          // StateStore serves every call that is not failed.
+	nodeID           string                   // nodeID is the agent's node, whose placement every write must compare.
+	fault            injectedFault            // fault is the one fault to inject (number 0: none).
+	mutex            sync.Mutex               // mutex guards the counters below (probes write concurrently).
+	writeCount       int                      // writeCount counts Put, Delete, PutWithLease and Transaction calls.
+	stateReadCount   int                      // stateReadCount counts Gets of observed/instance/{id}/state.
+	committedWrites  []committedInstanceWrite // committedWrites are the committed writes of instance keys.
 }
 
-// newAuditedInstanceStore wraps innerStore for nodeID's agent; at the end of
-// the test it fails for every committed instance write that breaks the rule.
-func newAuditedInstanceStore(t *testing.T, innerStore store.StateStore, nodeID string, failingWriteNumber int) *auditedInstanceStore {
+// newAuditedInstanceStore wraps innerStore for nodeID's agent with fault
+// injected; at the end of the test it fails for every committed instance write
+// that breaks the rule.
+func newAuditedInstanceStore(t *testing.T, innerStore store.StateStore, nodeID string, fault injectedFault) *auditedInstanceStore {
 	t.Helper()
-	auditedStore := &auditedInstanceStore{StateStore: innerStore, nodeID: nodeID, failingWriteNumber: failingWriteNumber}
+	auditedStore := &auditedInstanceStore{StateStore: innerStore, nodeID: nodeID, fault: fault}
 	t.Cleanup(func() {
 		for _, violation := range auditedStore.placementRuleViolations() {
 			t.Errorf("audit (%s): %s", nodeID, violation)
@@ -102,7 +124,7 @@ func setupAuditedTestAgent(t *testing.T, nodeID string) (*store.MemoryStore, *ru
 	t.Helper()
 	memoryStore, simulatorRuntime := store.NewMemoryStore(), runtime.NewSimulatorRuntime()
 	t.Cleanup(func() { memoryStore.Close() })
-	return memoryStore, simulatorRuntime, New(nodeID, newAuditedInstanceStore(t, memoryStore, nodeID, 0), simulatorRuntime)
+	return memoryStore, simulatorRuntime, New(nodeID, newAuditedInstanceStore(t, memoryStore, nodeID, injectedFault{}), simulatorRuntime)
 }
 
 // startWrite counts a write and reports whether it is the one to fail.
@@ -110,7 +132,22 @@ func (auditedStore *auditedInstanceStore) startWrite() (int, bool) {
 	auditedStore.mutex.Lock()
 	defer auditedStore.mutex.Unlock()
 	auditedStore.writeCount++
-	return auditedStore.writeCount, auditedStore.writeCount == auditedStore.failingWriteNumber
+	return auditedStore.writeCount, auditedStore.fault.kind == faultWriteError && auditedStore.writeCount == auditedStore.fault.number
+}
+
+// Get fails the chosen read of an instance state (3h.1), else delegates.
+func (auditedStore *auditedInstanceStore) Get(ctx context.Context, key string) (*store.Fact, error) {
+	if rest, isInstanceKey := strings.CutPrefix(key, types.ScanObservedInstances); isInstanceKey && strings.Count(rest, "/") == 1 &&
+		strings.HasSuffix(rest, "/state") {
+		auditedStore.mutex.Lock()
+		auditedStore.stateReadCount++
+		mustFail := auditedStore.fault.kind == faultStateReadError && auditedStore.stateReadCount == auditedStore.fault.number
+		auditedStore.mutex.Unlock()
+		if mustFail {
+			return nil, errInjectedWriteFailure
+		}
+	}
+	return auditedStore.StateStore.Get(ctx, key)
 }
 
 // recordCommitted keeps the instance-key changes of a committed write.
@@ -176,6 +213,9 @@ func (auditedStore *auditedInstanceStore) Transaction(ctx context.Context, compa
 	if mustFail {
 		return false, errInjectedWriteFailure
 	}
+	if auditedStore.fault.kind == faultLostCompare && writeNumber == auditedStore.fault.number {
+		return false, nil // another writer changed a compared key first; nothing applied
+	}
 	swapped, transactionError := auditedStore.StateStore.Transaction(ctx, compares, onSuccess, onFailure)
 	switch {
 	case transactionError != nil:
@@ -193,6 +233,15 @@ func (auditedStore *auditedInstanceStore) writesCommitted() (int, []committedIns
 	auditedStore.mutex.Lock()
 	defer auditedStore.mutex.Unlock()
 	return auditedStore.writeCount, slices.Clone(auditedStore.committedWrites)
+}
+
+// faultCounts returns how many of each fault's targets a run without a fault
+// saw: writes for a failed write or a lost compare, state reads for a read error.
+func (auditedStore *auditedInstanceStore) faultCounts() map[sweepFaultKind]int {
+	auditedStore.mutex.Lock()
+	defer auditedStore.mutex.Unlock()
+	return map[sweepFaultKind]int{faultWriteError: auditedStore.writeCount, faultLostCompare: auditedStore.writeCount,
+		faultStateReadError: auditedStore.stateReadCount}
 }
 
 // placementRuleViolations returns one line per committed instance change whose
@@ -235,8 +284,8 @@ func instanceIDOfKey(key string) (string, bool) {
 }
 
 // TestInstanceWriteAuditDetectsUnguardedWrite is the audit's control: a
-// test-only unguarded Put and an unguarded transaction of instance keys are
-// reported; a guarded write and a D4 exception are not.
+// test-only unguarded Put, an unguarded transaction and a state delete under the
+// cleanup compare (3h R7-4) are reported; a guarded write and a cleanup are not.
 func TestInstanceWriteAuditDetectsUnguardedWrite(t *testing.T) {
 	ctx := context.Background()
 	memoryStore := store.NewMemoryStore()
@@ -253,10 +302,19 @@ func TestInstanceWriteAuditDetectsUnguardedWrite(t *testing.T) {
 	_, _ = auditedStore.Transaction(ctx, []store.Compare{{Key: types.KeyPlacementNodeInstance("node-1", "web-1"), Revision: placementFact.Revision}},
 		[]store.Op{{Type: store.OpPut, Key: types.KeyObservedInstanceImage("web-1"), Value: []byte("nginx")}}, nil)
 	_, _ = auditedStore.Put(ctx, types.KeyObservedNodeAddress("node-1"), []byte("127.0.0.1"))
+	instancePlacementFact, getError := memoryStore.Get(ctx, types.KeyPlacementInstance("web-1"))
+	if getError != nil {
+		t.Fatal(getError)
+	}
+	cleanupCompare := []store.Compare{{Key: types.KeyPlacementInstance("web-1"), Revision: instancePlacementFact.Revision}}
+	_, _ = memoryStore.Put(ctx, types.KeyObservedInstancePullStatus("web-1"), []byte("pulling"))
+	_, _ = auditedStore.Transaction(ctx, cleanupCompare, []store.Op{{Type: store.OpDelete, Key: types.KeyObservedInstancePullStatus("web-1")}}, nil)
+	_, _ = auditedStore.Transaction(ctx, cleanupCompare, []store.Op{{Type: store.OpDelete, Key: types.KeyObservedInstanceState("web-1")}}, nil)
 
 	violations := auditedStore.placementRuleViolations()
-	if len(violations) != 2 {
-		t.Fatalf("audit reported %d violations, want 2 (the unguarded Put and transaction): %v", len(violations), violations)
+	if len(violations) != 3 {
+		t.Fatalf("audit reported %d violations, want 3 (the unguarded Put and transaction, the state delete under the cleanup compare): %v",
+			len(violations), violations)
 	}
 }
 
@@ -320,15 +378,15 @@ func publishSweepScenarios() []publishSweepScenario {
 	return scenarios
 }
 
-// runPublishSweepCase runs scenario with write failingWriteNumber failed and
-// returns the store, the agent, the audited store and the facts before the path.
-func runPublishSweepCase(t *testing.T, scenario publishSweepScenario, failingWriteNumber int) (*store.MemoryStore, *Agent, *auditedInstanceStore, map[string]string) {
+// runPublishSweepCase runs scenario with fault injected and returns the
+// store, the agent, the audited store and the facts before the path.
+func runPublishSweepCase(t *testing.T, scenario publishSweepScenario, fault injectedFault) (*store.MemoryStore, *Agent, *auditedInstanceStore, map[string]string) {
 	t.Helper()
 	ctx := context.Background()
 	memoryStore := store.NewMemoryStore()
 	t.Cleanup(func() { memoryStore.Close() })
 	portRuntime := &manyHostPortsRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime(), portCount: scenario.portCount}
-	auditedStore := newAuditedInstanceStore(t, memoryStore, scenario.nodeID, failingWriteNumber)
+	auditedStore := newAuditedInstanceStore(t, memoryStore, scenario.nodeID, fault)
 	nodeAgent := New(scenario.nodeID, auditedStore, portRuntime)
 	nodeAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
 	setupInstanceInStore(ctx, memoryStore, "web", "web-1", scenario.nodeID, "127.0.0.1")
@@ -339,9 +397,10 @@ func runPublishSweepCase(t *testing.T, scenario publishSweepScenario, failingWri
 	return memoryStore, nodeAgent, auditedStore, factsBefore
 }
 
-// checkPublishRule checks the rule after one sweep case: running with node =
-// this node has every host port of the runtime; a state publish that did not
-// commit left the instance facts as they were (and kept the start facts).
+// checkPublishRule checks the rule after one sweep case: running on node N
+// means every host port stored is N's (this node: the runtime's mapping,
+// another node: unchanged, 3h.1); a state publish that did not commit left the
+// instance facts as they were (and kept the start facts).
 func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *store.MemoryStore, nodeAgent *Agent,
 	auditedStore *auditedInstanceStore, factsBefore map[string]string) {
 	t.Helper()
@@ -360,6 +419,9 @@ func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *
 			t.Errorf("running on %s with %d of %d host ports wrong, first %s", scenario.nodeID, len(wrongHostPorts), scenario.portCount, wrongHostPorts[0])
 		}
 	}
+	if publishedNode := factsAfter[types.KeyObservedInstanceNode("web-1")]; factsAfter[stateKey] == string(types.InstanceRunning) && publishedNode != scenario.nodeID {
+		checkHostPortsUnchanged(t, publishedNode, factsBefore, factsAfter)
+	}
 	_, committedWrites := auditedStore.writesCommitted()
 	statePublished := slices.ContainsFunc(committedWrites, func(committedWrite committedInstanceWrite) bool {
 		return slices.ContainsFunc(committedWrite.changes, func(change store.Op) bool { return change.Key == stateKey })
@@ -369,7 +431,7 @@ func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *
 	}
 	var changedFacts []string
 	for _, key := range slices.Sorted(maps.Keys(factsAfter)) {
-		if factsAfter[key] != factsBefore[key] && !isOverflowHostPortFact(scenario, key, factsAfter[key]) {
+		if factsAfter[key] != factsBefore[key] {
 			changedFacts = append(changedFacts, fmt.Sprintf("%s %q -> %q", key, factsBefore[key], factsAfter[key]))
 		}
 	}
@@ -386,38 +448,44 @@ func checkPublishRule(t *testing.T, scenario publishSweepScenario, memoryStore *
 	}
 }
 
-// isOverflowHostPortFact reports whether key = value is a host port of the
-// runtime's mapping in a scenario with more ports than fit in the state
-// publish: 3g.1 writes those first, in their own guarded chunks, so they may
-// commit without the state (the design's recorded residual).
-func isOverflowHostPortFact(scenario publishSweepScenario, key string, value string) bool {
-	portText, isHostPort := strings.CutPrefix(key, types.KeyObservedInstanceHostPort("web-1")+"/")
-	if !isHostPort || scenario.portCount <= maxInstanceFactChangesPerTransaction {
-		return false
+// checkHostPortsUnchanged fails when a host port changed while the instance
+// stays running on publishedNode, another node: those ports must stay its own.
+func checkHostPortsUnchanged(t *testing.T, publishedNode string, factsBefore map[string]string, factsAfter map[string]string) {
+	t.Helper()
+	hostPortPrefix := types.KeyObservedInstanceHostPort("web-1") + "/"
+	var changedHostPorts []string
+	for _, key := range slices.Sorted(maps.Keys(factsAfter)) {
+		if strings.HasPrefix(key, hostPortPrefix) && factsAfter[key] != factsBefore[key] {
+			changedHostPorts = append(changedHostPorts, fmt.Sprintf("%s %q -> %q", key, factsBefore[key], factsAfter[key]))
+		}
 	}
-	containerPort, parseError := strconv.Atoi(portText)
-	return parseError == nil && value == strconv.Itoa(containerPort-9000+30000)
+	if len(changedHostPorts) > 0 {
+		t.Errorf("running on %s, yet %d of its host ports changed, first %s", publishedNode, len(changedHostPorts), changedHostPorts[0])
+	}
 }
 
-// TestPublishRuleHoldsWhenAnyWriteFails: M267 3g.0. Each publish path runs
-// once per store write, failing that write; after each run the state, node
-// and host ports agree, a failed publish changes nothing and the audit
-// (newAuditedInstanceStore) finds every committed write guarded.
+// TestPublishRuleHoldsWhenAnyWriteFails: M267 3g.0, 3h.1. Each publish path
+// runs once per store write (failed, then with its compare lost) and once per
+// state read (failed); after each run the state, node and host ports agree, a
+// failed publish changes nothing and the audit finds every write guarded.
 func TestPublishRuleHoldsWhenAnyWriteFails(t *testing.T) {
 	for _, scenario := range publishSweepScenarios() {
 		scenarioName := fmt.Sprintf("%s, %d host ports", scenario.name, scenario.portCount)
 		t.Run(scenarioName, func(t *testing.T) {
-			memoryStore, nodeAgent, auditedStore, factsBefore := runPublishSweepCase(t, scenario, 0)
-			writeCount, _ := auditedStore.writesCommitted()
+			memoryStore, nodeAgent, auditedStore, factsBefore := runPublishSweepCase(t, scenario, injectedFault{})
+			faultCounts := auditedStore.faultCounts()
 			if gotState := readFactValue(context.Background(), memoryStore, types.KeyObservedInstanceState("web-1")); gotState != string(types.InstanceRunning) {
 				t.Fatalf("without a failure the path published %q, want running; the sweep proves nothing", gotState)
 			}
 			checkPublishRule(t, scenario, memoryStore, nodeAgent, auditedStore, factsBefore)
-			for failingWriteNumber := 1; failingWriteNumber <= writeCount; failingWriteNumber++ {
-				t.Run("fail write "+strconv.Itoa(failingWriteNumber), func(t *testing.T) {
-					memoryStore, nodeAgent, auditedStore, factsBefore := runPublishSweepCase(t, scenario, failingWriteNumber)
-					checkPublishRule(t, scenario, memoryStore, nodeAgent, auditedStore, factsBefore)
-				})
+			for _, faultKind := range []sweepFaultKind{faultWriteError, faultLostCompare, faultStateReadError} {
+				for faultNumber := 1; faultNumber <= faultCounts[faultKind]; faultNumber++ {
+					fault := injectedFault{kind: faultKind, number: faultNumber}
+					t.Run(string(faultKind)+" "+strconv.Itoa(faultNumber), func(t *testing.T) {
+						memoryStore, nodeAgent, auditedStore, factsBefore := runPublishSweepCase(t, scenario, fault)
+						checkPublishRule(t, scenario, memoryStore, nodeAgent, auditedStore, factsBefore)
+					})
+				}
 			}
 		})
 	}

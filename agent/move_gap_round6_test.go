@@ -22,7 +22,7 @@ func TestInstanceMovedDuringStopIsMarkedPending(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	t.Cleanup(func() { memoryStore.Close() })
 	movingRuntime := &placementMovingRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime(), factStore: memoryStore}
-	nodeAgent := New("node-1", newAuditedInstanceStore(t, memoryStore, "node-1", 0), movingRuntime)
+	nodeAgent := New("node-1", newAuditedInstanceStore(t, memoryStore, "node-1", injectedFault{}), movingRuntime)
 	setupInstanceInStore(ctx, memoryStore, "web", "web-1", "node-1", "127.0.0.1")
 	_, _ = memoryStore.Put(ctx, types.KeyObservedInstanceState("web-1"), []byte(types.InstanceRunning))
 	_, _ = memoryStore.Put(ctx, types.KeyObservedInstanceNode("web-1"), []byte("node-1"))
@@ -52,7 +52,7 @@ func TestUncommittedStartFactsDroppedWhenInstanceLeaves(t *testing.T) {
 			memoryStore, simulatorRuntime := store.NewMemoryStore(), runtime.NewSimulatorRuntime()
 			t.Cleanup(func() { memoryStore.Close() })
 			failingStore := &failingStartPublishStore{StateStore: memoryStore}
-			nodeAgent := New("node-1", newAuditedInstanceStore(t, failingStore, "node-1", 0), simulatorRuntime)
+			nodeAgent := New("node-1", newAuditedInstanceStore(t, failingStore, "node-1", injectedFault{}), simulatorRuntime)
 			setupInstanceInStore(ctx, memoryStore, "web", "web-1", "node-1", "127.0.0.1")
 			instanceInfo := scannedInstanceInfo(t, ctx, nodeAgent, "web-1")
 			nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, "nginx:1.27", "config-hash",

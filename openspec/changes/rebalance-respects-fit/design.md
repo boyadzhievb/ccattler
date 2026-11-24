@@ -102,8 +102,9 @@ target, started and ready before the old one stops, as a rollout does) are a lat
   first. Exceptions: the `stopped` write (on the `placement/instance/{id}` revision the move check read, round 5 P2),
   the source's `pending` after a move (its own node and state guard), and cleanup of an instance that left the
   desired set (only while it is not placed on another node; instance GC deletes `network/allocation/{id}` with the
-  tree, B3). Host ports go in the state publish; only those beyond the transaction limit are written first, in
-  guarded chunks, and the publish is skipped unless all of them committed (round 6 R6-1); start facts a store error
+  tree, B3). Host ports go in the state publish; when some do not fit under the transaction limit, the agent
+  publishes `starting` (node = self, guarded) first, then writes them in guarded chunks, then publishes; a failure in
+  either step skips the rest (round 6 R6-1, round 7 R7-1); start facts a store error
   kept out are carried by the next running publish (B2) and dropped once the instance is no longer placed on this node
   (R6-4). A `stopped` write that fails because the instance moved during the stop is replaced by the source's
   `pending` (R6-3). A closed-world scan of `agent/*.go` (`TestAgentInstanceWritesAreGuarded`, T1, R6-2) checks every
@@ -138,6 +139,15 @@ move during the stop, R6-4 start facts dropped when the instance leaves). Residu
 session specified it: with more host ports than fit in one transaction, overflow ports can commit and the publish
 then fail, so a move target's overflow ports sit next to the source's `running` and `node` until the next publish. No
 requirement or spec scenario changed.
+
+Decision recorded 2026-11-24 (user, round 7 R7-1; implemented in rework 3h): the residual of the 3g note is not
+accepted. The user's words: "make instance pending on 90 ports instances". Implemented as `starting` rather than
+`pending`: both are non-serving (endpoints are built only for `running`), but scale-down removes `pending` instances
+first (`controllers/instance.go:544`), so marking a starting target `pending` would make it the first victim of a
+scale-down. With an overflow the agent publishes `starting` with node = self through
+`publishInstanceStateUnlessStopped` (state-revision compare, placement guard, stopped check), then writes the overflow,
+then does the final publish. The residual above no longer exists; the sweep's exemption (`isOverflowHostPortFact`)
+is replaced by the invariant "`running` on node N ⇒ N's host ports". No requirement or spec scenario changed.
 
 ## Failure cases
 

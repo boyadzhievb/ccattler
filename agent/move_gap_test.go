@@ -45,9 +45,9 @@ func newMoveGapCluster(t *testing.T, wrapAgentStore func(store.StateStore) store
 		agentStore = wrapAgentStore(memoryStore)
 	}
 	cluster := &moveGapCluster{factStore: memoryStore, sourceRuntime: runtime.NewSimulatorRuntime()}
-	cluster.sourceAgent = New("node-1", newAuditedInstanceStore(t, agentStore, "node-1", 0), cluster.sourceRuntime)
+	cluster.sourceAgent = New("node-1", newAuditedInstanceStore(t, agentStore, "node-1", injectedFault{}), cluster.sourceRuntime)
 	cluster.sourceAgent.SetNetworkProvider(network.NewSimulatorNetworkProvider())
-	cluster.targetAgent = New("node-2", newAuditedInstanceStore(t, agentStore, "node-2", 0), runtime.NewSimulatorRuntime())
+	cluster.targetAgent = New("node-2", newAuditedInstanceStore(t, agentStore, "node-2", injectedFault{}), runtime.NewSimulatorRuntime())
 	cluster.targetAgent.SetNetworkProvider(network.NewSimulatorNetworkProviderWithCIDR(10, 101)) // another range: the agents' IPs differ
 
 	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
@@ -297,7 +297,7 @@ func TestTargetStartupFailureAfterMoveIsNotRunning(t *testing.T) {
 			types.WritePlacement(ctx, memoryStore, types.Placement{InstanceID: "web-1", NodeID: "node-2"})
 			targetRuntime := runtime.NewSimulatorRuntime()
 			testCase.setUp(targetRuntime)
-			targetAgent := New("node-2", newAuditedInstanceStore(t, memoryStore, "node-2", 0), targetRuntime)
+			targetAgent := New("node-2", newAuditedInstanceStore(t, memoryStore, "node-2", injectedFault{}), targetRuntime)
 			targetAgent.SetInterval(50 * time.Millisecond)
 			go targetAgent.Run(ctx)
 
@@ -542,7 +542,7 @@ func TestSourceWritesNothingAfterMove(t *testing.T) {
 			defer factStore.Close()
 			// Host ports, so the start and running paths have ports to write (3g.5 R6-5).
 			sourceRuntime := &manyHostPortsRuntime{SimulatorRuntime: runtime.NewSimulatorRuntime(), portCount: 2}
-			sourceAgent := New("node-1", newAuditedInstanceStore(t, factStore, "node-1", 0), sourceRuntime)
+			sourceAgent := New("node-1", newAuditedInstanceStore(t, factStore, "node-1", injectedFault{}), sourceRuntime)
 			ctx := context.Background()
 			setupInstanceInStore(ctx, factStore, "web", "web-1", "node-1", "127.0.0.1")
 			sourceScannedInfo := scannedInstanceInfo(t, ctx, sourceAgent, "web-1")

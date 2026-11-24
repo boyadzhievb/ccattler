@@ -209,8 +209,8 @@ func declaredNames(node ast.Node) []*ast.Ident {
 // types import (no dot import) and shadowing of its name (3g R6-2).
 func findUnguardedInstanceWrites(fileSet *token.FileSet, file *ast.File) []string {
 	typesName := typesPackageName(file)
-	position := func(pos token.Pos) string {
-		location := fileSet.Position(pos)
+	position := func(tokenPosition token.Pos) string {
+		location := fileSet.Position(tokenPosition)
 		return filepath.Base(location.Filename) + ":" + strconv.Itoa(location.Line)
 	}
 	var violations []string
@@ -228,7 +228,7 @@ func findUnguardedInstanceWrites(fileSet *token.FileSet, file *ast.File) []strin
 		if isFunction {
 			enclosingFunction = functionKey(function)
 		}
-		where := func(pos token.Pos) string { return position(pos) + " " + enclosingFunction + ":" }
+		where := func(tokenPosition token.Pos) string { return position(tokenPosition) + " " + enclosingFunction + ":" }
 		declarationViolations, transactionCount := scanStoreWrites(declaration, enclosingFunction, typesName, where)
 		violations = append(violations, declarationViolations...)
 		if allowedWriter, allowed := transactionWriters[enclosingFunction]; isFunction && allowed && transactionCount != allowedWriter.transactionCount {

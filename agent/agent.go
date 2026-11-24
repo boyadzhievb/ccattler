@@ -1036,15 +1036,20 @@ func (nodeAgent *Agent) hostPortChangesIfSupported(instanceID string) []store.Op
 // publishInstanceStateUnlessStopped adds to a state publish.
 const publishStateAndNodeChangeCount = 2
 
-// writeHostPortOverflow returns the host-port changes (no-ops dropped) that fit
-// in the state publish beside its publishFactCount other changes, after writing
-// the rest first in guarded chunks; false when that overflow did not all
-// commit, and the caller skips the publish (M267 3g R6-1).
-func (nodeAgent *Agent) writeHostPortOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op, publishFactCount int) ([]store.Op, bool) {
+// inlineHostPortsAfterWritingOverflow returns the host-port changes that fit in
+// the state publish beside its publishFactCount changes. The rest it writes
+// first, after publishing starting with node = this node (no running next to
+// these ports, 3h R7-1); false when either failed: the caller skips the publish.
+func (nodeAgent *Agent) inlineHostPortsAfterWritingOverflow(ctx context.Context, instanceInfo placedInstanceInfo, hostPortChanges []store.Op,
+	publishFactCount int) ([]store.Op, bool) {
 	effectiveHostPortChanges := dropNoOpChanges(ctx, nodeAgent.store, hostPortChanges)
 	inlineCount := min(len(effectiveHostPortChanges), max(0, maxInstanceFactChangesPerTransaction-publishStateAndNodeChangeCount-publishFactCount))
 	overflowChanges := effectiveHostPortChanges[inlineCount:]
-	if len(overflowChanges) > 0 && !nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, overflowChanges...) {
+	if len(overflowChanges) == 0 {
+		return effectiveHostPortChanges, true
+	}
+	if !nodeAgent.publishInstanceStateUnlessStopped(ctx, instanceInfo, types.InstanceStarting, nil) ||
+		!nodeAgent.instanceFacts.writeGuarded(ctx, instanceInfo, overflowChanges...) {
 		logging.Default().Info("host ports not all written, not publishing the instance state", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
 		return nil, false
 	}
@@ -1125,7 +1130,12 @@ func (nodeAgent *Agent) publishRemovedInstanceState(ctx context.Context, instanc
 	case !swapped:
 		logging.Default().Info("placement changed during the removal, not publishing stopped", "agent", nodeAgent.nodeID, "instance", instanceID)
 		// Moved during pre_stop or grace: the removed container must not stay running and ready (3g R6-3).
-		if movedDuringStop, _, readError := nodeAgent.isInstanceMovedToAnotherNode(ctx, instanceID); readError == nil && movedDuringStop {
+		movedDuringStop, _, readError := nodeAgent.isInstanceMovedToAnotherNode(ctx, instanceID)
+		switch {
+		case readError != nil:
+			logging.Default().Warn("cannot read where the removed instance is placed, leaving its state", "agent", nodeAgent.nodeID,
+				"instance", instanceID, "error", readError.Error())
+		case movedDuringStop:
 			nodeAgent.markMovedInstancePending(ctx, instanceID)
 		}
 	}
@@ -2218,7 +2228,7 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 		instanceFacts = append(instanceFacts, store.Op{Type: store.OpPut, Key: types.KeyNetworkAllocation(instanceID), Value: []byte(publishedContainerIP)})
 	}
 	instanceFacts = dropNoOpChanges(ctx, nodeAgent.store, append(instanceFacts, sameCycleFacts...))
-	inlineHostPortChanges, hostPortsWritten := nodeAgent.writeHostPortOverflow(ctx, instanceInfo, hostPortChanges, len(instanceFacts))
+	inlineHostPortChanges, hostPortsWritten := nodeAgent.inlineHostPortsAfterWritingOverflow(ctx, instanceInfo, hostPortChanges, len(instanceFacts))
 	if !hostPortsWritten {
 		return false
 	}

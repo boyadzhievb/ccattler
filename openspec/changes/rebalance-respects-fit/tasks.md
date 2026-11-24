@@ -507,6 +507,61 @@ not on source syntax (3g.0).
   ok, 2 without tests; `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (30.4 s, 6.6 s,
   10.2 s, 1.4 s); `openspec validate rebalance-respects-fit` valid. `executeReconciliationCycle` 112 lines (one
   call added; over 80 since before this change, M259).
+
+## 3h. Review round 7 (2026-11-24, on 5092aec..6dbc3a4; code-reviewer Opus high + Codex: approve, one decision)
+
+R6-1 to R6-5 are fixed. Every new test is red on 5092aec and green on HEAD, and stable at `-count=30 -race`. The
+main session reproduced R7-1 with the reviewer's probes (`TestReview7ResidualThreshold`,
+`TestReview7ResidualViaStateReadError`, worktree `scratchpad/review7-probes-6dbc3a4`): with the publish failing, 92
+ports store 0 target ports next to node-1, 98 store 6, and 130 store 38.
+
+| # | Finding | Resolution |
+|---|---|---|
+| R7-1 | Overflow residual: with 93 or more ports (100 − 2 − the publish's other changes), the overflow commits and then the publish fails, or the state read fails, so the target's overflow ports sit next to the source's `running`/node. The sweep exempts exactly this case (`isOverflowHostPortFact`) | **fix** 3h.1. User decision 2026-11-24: "make instance pending on 90 ports instances". Implemented as `starting`, not `pending`: both are non-serving, but scale-down removes `pending` instances first (`controllers/instance.go:544`) |
+| R7-2 | Only some agent tests use the write audit (9 of 104 constructions) | **follow-up**: wrapping the shared test constructors can cascade; recorded for M269/M270, not this change |
+| R7-3 | Sweep limits: one fault per run; no lost compare, read error or commit-then-error; stop/crash-loop/pull paths not swept | **partly fixed** 3h.1 (read-error and lost-compare cases for the overflow path); the rest recorded as known limits in Flow 35 |
+| R7-4 | The audit's cleanup exception allows any per-instance delete under the `placement/instance/{id}` compare | **fix** 3h.2 (only `pull-status`, `network/allocation/{id}`, `secret-wait`) |
+| R7-5 | The R6-3 re-check drops a read error silently (`agent/agent.go:1128`) | **fix** 3h.2 (Warn log) |
+| R7-6 | The scan misses a double import of `types` | **rejected**: gocritic `dupImport` (enabled) rejects it |
+| — | Suggestions: `writeHostPortOverflow` name, double no-op filter, struct key for `transactionWriters`, `pos` abbreviation | **fix** the name and `pos` in 3h.2; the rest rejected (one extra Get only on overflow; the string key is never split) |
+| Codex | "Cleanup exception accepts another instance's compare" | **rejected**: the reviewer's probe `TestReview7AuditCrossInstanceCleanup` reports it as a violation |
+
+- [x] 3h.1 R7-1: when the overflow is not empty after the no-op filter, first publish `starting` with node = self
+  through the guarded publish (state-revision compare, placement guard, stopped check), then write the overflow
+  chunks, then do the final publish. Replace `isOverflowHostPortFact` with the invariant "`running` on node N ⇒
+  every host port stored equals N's mapping, or is unchanged when N is not this node". Extend the sweep with a
+  failed state read and a lost compare on the overflow path. Red first on 6dbc3a4 (130 ports, publish fails ⇒
+  source's `running` with target ports), then green.
+  Result: `inlineHostPortsAfterWritingOverflow` (was `writeHostPortOverflow`): with an overflow after the no-op
+  filter, `publishInstanceStateUnlessStopped(starting)` (node = self, state-revision compare, placement guard,
+  stopped check), then the guarded overflow chunks, then the final publish; either failing → false, no publish.
+  `isOverflowHostPortFact` removed; `checkPublishRule` asserts running on this node ⇒ the runtime's mapping and
+  running on another node ⇒ host ports unchanged (`checkHostPortsUnchanged`). The decorator gained `injectedFault`
+  (failed write, lost compare on transaction N, failed Nth state read); the sweep runs every kind for every
+  number. Red on 6dbc3a4 (worktree `scratchpad/rework3h-red`): 9 cases fail, all 130-port, e.g. move target `fail
+  write 2`, `lose compare of write 2`, `fail state read 2`: `running on node-1, yet 39 of its host ports changed,
+  first …/hostport/9091 "" -> "30091"`; start/running path: `state publish did not commit, yet 38 facts changed`.
+  Green: `TestPublishRuleHoldsWhenAnyWriteFails` 58 subtests pass. Probes `TestReview7Residual*` now: publish
+  failing ⇒ 0 target ports at 2..130 ports; state read failing after the overflow ⇒ `starting` on node-2 (not
+  serving) with 38 ports.
+- [x] 3h.2 R7-4, R7-5 and naming: narrow the cleanup exception (a control case: a delete of `state` under the
+  cleanup compare fails the audit); Warn log on the re-check read error; rename `writeHostPortOverflow` so the
+  name says it returns the inline ports; `pos` → `tokenPosition`.
+  Result: cleanup exception narrowed to deletes of `pull-status`, `network/allocation/{id}`, `secret-wait`; control
+  `TestInstanceWriteAuditDetectsUnguardedWrite` adds an allowed pull-status cleanup and a `state` delete under the
+  cleanup compare, want 3 violations. Red with the 6dbc3a4 exception (red worktree): `audit reported 2 violations,
+  want 3`; green after. `publishRemovedInstanceState` logs Warn "cannot read where the removed instance is placed,
+  leaving its state" on the re-check read error. Renamed to `inlineHostPortsAfterWritingOverflow`; `pos` →
+  `tokenPosition` in instance_write_guard_test.go.
+- [x] 3h.3 Docs: Flow 35 and D4 (dated note: the user decision and `starting`), the known sweep limits (R7-3),
+  graphs; checks as in 3.1.
+  Result: Flow 35 rule bullet (starting before the overflow, the invariant, sweep fault kinds, R7-3 known limits:
+  one fault per run, no commit-then-error, stop/crash-loop/pull not swept, audit in some tests only), D4 bullet and
+  dated note (2026-11-24: user decision, `starting` because scale-down removes `pending` first); CALL_GRAPH and
+  INSTANCE_LIFECYCLE_GRAPH (rename, starting step, Warn, line numbers), OBSERVABILITY_GRAPH line numbers. Checks
+  (2026-11-24): `gofmt -l .` empty; `golangci-lint run ./...` 0 issues; `go test -count=1 ./...` 20 ok, 2 without
+  tests; `go test -count=1 -race ./agent/ ./controllers/ ./api/ ./scheduler/` ok (29.9 s, 6.7 s, 10.9 s, 1.4 s);
+  `openspec validate rebalance-respects-fit` valid.
 - [ ] 3.4 Closing: two consecutive full Deploy Testbed runs (job summary says `full run`), both passing, with the
   whoami-churn check at zero unexplained instance IDs. Record both run IDs and the whoami ID counts.
 - [ ] 3.5 Update the milestones.md M267 row to the final scope, link this change from Phase 267, archive (syncing
