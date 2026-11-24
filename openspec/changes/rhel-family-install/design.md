@@ -38,6 +38,15 @@ key is read or written differently, so there are no writers to fence and no chan
 
 ## Decisions
 
+**Order of the proof, 2026-11-24 (user decision, option c).**
+- **The problem:** `install.sh` always downloads from a GitHub release (`install.sh:94`), so the guide can be
+  followed literally only with a release that contains this change.
+- **The order:** the code review and the full Deploy Testbed run first; then the release (`scripts/release.sh M279`);
+  then the Rocky 9.8 and Debian runs of the guide, against the published release (tasks 3.2 and 3.3); the archive
+  last.
+- **If those runs find a defect:** it becomes a follow-up fix (bugs first). It is never left as a doc workaround.
+- **Rejected:** a public pre-release tag, and a download-URL override in `install.sh` (out of scope).
+
 **Correction during apply, 2026-11-24 (user decision, option a): D1 and D2 apply to the root `install.sh`, not
 `scripts/install.sh`.**
 - **Why:** the design named the wrong script (a main-session error found by the implementer).

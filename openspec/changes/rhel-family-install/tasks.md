@@ -46,8 +46,8 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 - [x] 3.1 gofmt, golangci-lint, shellcheck on `install.sh`, `go test -count=1 ./...`.
   Result: gofmt clean; golangci-lint ./... 0 issues; go vet clean; shellcheck -s sh install.sh clean; go test -count=1 ./... exit 0 (no FAIL); go test -race cmd/cca runtime ok.
 - [ ] 3.2 Rocky 9.8 VM (192.168.100.108), reverted to the pre-test snapshot: follow `website/installation.md`
-  literally with the new install.sh and `cca` (a release candidate built from this change, copied to the host). No
-  workaround. Single-node cluster up; the Getting Started service running; VIP answers 200; `ausearch -m AVC` empty;
+  literally with the published M279 release (order per design.md, user decision 2026-11-24 option c: after 3.4,
+  3.5 and the release; a defect found here becomes a follow-up fix). No workaround. Single-node cluster up; the Getting Started service running; VIP answers 200; `ausearch -m AVC` empty;
   journal free of `203/EXEC`. Record the commands and output (check `install-host:rhel-family`).
 - [ ] 3.3 Debian docs host (192.168.100.103): the same guide's Debian path on a fresh install; the cluster up and the
   service running. Record it.
@@ -57,4 +57,5 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 
 ## Workflow follow-up
 
-- Archive (sync `binary-install` and `host-setup`) and release with `scripts/release.sh M279 <version>`.
+- Order (design.md, option c): 3.4 and 3.5, then `scripts/release.sh M279 <version>`, the user pushes the tags, then
+  3.2 and 3.3 on the published release, then the archive (sync `binary-install` and `host-setup`).
