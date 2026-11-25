@@ -206,6 +206,13 @@ Checks after the rework: gofmt clean; `go vet ./...` and with `-tags etcd_integr
 controllers and cmd/cca exit 0; `etcd_integration` (ETCD_BIN v3.5.36, store tests against a plain etcd on
 127.0.0.1:2379) exit 0, 23 PASS (`rw-etcd-integration.txt`).
 
+**Stop-time check (Codex, 2026-11-25): "the etcd firewall reload is not idempotent". Rejected after a run.**
+- **What the file does:** etcd-peer-firewall.nft.j2 uses the nftables atomic-replace idiom (`table …` / `delete table
+  …` / `table … {}`), applied by `nft -f` in one transaction.
+- **The run:** the rendered file (three members) loaded three times in a row with nftables 1.1 (`unshare -rn`, a
+  throwaway namespace), then `nft list ruleset`.
+- **The result:** exactly one table with one 2380 rule (scratchpad `peer-fw-idempotency.txt`).
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:
