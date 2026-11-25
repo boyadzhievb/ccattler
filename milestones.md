@@ -554,12 +554,12 @@ OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (c
 
 ### Phase 280 — Every Cluster-CA Certificate Is an etcd Root Client (M280, security bug)
 
-Found in the M279 security audit (2026-11-24), verified in the code. Priority (user, 2026-11-24): before M278.
+Found in the M279 security audit (2026-11-24), verified in the code. Priority (user, 2026-11-24): before M278. Design decision (user, 2026-11-25): option A, separate CAs per purpose as Kubernetes does (gate/serving CA never trusted for client auth, etcd CA for etcd clients only, cluster CA for node and server identities); also covers the mTLS CommonName mapping found 2026-11-25 (security/authn_mtls.go maps any cluster-CA client cert to node:<CN>, and the server principal node:<server CN> is cluster-admin).
 - **What happens:** etcd trusts the cluster CA (`ETCD_TRUSTED_CA_FILE=/etc/ccattler/pki/ca.pem`) with client-certificate auth and no etcd RBAC, so any leaf certificate the CA issues with the ClientAuth usage is a full-rights etcd client.
 - **The gate-certificate path:** `RouteTLSController` asks for gate certificates with `CommonName` set to the route's hostname (`controllers/route_tls.go:162`), and `CertificateAuthority.IssueCertificate` gives every such certificate ServerAuth **and** ClientAuth (`security/ca.go:211`). The private keys are delivered to the gate-proxy nodes, so whoever holds a gate key can read and write the whole fact store, secrets included, when they can reach 2379/tcp.
 - **To investigate first:** whether anything else, such as the API server or agent endpoints, accepts a cluster-CA client certificate by its CommonName. A route hostname is chosen by a `workload.create` user; M171 closed the same kind of hole for join tokens.
 
-Wanted (to be designed): gate and other serving certificates without ClientAuth; etcd clients limited to a dedicated client CA or to known identities (etcd RBAC or a separate CA, compare Kubernetes, whose etcd trusts only its own etcd CA); a test that a gate certificate is refused by etcd and by the API. M279 limits who can reach 2379/tcp; that narrows the exposure but does not fix this. To be proposed as an OpenSpec change.
+OpenSpec change: [`separate-cluster-cas`](openspec/changes/separate-cluster-cas/) (proposal; checklist in its `tasks.md`). Earlier wanted (to be designed): gate and other serving certificates without ClientAuth; etcd clients limited to a dedicated client CA or to known identities (etcd RBAC or a separate CA, compare Kubernetes, whose etcd trusts only its own etcd CA); a test that a gate certificate is refused by etcd and by the API. M279 limits who can reach 2379/tcp; that narrows the exposure but does not fix this. To be proposed as an OpenSpec change.
 
 ### Phase 279 — RHEL-Family Install Works (M279, bug)
 
