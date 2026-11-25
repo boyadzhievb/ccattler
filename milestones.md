@@ -552,6 +552,74 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 283 — API Tokens Survive Restarts and Work on Every Replica (M283, security bug)
+
+Found during the M280 rework (CR-H1), 2026-11-25; confirmed in the code by the main session and by the user's review
+(design approved by the user the same day).
+- **The bug:** `cca server` creates a new ECDSA signing key in memory at every start (`NewWorkloadTokenIssuer`,
+  security/workload_token.go:31, called at cmd/cca/command_server.go:658). User JWTs share that key
+  (security/user_token.go:37-43), and the internal JWT authenticator verifies only against it. Nothing persists or
+  shares it; `NewUserTokenIssuerWithKey` has no production caller.
+- **Effects:**
+  - every `cca user token` token, including the guide's step 3, dies at any server restart;
+  - in HA, a token works only on the replica that minted it, so the same token gets 200 or 401 depending on the
+    replica;
+  - `/oidc/jwks` changes at each restart and differs per replica.
+- **Not affected:** the local admin token and external OIDC tokens. The workload federation impact is limited:
+  `CredentialBrokerController` has no production caller (dead code, to resolve here or record).
+- **Introduced in:** 268e627 (M26, an in-memory key for workload identity) and 3dd58f8 (user tokens on that key).
+- **Also found:** no maximum token TTL (`MintUserToken` only defaults to 8h).
+
+**Approved design (user review, 2026-11-25):**
+1. **The signing key lives in the existing keyring.**
+   - It is generated only when the signing-key state is truly uninitialized.
+   - It is sealed with `KeyringEnvelopeCodec`, bound to a stable store key, and committed with a create-only
+     transaction (revision 0).
+   - A replica that loses the race loads the winner's key.
+   - Every replica loads the same key before it issues or accepts internal JWTs.
+2. **Fail closed.** A missing, corrupt or unreadable key on an established cluster refuses startup and never
+   regenerates. An initialization marker, committed atomically with the first key, tells first start apart from
+   loss. A wrong root key refuses to serve.
+3. **Rotation by `kid`.**
+   - One active private key signs.
+   - Verification selects the public key by `kid` from a shared key set.
+   - JWKS publishes every key that may still have valid tokens.
+   - A retired key is removed only after the maximum token TTL plus clock skew since its last issuance.
+   - A maximum token TTL is defined and enforced.
+   - The internal authenticator gets key selection, not one public key.
+4. **M216 user revocation (record-revision check) stays intact.**
+5. **One-time invalidation:** tokens from the old ephemeral keys cannot be preserved. The changelog says so.
+
+**Refinements from the second review (user, 2026-11-25):**
+- **The keyring primitives are confirmed in the code:** `SealEnvelopeForKey` and `OpenEnvelopeForKey` bind the
+  envelope to the store key (security/envelope_codec.go:111-125), and `ErrKeyringRootCheckFailed` stops a replica
+  with a different root key (security/keyring.go:81).
+- **The private key never leaves the control plane:** not to agents, secret APIs, status, logs or audit records.
+  Add a test.
+- **Rotation is coordinated through the store,** so no replica picks an active key on its own. A new active key
+  must be loaded by every verifier before it signs.
+- **Key retention covers the maximum token TTL, clock skew and external JWKS caching.** Federation failures can be
+  delayed until a verifier's cache refreshes. Retention test: an old public key is never removed while tokens signed
+  by it can still be valid.
+- **Scope of rotation here:** only the multi-key verification contract (selection by `kid`, retention) and its
+  tests. An operator-facing rotation workflow is a later milestone.
+- **Before claiming a federation impact,** verify the active workload-token minting path. The credential broker has
+  no production caller.
+
+**Acceptance tests:**
+- concurrent first start converges on one key;
+- a token survives a restart;
+- an A-issued token is accepted by B, and every replica publishes the same JWKS;
+- rotation: new tokens use the new key, and old ones stay valid until expiry;
+- a missing or corrupt key refuses startup;
+- a wrong root key refuses to serve;
+- user deletion and user recreation still reject old tokens.
+
+**Testbed:** the deploy run creates an `e2e-admin` user and uses its `CCA_TOKEN` across server restarts and
+replicas: the guide's step 3, replayed.
+
+To be proposed as an OpenSpec change.
+
 ### Phase 281 — The Testbed Load Balancer Forwards to Gates (M281, testbed)
 
 Decided with the user on 2026-11-25, during the M280 review.
@@ -1563,6 +1631,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M266 — Agents Rewrite Unchanged Instance State Every Second | 266 | Bug fix (found in the M262 testbed check, 2026-11-23): every agent rewrote each running instance's unchanged state once per second, an etcd write per instance per second that woke every controller watching instances. The agent now writes only a changed state, and the test store behaves like etcd for unchanged writes in transactions, so such loops fail unit tests. |
 | M267 — Rebalancing Moves Instances Onto Nodes They Don't Fit | 267 | Bug fix (found in a full deploy run, 2026-11-23): the scheduler's rebalancing chose a target node by instance count alone, so it moved instances onto nodes without room for their CPU or memory; placement then put the replacement back, in an endless loop. A rebalance move now needs the same fit as a placement, a moved instance is never left looking running on its old node, and every agent write of an instance's facts is guarded by its placement and proven by a fault-injection test that fails every write in turn. Also in this release: M275, `types/keys.go` split into one file per subject (no behaviour change). |
 | M280 — Every Cluster-CA Certificate Is an etcd Root Client | 280 | Security fix (found in the M279 security audit, 2026-11-24): gate certificates were issued by the cluster CA with client authentication, and etcd trusted every certificate from that CA, so a gate key was enough to read and write the whole fact store. Serving certificates no longer authenticate clients, and etcd accepts only its own client identities. |
+| M283 — API Tokens Survive Restarts and Work on Every Replica | 283 | Security bug fix (found in the M280 rework, 2026-11-25): the API token signing key was created in memory at every server start, so every `cca user token` token died at a restart and worked only on the HA replica that minted it. The key now lives sealed in the keyring in etcd and is shared by every replica; it fails closed when lost; keys rotate by key ID, and tokens have a maximum lifetime. Tokens issued before this release must be re-created once. |
 | M281 — The Testbed Load Balancer Forwards to Gates | 281 | Testbed: HAProxy replaces Caddy on the testbed host and forwards TCP 80/443 unchanged to the gate nodes, as a cloud network load balancer would (user decision 2026-11-25), instead of reading routes, backends and overlay subnets from the API with a token. No API credential to renew and no internal network map outside the cluster. |
 | M282 — The Debug Proxy Accepts an Agent Certificate of Any Usage | 282 | Bug fix (from the M280 security audit, to confirm first): the server's connection to an agent debug API verifies the agent's certificate with any usage, so on clusters from before M280 a gate certificate named like a node could pass as that agent. |
 | M278 — A Moved Instance Keeps the Source's IP When Its Own IP Is Unknown | 278 | Bug fix (found in the M267 round-9 review, 2026-11-24): when an instance's IP could not be resolved, its state was published without an IP and the old value stayed, so after a move the target could show `running` with the source's IP and traffic went there. A serving state is now never published next to another node's IP. |
