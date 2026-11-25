@@ -74,7 +74,9 @@ func bootstrapServerAsSetupScriptRuns(t *testing.T, factStore store.StateStore, 
 	serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	bootstrapAdminGrants(factStore, bindServerPrincipal(serverTLSConfig, rbacAuthorizer))
-	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
+	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
+		t.Fatal(bootstrapError)
+	}
 	clusterCA, caError := security.LoadCertificateAuthorityFromFiles(parsedConfig.tlsCACertPath, parsedConfig.tlsCAKeyPath)
 	if caError != nil {
 		t.Fatal(caError)
@@ -146,7 +148,9 @@ func TestServerRecordsNodeFromServerCertificateOnOldClusters(t *testing.T) {
 		writeClusterPKITestFile(t, pkiDirectory, "ca.pem", clusterCA.CACertificatePEM()), true)
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
-	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, serverCommandConfig{})
+	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, serverCommandConfig{}); bootstrapError != nil {
+		t.Fatal(bootstrapError)
+	}
 	if _, getError := factStore.Get(context.Background(), security.EnrolledNodePrefix+"old-ctrl"); getError != nil {
 		t.Errorf("old cluster: node old-ctrl is not recorded as enrolled: %v", getError)
 	}

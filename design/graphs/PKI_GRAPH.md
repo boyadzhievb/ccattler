@@ -65,9 +65,10 @@ becomes an etcd user only once etcd authentication and roles are enabled (M181, 
 **Identities around the server (review round 1):** the server records its own node as enrolled from
 `--control-plane-node-cert` (`node-identity-for-api.pem`; old clusters: the server certificate's CN), so no unbound join
 token can enroll as a control-plane node. `verifyControlPlaneNodeCertificate` (command_server.go) requires that file to
-chain to `--ca`, be valid now, be a client certificate and name an unreserved node ID; otherwise, and when the fallback
-CN is `ccattler-server` (a three-CA server without the flag), nothing is recorded and the server warns (round 2,
-SA2-L1). `ccattler-server` and `cca-server` are reserved node IDs (enrollment, `cca init` and
+chain to `--ca`, be valid now, be a client certificate and name an unreserved node ID; otherwise `cca server` exits at
+startup with an error naming the path and the reason (user decision 1, 2026-11-25: fail-closed). When the flag is
+absent and the fallback CN is `ccattler-server` (a three-CA server without the flag), nothing is recorded and the
+server warns (SA2-L1). `ccattler-server` and `cca-server` are reserved node IDs (enrollment, `cca init` and
 `EnsureControlPlaneNodeEnrolled`), so no node gets the server's API principal. The etcd CNs have disjoint prefixes
 (`etcd-server-`, `etcd-peer-`, `etcd-client-node-`, and `etcd-client-cca-server`; SA2-L4), so no node ID yields another
 identity's etcd CN.

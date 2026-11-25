@@ -343,6 +343,30 @@ milestone").
 - **(2) "fresh":** layout detection is confirmed as implemented: the old names only when `ca.pem` exists and
   `cluster-identity-ca.pem` does not; a fresh host gets the new layout.
 
+### 3g. Rework (user decision 1: exit) (2026-11-25, lead-developer, on ea31a43; outputs in scratchpad rw3g-*.txt)
+
+- [x] **Fix:** `bootstrapControlPlaneNodeEnrollment` returns an error when `--control-plane-node-cert` is given and
+  `verifyControlPlaneNodeCertificate` fails (`--control-plane-node-cert <path> is not a valid node identity of this
+  cluster: <reason>`); `cca server` prints it and exits 1 before serving. Without the flag nothing changes: the
+  fallback (server certificate CN) records old clusters' node, and `ccattler-server` is never recorded (warning).
+  PKI_GRAPH and SECRETS_GRAPH updated.
+- [x] **Tests:** `TestControlPlaneNodeCertificateMustBelongToTheCluster` asserts, for each bad case (foreign CA, expired,
+  reserved `cca-server`, invalid CN `Not_A_Label`, server-only certificate without ClientAuth, the API server
+  certificate `ccattler-server`), an error naming the path and the reason, and no record; the valid node identity
+  returns nil and is recorded. `TestThreeCAServerWithoutNodeCertFlagRecordsNoServerName` asserts no error, no record
+  and the warning in the log. Other callers fail the test on an unexpected error.
+- [x] **Red** on 7d863e3 (updated tests copied in): build fails, the function returns no value
+  (`rw3g-red-base.txt`). With only the signature adapted (`return nil` on every path, skip-and-warn kept;
+  `rw3g-red-shim.diff`), all six bad cases fail with "bootstrap error = <nil>; want a startup error naming …", the
+  valid case and the no-flag test pass (`rw3g-red-shim.txt`). **Green** on this tree: all seven cases and the no-flag
+  test pass.
+- [x] **Checks:** gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues
+  (also `--build-tags etcd_integration` on cmd/cca) (`rw3g-checks.txt`); `go test -count=1 ./cmd/cca/ ./security/`
+  ok (`rw3g-test-pkg.txt`); `-race` on cmd/cca ok (`rw3g-race.txt`); `go test -count=1 ./...` exit 0, 20 packages
+  ok, `TestKeyringConcurrentBootstrapAgrees` passed in this run (`rw3g-full-test.txt`).
+- Not covered by a test: the `os.Exit(1)` on that error in `configureAndStartAPIServer` (command_server.go:711) (no binary-level `cca server`
+  test); the deploy run starts the server with a valid flag only.
+
 Only the deploy run proves: T19 against the real etcd and API; the caddy-sync stop on the testbed host; layout
 detection on real hosts (fresh three-CA run; a pre-M280 cluster only through `--from-release`); the etcd drop-in's
 `Requires=` at boot.

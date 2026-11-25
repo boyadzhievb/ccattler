@@ -18,9 +18,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 )
@@ -108,9 +110,10 @@ func enrolledNodeRecorded(factStore store.StateStore, nodeID string) bool {
 	return getError == nil
 }
 
-// TestControlPlaneNodeCertificateMustBelongToTheCluster (SA2-L1/CR2-L1): the
-// server records --control-plane-node-cert only when it chains to --ca, is
-// valid and names an unreserved node; else it records nothing.
+// TestControlPlaneNodeCertificateMustBelongToTheCluster (SA2-L1/CR2-L1, user
+// decision 1 "exits"): the server records --control-plane-node-cert only when it
+// chains to --ca, is valid and names an unreserved node; else the bootstrap
+// fails with an error naming the path, so cca server exits, and records nothing.
 func TestControlPlaneNodeCertificateMustBelongToTheCluster(t *testing.T) {
 	outputDirectory := runClusterPKITestInit(t)
 	clusterCA, loadError := security.LoadCertificateAuthorityFromFiles(filepath.Join(outputDirectory, clusterIdentityCAFileName),
@@ -119,25 +122,30 @@ func TestControlPlaneNodeCertificateMustBelongToTheCluster(t *testing.T) {
 		t.Fatal(loadError)
 	}
 	foreignCA, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
-	issueCertificateFile := func(issuingCA *security.CertificateAuthority, commonName string, ttl time.Duration) string {
+	issueCertificateWithUsage := func(issuingCA *security.CertificateAuthority, commonName string, usage security.CertificateUsage, ttl time.Duration) string {
 		issued, issueError := issuingCA.IssueCertificate(security.IssueCertificateRequest{CommonName: commonName,
-			Usage: security.UsageClient, TTL: ttl})
+			Usage: usage, TTL: ttl})
 		if issueError != nil {
 			t.Fatal(issueError)
 		}
 		return writeClusterPKITestFile(t, t.TempDir(), commonName+".pem", issued.CertificatePEM)
 	}
+	issueCertificateFile := func(issuingCA *security.CertificateAuthority, commonName string, ttl time.Duration) string {
+		return issueCertificateWithUsage(issuingCA, commonName, security.UsageClient, ttl)
+	}
 	testCases := []struct {
 		name            string // what the flag points at
 		certificatePath string // the --control-plane-node-cert file
 		recordedNodeID  string // the CN that must (or must not) be recorded
-		wantRecorded    bool   // whether the server records it
+		wantReason      string // "" for a valid identity, else a fragment of the refusal reason
 	}{
-		{"node identity from cca init", filepath.Join(outputDirectory, nodeIdentityForAPIFileName), clusterPKITestNodeID, true},
-		{"certificate from a foreign CA", issueCertificateFile(foreignCA, "victim", time.Hour), "victim", false},
-		{"expired cluster certificate", issueCertificateFile(clusterCA, "expiredx", time.Nanosecond), "expiredx", false},
-		{"reserved node ID cca-server", issueCertificateFile(clusterCA, security.CCAServerEtcdClientName, time.Hour), security.CCAServerEtcdClientName, false},
-		{"the API server certificate", filepath.Join(outputDirectory, apiServerIdentityCertificateFileName), security.ServerCertificateCommonName, false},
+		{"node identity from cca init", filepath.Join(outputDirectory, nodeIdentityForAPIFileName), clusterPKITestNodeID, ""},
+		{"certificate from a foreign CA", issueCertificateFile(foreignCA, "victim", time.Hour), "victim", "unknown authority"},
+		{"expired cluster certificate", issueCertificateFile(clusterCA, "expiredx", time.Nanosecond), "expiredx", "expired"},
+		{"reserved node ID cca-server", issueCertificateFile(clusterCA, security.CCAServerEtcdClientName, time.Hour), security.CCAServerEtcdClientName, "reserved"},
+		{"invalid node ID", issueCertificateFile(clusterCA, "Not_A_Label", time.Hour), "Not_A_Label", "must be a lowercase DNS name"},
+		{"server-only certificate (no ClientAuth)", issueCertificateWithUsage(clusterCA, "serveronly", security.UsageServer, time.Hour), "serveronly", "usage"},
+		{"the API server certificate", filepath.Join(outputDirectory, apiServerIdentityCertificateFileName), security.ServerCertificateCommonName, "reserved"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -146,9 +154,20 @@ func TestControlPlaneNodeCertificateMustBelongToTheCluster(t *testing.T) {
 			serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 			factStore := store.NewMemoryStore()
 			t.Cleanup(func() { _ = factStore.Close() })
-			bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
-			if recorded := enrolledNodeRecorded(factStore, testCase.recordedNodeID); recorded != testCase.wantRecorded {
-				t.Errorf("node %q recorded = %v, want %v", testCase.recordedNodeID, recorded, testCase.wantRecorded)
+			bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
+			recorded := enrolledNodeRecorded(factStore, testCase.recordedNodeID)
+			if testCase.wantReason == "" {
+				if bootstrapError != nil || !recorded {
+					t.Errorf("valid node identity: error %v, recorded %v; want nil and recorded", bootstrapError, recorded)
+				}
+				return
+			}
+			if bootstrapError == nil || !strings.Contains(bootstrapError.Error(), testCase.certificatePath) ||
+				!strings.Contains(bootstrapError.Error(), testCase.wantReason) {
+				t.Errorf("bootstrap error = %v; want a startup error naming %s and %q", bootstrapError, testCase.certificatePath, testCase.wantReason)
+			}
+			if recorded {
+				t.Errorf("node %q recorded from a refused --control-plane-node-cert", testCase.recordedNodeID)
 			}
 		})
 	}
@@ -164,10 +183,47 @@ func TestThreeCAServerWithoutNodeCertFlagRecordsNoServerName(t *testing.T) {
 	serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
-	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
+	logOutput := captureDefaultLogger(t)
+	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
+		t.Errorf("without --control-plane-node-cert the server must start (warn only), got error %v", bootstrapError)
+	}
 	if enrolledNodeRecorded(factStore, security.ServerCertificateCommonName) {
 		t.Errorf("a three-CA server without --control-plane-node-cert recorded %q as an enrolled node", security.ServerCertificateCommonName)
 	}
+	if !strings.Contains(logOutput.String(), "control-plane node not recorded as enrolled") {
+		t.Errorf("without --control-plane-node-cert the server did not warn; log: %q", logOutput.String())
+	}
+}
+
+// lockedLogBuffer is a log sink safe for concurrent writers.
+type lockedLogBuffer struct {
+	bufferLock sync.Mutex      // guards logContent
+	logContent strings.Builder // everything logged so far
+}
+
+// Write appends one log line under the lock.
+func (logBuffer *lockedLogBuffer) Write(logLine []byte) (int, error) {
+	logBuffer.bufferLock.Lock()
+	defer logBuffer.bufferLock.Unlock()
+	return logBuffer.logContent.Write(logLine)
+}
+
+// String returns everything logged so far.
+func (logBuffer *lockedLogBuffer) String() string {
+	logBuffer.bufferLock.Lock()
+	defer logBuffer.bufferLock.Unlock()
+	return logBuffer.logContent.String()
+}
+
+// captureDefaultLogger points the default logger at a buffer for the test and
+// restores the previous logger at cleanup.
+func captureDefaultLogger(t *testing.T) *lockedLogBuffer {
+	t.Helper()
+	logOutput := &lockedLogBuffer{}
+	previousLogger := logging.Default()
+	logging.SetDefault(logging.New(logOutput, logging.LevelInfo, logging.FormatHuman))
+	t.Cleanup(func() { logging.SetDefault(previousLogger) })
+	return logOutput
 }
 
 // TestHAControlPlaneUnitRecordsItsNode (SA2-L1, CR2 mutation M26): the HA
@@ -187,7 +243,9 @@ func TestHAControlPlaneUnitRecordsItsNode(t *testing.T) {
 	serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	bootstrapAdminGrants(factStore, bindServerPrincipal(serverTLSConfig, rbacAuthorizer))
-	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
+	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
+		t.Fatal(bootstrapError)
+	}
 	clusterCA, caError := security.LoadCertificateAuthorityFromFiles(parsedConfig.tlsCACertPath, parsedConfig.tlsCAKeyPath)
 	if caError != nil {
 		t.Fatal(caError)
