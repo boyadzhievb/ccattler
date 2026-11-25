@@ -40,7 +40,7 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
   controllers and cmd/cca.
 - [ ] 3.2 Deploy check `deploy-run:gate-cert-not-client`: on the deploy cluster, a gate certificate and key presented
   to etcd and to the API fail the TLS handshake. Then `install-host:three-cas` on a fresh VM with the guide.
-- [ ] 3.3 Independent review: `security-audit` and `code-reviewer`, with a patterns review. One round; only HIGH and
+- [ ] 3.3 Independent review: `security-audit` and `code-reviewer`, with a patterns review, at full rigor: every real finding is fixed, no round cap (user decision 2026-11-25, "do 2": security core code). Earlier draft said: one round; only HIGH and
   MEDIUM findings are fixed, lows are listed (the user's cap for install work applies here too unless the user says
   otherwise).
 - [ ] 3.4 One full Deploy Testbed run (job summary `full run`); record the run ID.
