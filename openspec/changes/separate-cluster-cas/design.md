@@ -74,7 +74,8 @@ command_init.go:457), the same file as the local agent's identity.
 | `gate-https-ca.pem` | (new) | self | CCattler / gate HTTPS CA / CCattler gate HTTPS CA | CA |
 | `api-server-identity-certificate.pem` | `node.pem` (as `cca server --cert`) | cluster identity CA | CCattler / API server identity / `ccattler-server` | server + client (client for the agent debug API) |
 | `node-identity-for-api.pem` | `node.pem` (as agent `--cert`) | cluster identity CA | CCattler / node identity for API / `<node-id>` | client |
-| `etcd-serving-certificate.pem` | `etcd.pem` | etcd access CA | CCattler / etcd serving certificate / `etcd-<node-id>` | server |
+| `etcd-serving-certificate.pem` | `etcd.pem` | etcd access CA | CCattler / etcd serving certificate / `etcd-<node-id>` | server + client (etcd's self-connection, etcd issue 9785; decision 2026-11-25) |
+| `etcd-peer-certificate.pem` | `etcd.pem` (as HA `--peer-cert-file`) | etcd access CA | CCattler / etcd peer certificate / `etcd-peer-<node-id>` | server + client (HA peers; decision 2026-11-25) |
 | `cca-server-etcd-client-certificate.pem` | `node.pem` (as server `--etcd-cert`) | etcd access CA | CCattler / cca-server etcd client / `etcd-client-cca-server` | client |
 | `node-etcd-client-certificate.pem` | `node.pem` (as agent `--etcd-cert`) | etcd access CA | CCattler / node etcd client / `etcd-client-<node-id>` | client |
 | rotating server certificate (memory) | — | cluster identity CA | CCattler / API server identity / `ccattler-server` | server + client |
@@ -109,7 +110,14 @@ command_init.go:457), the same file as the local agent's identity.
 `IssueCertificate` gets a required `Usage` field with typed constants: `UsageServer`, `UsageClient`,
 `UsageServerAndClient`. That forces every caller to choose; no default exists.
 - gate: `UsageServer`;
-- etcd serving: `UsageServer`;
+- etcd serving and etcd peer: `UsageServerAndClient`.
+  - **The decision:** user, 2026-11-25, option 1a, the kubeadm model.
+  - **The draft:** said ServerAuth only for etcd serving.
+  - **Found during apply:** HA peers present their certificate as a client certificate under
+    `--peer-client-cert-auth` (etcd-cluster.conf.j2:22-25), and etcd dials itself with its serving certificate
+    (etcd issue 9785; kubeadm's etcd server certificate carries ClientAuth for this reason).
+  - **Why it is safe:** only etcd trusts the etcd access CA, so this ClientAuth reaches etcd and nothing else. Before
+    M280, the same certificate was also accepted by the API.
 - etcd client: `UsageClient`;
 - node: `UsageClient`, as SignCSR does today;
 - server: `UsageServerAndClient`, because the server is also a client of agents' debug API (`node_debug_proxy.go`).

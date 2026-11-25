@@ -33,15 +33,16 @@ certificate that still carries ClientAuth SHALL be re-issued.
 
 ### Requirement: New clusters have three CAs
 `cca init` SHALL create three CAs: the cluster CA for node and server identities, the etcd CA for etcd's serving
-certificate and its clients, and the gate CA for gate serving certificates. The etcd serving certificate SHALL be
-signed by the etcd CA and carry ServerAuth only. Each CA's key SHALL be written with mode 0600.
+certificate and its clients, and the gate CA for gate serving certificates. Each CA's key SHALL be written with mode
+0600.
 
 #### Scenario: Files written by cca init
 - **GIVEN** `cca init --advertise-address 192.0.2.10 --node-id ctrl -o DIR`
 - **WHEN** it finishes
 - **THEN** DIR holds the CAs `cluster-identity-ca.pem`, `etcd-access-ca.pem` and `gate-https-ca.pem`, each with
   its `-key.pem` at 0600, and these leaf certificates, each with its own key:
-  - `etcd-serving-certificate.pem` from the etcd access CA (ServerAuth only);
+  - `etcd-serving-certificate.pem` (CN `etcd-ctrl`) and `etcd-peer-certificate.pem` (CN `etcd-peer-ctrl`) from
+    the etcd access CA (ServerAuth and ClientAuth);
   - `cca-server-etcd-client-certificate.pem` (CN `etcd-client-cca-server`) and `node-etcd-client-certificate.pem`
     (CN `etcd-client-ctrl`) from the etcd access CA (ClientAuth only);
   - `api-server-identity-certificate.pem` (CN `ccattler-server`, ServerAuth and ClientAuth) and
@@ -73,6 +74,18 @@ etcd.
   `node-identity-for-api.pem`, `node-etcd-client-certificate.pem` and `etcd-access-ca.pem` with their keys, and the
   agent's etcd connection uses the etcd client certificate. No two nodes share an etcd client certificate or key
 - Test: `TestEnrollmentIssuesEtcdClientCertificate`, `TestJoinWritesEtcdClientCertificate`
+
+### Requirement: etcd's own certificates come from the etcd CA with both usages
+etcd's serving and peer certificates SHALL be signed by the etcd CA and carry ServerAuth and ClientAuth (kubeadm
+model). etcd dials itself with its serving certificate (etcd issue 9785), and HA peers authenticate to each other with
+the peer certificate. (User decision 2026-11-25, option 1a.)
+
+#### Scenario: HA etcd peers use the peer certificate
+- **GIVEN** the Ansible HA etcd template
+- **WHEN** it is rendered
+- **THEN** `--peer-cert-file` is `etcd-peer-certificate.pem`, `--cert-file` is `etcd-serving-certificate.pem`, and
+  both trusted-CA flags name `etcd-access-ca.pem`
+- Test: `TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA`
 
 ### Requirement: Descriptions never authorize
 The Subject OU and the description line SHALL be descriptive only. Authorization SHALL use the certificate's usage,

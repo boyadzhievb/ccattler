@@ -378,7 +378,7 @@ stays closed, and `setup.sh` prints the firewalld and ufw commands that open it 
 | `gate-https-ca.pem` | CA of auto gate certificates: clients of TLS gates trust it |
 | `api-server-identity-certificate.pem` | `cca server`'s API certificate |
 | `node-identity-for-api.pem` | `cca agent`'s identity to the API |
-| `etcd-serving-certificate.pem` | etcd's serving certificate |
+| `etcd-serving-certificate.pem`, `etcd-peer-certificate.pem` | etcd's serving certificate, and the one HA etcd members present to each other |
 | `cca-server-etcd-client-certificate.pem`, `node-etcd-client-certificate.pem` | the server's and the agent's etcd client certificates |
 
 Each has its key next to it with `-key.pem`. Clusters set up by an earlier release keep `ca.pem` and `node.pem`;

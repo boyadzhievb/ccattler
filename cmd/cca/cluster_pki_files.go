@@ -30,6 +30,8 @@ const (
 	etcdServingCertificateFileName = "etcd-serving-certificate.pem"
 	// ccaServerEtcdClientCertificateFileName is cca server's etcd client certificate.
 	ccaServerEtcdClientCertificateFileName = "cca-server-etcd-client-certificate.pem"
+	// etcdPeerCertificateFileName is etcd's peer certificate for HA peers (ServerAuth and ClientAuth, 1a).
+	etcdPeerCertificateFileName = "etcd-peer-certificate.pem"
 	// nodeEtcdClientCertificateFileName is one node's etcd client certificate, used by its agent.
 	nodeEtcdClientCertificateFileName = "node-etcd-client-certificate.pem"
 )
@@ -63,7 +65,7 @@ func installedPKIPath(fileName string) string {
 var controlPlaneCertificateFileNames = []string{
 	clusterIdentityCAFileName, etcdAccessCAFileName, gateHTTPSCAFileName,
 	apiServerIdentityCertificateFileName, nodeIdentityForAPIFileName, etcdServingCertificateFileName,
-	ccaServerEtcdClientCertificateFileName, nodeEtcdClientCertificateFileName,
+	etcdPeerCertificateFileName, ccaServerEtcdClientCertificateFileName, nodeEtcdClientCertificateFileName,
 }
 
 // buildSetupScriptPKIInstallStep returns the setup.sh lines that install every

@@ -25,7 +25,8 @@ line, which `pem.Decode` and `openssl` skip. Keys are the same name with `-key.p
 | gate HTTPS CA | self | gate HTTPS CA / CCattler gate HTTPS CA | CA | 10 y | `gate-https-ca.pem` | server `--gate-ca-cert`/`--gate-ca-key`; clients of TLS gates |
 | API server identity | cluster identity CA (cca init) | API server identity / `ccattler-server` | ServerAuth + ClientAuth | 1 y, none | `api-server-identity-certificate.pem` | `cca server --cert` (API listener; client of agent debug APIs) |
 | node identity for API | cluster identity CA (cca init, or `SignCSR` at enrollment) | node identity for API / node ID | ClientAuth | 1 y, re-join | `node-identity-for-api.pem` | agent `--cert` |
-| etcd serving | etcd access CA (cca init) | etcd serving certificate / `etcd-<node>` | ServerAuth | 1 y, none | `etcd-serving-certificate.pem` | etcd `ETCD_CERT_FILE` |
+| etcd serving | etcd access CA (cca init) | etcd serving certificate / `etcd-<node>` | ServerAuth + ClientAuth (etcd dials its own client port with it, etcd issue 9785; kubeadm model) | 1 y, none | `etcd-serving-certificate.pem` | etcd `ETCD_CERT_FILE`; HA `--cert-file` |
+| etcd peer | etcd access CA (cca init) | etcd peer certificate / `etcd-peer-<node>` | ServerAuth + ClientAuth (HA peers authenticate each other) | 1 y, none | `etcd-peer-certificate.pem` | HA `--peer-cert-file` (etcd-cluster.conf.j2) |
 | cca-server etcd client | etcd access CA (cca init) | cca-server etcd client / `etcd-client-cca-server` | ClientAuth | 1 y, none | `cca-server-etcd-client-certificate.pem` | `cca server --etcd-cert` |
 | node etcd client | etcd access CA (cca init, or `signNodeEtcdClientCSR` at enrollment, security/enrollment.go:372) | node etcd client / `etcd-client-<node>` | ClientAuth | 1 y, re-join | `node-etcd-client-certificate.pem` | agent `--etcd-cert`; CLI etcd default |
 | server (rotating, `--tls` without files) | auto cluster CA, `CertificateRotator` | API server identity / `ccattler-server` | ServerAuth + ClientAuth | 24 h, 70% | memory | API listener |
@@ -40,7 +41,8 @@ look for the new names first and fall back to these (`installedEtcdClientFileSet
 | Listener | Trusts for client auth | Where | Identity |
 |---|---|---|---|
 | API (`--cert`/`--ca`) | cluster identity CA | `loadServerTLSConfig` `ClientCAs` (cmd/cca/command_server.go) | `node:<CN>` (security/authn_mtls.go); OU ignored |
-| etcd | etcd access CA (new); cluster CA (old) | setup.sh `ETCD_TRUSTED_CA_FILE` (`buildSetupScriptEtcdStep`) | none: no etcd RBAC, see §3 |
+| etcd (clients) | etcd access CA (new); cluster CA (old) | setup.sh `ETCD_TRUSTED_CA_FILE` (`buildSetupScriptEtcdStep`); HA `--trusted-ca-file` | none: no etcd RBAC, see §3 |
+| etcd (HA peers) | etcd access CA | `--peer-trusted-ca-file`, `--peer-client-cert-auth` (etcd-cluster.conf.j2) | — |
 | agent debug API | cluster identity CA | `SetMutualTLS`, agent/debug_api.go | `node:<CN>` holding cluster-admin |
 | gate proxy | none (serving only) | network/gate_proxy.go | — |
 
@@ -51,7 +53,8 @@ they do not come from that CA at all, so a gate key cannot reach the debug API e
 
 etcd's `--client-cert-auth` checks only that a client certificate chains to the CA it trusts; the CommonName
 becomes an etcd user only once etcd authentication and roles are enabled (M181, Store Access Isolation). Until then:
-- every accepted etcd client certificate, the server's or any node's, has **full etcd access**;
+- every accepted etcd client certificate, the server's or any node's, has **full etcd access**; so do etcd's own
+  serving and peer certificates, which carry ClientAuth (they live only on etcd hosts);
 - a compromised node, gate nodes included, keeps reading and writing the whole store with its own node etcd client
   certificate. M280 closes the gate-certificate path, not that one;
 - `etcd-client-cca-server` and `etcd-client-<node>` are distinct identities that M181 can authorize differently;

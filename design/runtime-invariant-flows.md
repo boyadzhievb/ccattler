@@ -1952,7 +1952,7 @@ every agent's state publish also compares the revision of placement/node/{self}/
 
 ## Flow 36: Cluster PKI (M280)
 
-**Chain:** `cca init` → three CAs and five leaf certificates → setup.sh installs them and configures etcd and the
+**Chain:** `cca init` → three CAs and six leaf certificates → setup.sh installs them and configures etcd and the
 units → `cca server` (gate issuer, enrollment etcd CA, single-CA warning) → `cca join` (node identity and its own etcd
 client certificate) → RouteTLSController (gate certificates, ServerAuth only)
 
@@ -1960,7 +1960,8 @@ client certificate) → RouteTLSController (gate certificates, ServerAuth only)
 cca init (new cluster; HA secondary: all six --ca/--etcd-access-ca/--gate-https-ca flags or none)
   → cluster-identity-ca, etcd-access-ca, gate-https-ca (each with key, 0600)
   → api-server-identity-certificate (ccattler-server, server+client), node-identity-for-api (node, client)
-  → etcd-serving-certificate (server), cca-server-etcd-client-certificate, node-etcd-client-certificate (client)
+  → etcd-serving-certificate, etcd-peer-certificate (server+client: etcd dials itself and its HA peers)
+  → cca-server-etcd-client-certificate, node-etcd-client-certificate (client)
 setup.sh → /etc/ccattler/pki; etcd trusts etcd-access-ca only; each unit uses its own process's files
 cca server: --gate-ca-cert/--gate-ca-key → gate issuer (else the cluster CA, old clusters)
             --etcd-access-ca-key → enrollment signs node etcd client CSRs

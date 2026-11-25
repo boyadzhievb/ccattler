@@ -227,7 +227,9 @@ var initLeafExpectations = []initLeafExpectation{
 	{"node-identity-for-api.pem", "cluster-identity-ca.pem", clusterPKITestNodeID, "node identity for API",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}},
 	{"etcd-serving-certificate.pem", "etcd-access-ca.pem", "etcd-" + clusterPKITestNodeID, "etcd serving certificate",
-		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}},
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}},
+	{"etcd-peer-certificate.pem", "etcd-access-ca.pem", "etcd-peer-" + clusterPKITestNodeID, "etcd peer certificate",
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}},
 	{"cca-server-etcd-client-certificate.pem", "etcd-access-ca.pem", "etcd-client-cca-server", "cca-server etcd client",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}},
 	{"node-etcd-client-certificate.pem", "etcd-access-ca.pem", "etcd-client-" + clusterPKITestNodeID, "node etcd client",
@@ -454,5 +456,37 @@ func TestAPIRefusesNonClusterCACertificates(t *testing.T) {
 	if principal, requestError := requestPrincipalWithClientCertificate(t, echoServer.URL, clusterCAPEM, nodeKeyPair); requestError != nil ||
 		principal != "node:"+clusterPKITestNodeID {
 		t.Errorf("node identity: principal %q, error %v; want node:%s", principal, requestError, clusterPKITestNodeID)
+	}
+}
+
+// TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA: the HA etcd template serves
+// the etcd serving certificate, authenticates peers with the etcd peer
+// certificate, and trusts only the etcd access CA for clients and peers (1a).
+func TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA(t *testing.T) {
+	const templatePath = "deploy/ansible/roles/etcd-cluster/templates/etcd-cluster.conf.j2"
+	templateContent, readError := os.ReadFile(filepath.Join("..", "..", templatePath)) //nolint:gosec // G304: fixed repository path
+	if readError != nil {
+		t.Fatal(readError)
+	}
+	templateFlags := map[string]string{}
+	for _, templateLine := range strings.Split(string(templateContent), "\n") {
+		lineFields := strings.Fields(strings.TrimSuffix(strings.TrimSpace(templateLine), "\\"))
+		if len(lineFields) >= 2 && strings.HasPrefix(lineFields[0], "--") {
+			templateFlags[lineFields[0]] = strings.Join(lineFields[1:], " ")
+		}
+	}
+	for flagName, wantFile := range map[string]string{
+		"--trusted-ca-file": etcdAccessCAFileName, "--peer-trusted-ca-file": etcdAccessCAFileName,
+		"--cert-file": etcdServingCertificateFileName, "--key-file": privateKeyFileName(etcdServingCertificateFileName),
+		"--peer-cert-file": etcdPeerCertificateFileName, "--peer-key-file": privateKeyFileName(etcdPeerCertificateFileName),
+	} {
+		if wantValue := "{{ cca_cert_dir }}/" + wantFile; templateFlags[flagName] != wantValue {
+			t.Errorf("%s: %s = %q, want %q", templatePath, flagName, templateFlags[flagName], wantValue)
+		}
+	}
+	for _, requiredFlag := range []string{"--client-cert-auth", "--peer-client-cert-auth"} {
+		if !strings.Contains(string(templateContent), requiredFlag) {
+			t.Errorf("%s lacks %s", templatePath, requiredFlag)
+		}
 	}
 }

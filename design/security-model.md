@@ -42,7 +42,7 @@ PKI" ([runtime-invariant-flows.md](runtime-invariant-flows.md)).
 | CA | Signs | Trusted for client certificates by |
 |---|---|---|
 | cluster identity CA | API server and node identities | the API, the agent debug API |
-| etcd access CA | etcd's serving certificate, the cca-server and node etcd client certificates | etcd only |
+| etcd access CA | etcd's serving and peer certificates, the cca-server and node etcd client certificates | etcd only |
 | gate HTTPS CA | gate serving certificates (ServerAuth only) | nobody; clients of TLS gates trust it as a server CA |
 
 - **Purpose is enforced by usage and issuer, never by the OU.** Every certificate gets a required usage

@@ -407,8 +407,8 @@ type initLeafCertificate struct {
 	description string                           // the D1a comment line, without "# CCattler "
 }
 
-// buildInitLeafCertificates lists the five leaf certificates of a control-plane
-// node (D1a table): two identities from the cluster identity CA, three etcd
+// buildInitLeafCertificates lists the six leaf certificates of a control-plane
+// node (D1a table): two identities from the cluster identity CA, four etcd
 // certificates from the etcd access CA, each with its own key and usage.
 func buildInitLeafCertificates(parsedConfig initCommandConfig, clusterCAs initCertificateAuthorities) []initLeafCertificate {
 	nodeIPAddresses, nodeDNSNames := buildCertificateSANs(parsedConfig)
@@ -431,8 +431,13 @@ func buildInitLeafCertificates(parsedConfig initCommandConfig, clusterCAs initCe
 			fmt.Sprintf("node identity for API of node %s, signed by %s, presented by cca agent to the API",
 				nodeID, clusterIdentityCAFileName)},
 		{etcdServingCertificateFileName, clusterCAs.etcdAccess,
-			leafRequest("etcd-"+nodeID, security.SubjectUnitEtcdServing, security.UsageServer, true),
+			// Server and client: etcd dials its own client port with it (etcd issue 9785; kubeadm model, 1a).
+			leafRequest("etcd-"+nodeID, security.SubjectUnitEtcdServing, security.UsageServerAndClient, true),
 			fmt.Sprintf("etcd serving certificate of node %s, signed by %s, served by etcd", nodeID, etcdAccessCAFileName)},
+		{etcdPeerCertificateFileName, clusterCAs.etcdAccess,
+			leafRequest("etcd-peer-"+nodeID, security.SubjectUnitEtcdPeer, security.UsageServerAndClient, true),
+			fmt.Sprintf("etcd peer certificate of node %s, signed by %s, presented by etcd to its HA peers",
+				nodeID, etcdAccessCAFileName)},
 		{ccaServerEtcdClientCertificateFileName, clusterCAs.etcdAccess,
 			leafRequest(ccaServerEtcdClientCommonName, security.SubjectUnitCCAServerEtcdClient, security.UsageClient, false),
 			fmt.Sprintf("cca-server etcd client on node %s, signed by %s, used by cca server to connect to etcd",
@@ -482,6 +487,7 @@ func printInitSummary(outputDirectory string) {
 	fmt.Printf("  %-40s cca server's API certificate\n", apiServerIdentityCertificateFileName)
 	fmt.Printf("  %-40s cca agent's identity to the API\n", nodeIdentityForAPIFileName)
 	fmt.Printf("  %-40s etcd's serving certificate\n", etcdServingCertificateFileName)
+	fmt.Printf("  %-40s etcd's peer certificate (HA)\n", etcdPeerCertificateFileName)
 	fmt.Printf("  %-40s cca server's etcd client certificate\n", ccaServerEtcdClientCertificateFileName)
 	fmt.Printf("  %-40s cca agent's etcd client certificate\n", nodeEtcdClientCertificateFileName)
 	fmt.Println("  secret-root.key    Secret root key (control plane only; same file on every replica)")
@@ -747,10 +753,11 @@ func buildSetupScriptEtcdStep(advertiseAddress string) string {
 	scriptBuilder.WriteString(setupScriptEtcdLookupStep)
 	scriptBuilder.WriteString(setupScriptEtcdUnitStep)
 
-	scriptBuilder.WriteString("# Grant etcd ownership of its own key pair.\n")
+	scriptBuilder.WriteString("# Grant etcd ownership of its own key pairs (serving, and peer for HA).\n")
 	scriptBuilder.WriteString("if id etcd >/dev/null 2>&1; then\n")
-	fmt.Fprintf(&scriptBuilder, "    chown etcd:etcd \"$PKI_DIR/%s\" \"$PKI_DIR/%s\"\n",
-		etcdServingCertificateFileName, privateKeyFileName(etcdServingCertificateFileName))
+	fmt.Fprintf(&scriptBuilder, "    chown etcd:etcd \"$PKI_DIR/%s\" \"$PKI_DIR/%s\" \"$PKI_DIR/%s\" \"$PKI_DIR/%s\"\n",
+		etcdServingCertificateFileName, privateKeyFileName(etcdServingCertificateFileName),
+		etcdPeerCertificateFileName, privateKeyFileName(etcdPeerCertificateFileName))
 	scriptBuilder.WriteString("fi\n\n")
 
 	scriptBuilder.WriteString("# Clear /etc/default/etcd to prevent apt-default DAEMON_ARGS from\n")

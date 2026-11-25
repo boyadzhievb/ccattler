@@ -187,11 +187,12 @@ const subjectOrganization = "CCattler"
 type CertificateUsage int
 
 const (
-	// UsageServer is ServerAuth only: etcd serving and gate certificates.
+	// UsageServer is ServerAuth only: gate certificates.
 	UsageServer CertificateUsage = iota + 1
 	// UsageClient is ClientAuth only: node identities and etcd clients.
 	UsageClient
-	// UsageServerAndClient is both: the API server, also a client of the agent debug API.
+	// UsageServerAndClient is both: the API server (also a client of the agent debug
+	// API) and etcd's serving and peer certificates (etcd dials itself and its peers).
 	UsageServerAndClient
 )
 
@@ -220,6 +221,8 @@ const (
 	SubjectUnitNodeIdentityForAPI CertificateSubjectUnit = "node identity for API"
 	// SubjectUnitEtcdServing marks etcd's serving certificate.
 	SubjectUnitEtcdServing CertificateSubjectUnit = "etcd serving certificate"
+	// SubjectUnitEtcdPeer marks the certificate HA etcd members present to each other.
+	SubjectUnitEtcdPeer CertificateSubjectUnit = "etcd peer certificate"
 	// SubjectUnitCCAServerEtcdClient marks cca server's etcd client certificate.
 	SubjectUnitCCAServerEtcdClient CertificateSubjectUnit = "cca-server etcd client"
 	// SubjectUnitNodeEtcdClient marks one node's etcd client certificate.

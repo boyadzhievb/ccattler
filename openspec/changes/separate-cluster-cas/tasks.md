@@ -32,23 +32,34 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     certificate (`GetClientCertificate`). Go's client otherwise sends none when the server's CA list does not name the
     issuer, so a 401 "no principal" passed for a refusal; the server-side check is now what is tested. Stricter, not weaker.
   - Outputs: /tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/m280-evidence.txt.
-- [ ] 1.4 `TestGateCertificateIsRefusedByEtcd` and `TestEtcdRefusesClusterCACertificates` with a real etcd
+- [x] 1.4 `TestGateCertificateIsRefusedByEtcd` and `TestEtcdRefusesClusterCACertificates` with a real etcd
   (`etcd_integration` tag, as the existing etcd tests run): red.
   - Written in `cmd/cca/cluster_pki_etcd_test.go` (they start a real etcd from `ETCD_BIN` or PATH with
-    `--client-cert-auth`, old single-CA and new three-CA setups). **Not run:** this host has no etcd binary and the
-    download of the release binary was denied by the permission classifier. `go test -tags etcd_integration` fails
-    with "etcd_integration needs an etcd binary". Open: run on a host with etcd.
+    `--client-cert-auth`, old single-CA and new three-CA setups). First attempt had no etcd binary.
+  - Red on bc9343a with etcd v3.5.36 (`ETCD_BIN=/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/etcd-dl/etcd-v3.5.36-linux-amd64/etcd`, SHA-256 checked by
+    the main session): `TestSingleCAEtcdRefusesGateAndNodeCertificates` (old `cca init` files, etcd trusting `ca.pem`)
+    → FAIL "etcd accepted the gate certificate for ccattler-server as a client (full store access)" and "etcd accepted
+    the node.pem as a client" (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/red-1.4.txt).
+  - Green on the working tree after 1a: `TestEtcdRefusesClusterCACertificates` (node and server identities refused,
+    both etcd client certificates accepted) and `TestGateCertificateIsRefusedByEtcd` (new and old setups) PASS
+    (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/etcd-integration-final.txt).
 
 ## 2. Implementation
 
 - [x] 2.1 D2: `IssueCertificate` takes a required typed `Usage`; every caller is updated. PKI_GRAPH is updated.
   - `TestIssueCertificateRequiresUsage` (zero and unknown usage refused, each usage's exact ExtKeyUsage); AUTHN_GRAPH
     "Certificate issuance" and PKI_GRAPH §1.
-- [ ] 2.2 D3: RouteTLSController issues with `UsageServer` from the gate CA when configured, else the cluster CA, and
+- [x] 2.2 D3: RouteTLSController issues with `UsageServer` from the gate CA when configured, else the cluster CA, and
   re-issues ClientAuth or foreign-issuer certificates. 1.1, 1.2 and 1.4 (gate) are green. NETWORK_GRAPH and
   PKI_GRAPH are updated.
-- [ ] 2.3 D1, D1a and setup.sh: cca init creates the three CAs and the five leaf certificates of the D1a table, each
-  with its description line. HA secondaries take all six existing-CA flags or none. setup.sh installs them, etcd
+  - Green: `TestGateCertificateIsRefusedAsAPIClient`, `TestGateCertificateHasServerAuthOnly`,
+    `TestRouteTLSReissuesGateCertificateWithClientAuth`, `…FromAnotherIssuer`, `TestRouteTLSKeepsCurrentGateCertificate`,
+    `TestGateCertificateIsRefusedByEtcd` (real etcd). NETWORK_GRAPH "RouteTLSController" and PKI_GRAPH §1 updated.
+- [x] 2.3 D1, D1a and setup.sh: cca init creates the three CAs and the six leaf certificates of the D1a table (five
+  originally; `etcd-peer-certificate.pem` added by user decision 1a, 2026-11-25), each with its description line.
+  Evidence: `TestInitWritesThreeCAs` (six leaf certificates, etcd serving and peer certificates with both usages),
+  `TestSetupScriptUsesEtcdCA` and `TestInitFilesParseWithDescriptionLine` green; openssl reads every file
+  (scratchpad openssl-init.txt, openssl-peer.txt); full `go test -count=1 ./...` exit 0 (full-test-2.txt). HA secondaries take all six existing-CA flags or none. setup.sh installs them, etcd
   trusts `etcd-access-ca.pem`, and each unit uses its own process's certificates. Server flags `--gate-ca-cert` and
   `--gate-ca-key`. 1.3 init and setup, and `TestInitFilesParseWithDescriptionLine`, are green.
   - Name alignment (2026-11-25, main session): the spec deltas, design D1/D4 and this list were updated to the D1a
@@ -60,6 +71,11 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     (also asserts `--etcd-access-ca-key`), `TestInitRefusesPartialExistingCAFlags` (new),
     `TestInitFlagsEveryFlagReachesItsField` (now all six CA flags). `openssl x509 -noout -subject -issuer -ext
     extendedKeyUsage` and `openssl pkey -noout` read every file of a real `cca init` (output in the evidence file).
+  - 1a (user decision 2026-11-25): `etcd-serving-certificate.pem` is now ServerAuth+ClientAuth, and cca init writes
+    `etcd-peer-certificate.pem` (CN `etcd-peer-<node>`, OU "etcd peer certificate", etcd access CA, both usages, own
+    key, description line); setup.sh installs it and chowns it to etcd with the serving pair. `TestInitWritesThreeCAs`
+    checks both (six leaves). openssl: both certificates show "TLS Web Server Authentication, TLS Web Client
+    Authentication" (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/openssl-peer.txt). The task text still says five leaves: left to the main session.
 - [x] 2.4 D4: enrollment returns the etcd client certificate; cca join writes it, and the agent unit uses it. 1.3
   enrollment and join are green. AUTHN_GRAPH and PKI_GRAPH are updated.
   - Server: `--etcd-access-ca-key` (needs `--etcd-ca`; preflight 0600), set by setup.sh and the HA unit;
@@ -77,11 +93,11 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
   - Green: `TestEnrollmentIssuesEtcdClientCertificate`, `TestEnrollmentWithoutEtcdCAReturnsNoEtcdCertificate`,
     `TestEnrollmentRefusesEtcdCSRReusingNodeKey`, `TestEnrollReturnsEtcdClientCertificate` (API payload),
     `TestJoinWritesEtcdClientCertificate`, `TestJoinAgainstOldServerKeepsLegacyFiles`.
-- [ ] 2.5 D5 and D6: the API trusts the cluster CA only, and the single-CA warning. 1.3 API and warning, and 1.4
+- [x] 2.5 D5 and D6: the API trusts the cluster CA only, and the single-CA warning. 1.3 API and warning, and 1.4
   etcd, are green.
   - Green: `TestAPIRefusesNonClusterCACertificates`, `TestServerWarnsOnSingleCACluster`,
-    `TestMTLSPrincipalIgnoresSubjectUnit`. Not ticked: 1.4 (etcd) has not run.
-- [ ] 2.6 Ansible templates (the worker agent's etcd cert and CA; HA etcd trust); the guide (new files, TLS gate
+    `TestMTLSPrincipalIgnoresSubjectUnit`, and 1.4 `TestEtcdRefusesClusterCACertificates` against etcd v3.5.36.
+- [x] 2.6 Ansible templates (the worker agent's etcd cert and CA; HA etcd trust); the guide (new files, TLS gate
   clients trust `gate-https-ca.pem`; the HA role passes all six existing-CA flags to `cca init`);
   `design/security-model.md`, `design/gate-tls-termination.md` and the threat model;
   Flow "Cluster PKI" in runtime-invariant-flows.md linking PKI_GRAPH.
@@ -97,18 +113,23 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     caddy-sync paths; guide, backup, disaster-recovery, troubleshooting; security model, threat model (T1 + file
     table), gate-tls-termination note; Flow 36 "Cluster PKI"; AUTHN_GRAPH, NETWORK_GRAPH, PKI_GRAPH (after state).
     `grep -c M181`: security-model 3, threat-model 4, PKI_GRAPH 3.
-  - **Blocked (needs a decision):** `deploy/ansible/roles/etcd-cluster/templates/etcd-cluster.conf.j2` (HA etcd)
-    still names `ca.pem` and `etcd.pem`. The HA peers use the serving certificate as peer client certificate with
-    `--peer-client-cert-auth`, which needs ClientAuth; `etcd-serving-certificate.pem` is ServerAuth only (spec), so
-    the peers would refuse each other. Release notes are written at release.
+  - HA etcd (decided 1a, 2026-11-25): `etcd-cluster.conf.j2` uses `--cert-file etcd-serving-certificate.pem`,
+    `--peer-cert-file etcd-peer-certificate.pem` (keys likewise) and `etcd-access-ca.pem` for both trusted-CA flags.
+    `TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA` was red first (six flag mismatches, /tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/red-ansible-etcd.txt),
+    green now. PKI_GRAPH (peer row, HA peer trust row, residual note), Flow 36, guide table and security model updated.
+    The release notes are written at release (Workflow follow-up).
 
 ## 3. Checks
 
-- [ ] 3.1 gofmt, golangci-lint, `go test -count=1 ./...`, the `etcd_integration` tests, and -race on security,
+- [x] 3.1 gofmt, golangci-lint, `go test -count=1 ./...`, the `etcd_integration` tests, and -race on security,
   controllers and cmd/cca.
   - 2026-11-25 working tree: gofmt clean; `go vet ./...` and with `-tags etcd_integration` clean; golangci-lint 0
     issues (also with `--build-tags etcd_integration` on cmd/cca); `go test -count=1 ./...` exit 0; `go test -race
     -count=1 ./security/ ./controllers/ ./cmd/cca/` ok. Open: the `etcd_integration` tests (no etcd here, see 1.4).
+  - Re-run after 1a (2026-11-25): gofmt clean; `go vet ./...` and `-tags etcd_integration` clean; golangci-lint 0
+    issues (also `--build-tags etcd_integration` on cmd/cca and store); `go test -count=1 ./...` exit 0; `-race` on
+    security, controllers, cmd/cca exit 0; every `etcd_integration` test (store's 20 against a plain etcd on
+    127.0.0.1:2379, the two PKI tests with TLS etcd) PASS with etcd v3.5.36 (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/etcd-integration-final.txt).
 - [ ] 3.2 Deploy check `deploy-run:gate-cert-not-client`: on the deploy cluster, a gate certificate and key presented
   to etcd and to the API fail the TLS handshake. Then `install-host:three-cas` on a fresh VM with the guide.
 - [ ] 3.3 Independent review: `security-audit` and `code-reviewer`, with a patterns review, at full rigor: every real finding is fixed, no round cap (user decision 2026-11-25, "do 2": security core code). Earlier draft said: one round; only HIGH and
