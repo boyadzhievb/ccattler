@@ -487,6 +487,8 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 
 ## Workflow follow-up
 
-- GitHub Security Advisory for S1 (user decision 2026-11-24), published with the release: affected versions are every release whose install.sh used `sudo mv`; remedy `sudo chown root:root /usr/local/bin/cca`; fixed in the M279 release.
+- GitHub Security Advisory for S1: **withdrawn** (user decision 2026-11-25: "we are not in phase to create CVSS"). No
+  advisory and no CVSS score for now. The v1.98.0-beta changelog entry carries the fix and the remedy for existing
+  hosts (`sudo chown root:root /usr/local/bin/cca`). A formal advisory belongs to M276's disclosure process.
 - Order (design.md, option c): 3.4 and 3.5, then `scripts/release.sh M279 <version>`, the user pushes the tags, then
   3.2 and 3.3 on the published release, then the archive (sync `binary-install` and `host-setup`).
