@@ -49,7 +49,7 @@
 #   ./test/e2e/cluster_test.sh --upgrade                       # deploy latest release, upgrade to local build
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
-# Caddy reverse proxy: after deployment, Caddy on the testbed host
+# Caddy reverse proxy (disabled from M280 until M281, Step 4.5): after deployment, Caddy on the testbed host
 # (the deploy host, design/deploy-host.md) is configured to proxy traffic to deployed services.
 # Each workload manifest declares WORKLOAD_EXPOSE entries mapping
 # external_port → service VIP:internal_port.
@@ -145,6 +145,10 @@ done
 # shellcheck source=test/e2e/check_groups.sh
 source "$SCRIPT_DIR/check_groups.sh"
 set_skipped_check_groups "$SKIP_CHECKS_ARGUMENT" || exit 1
+
+# Admin API access through the control node's local token (M280 CR-H1).
+# shellcheck source=test/e2e/local_admin_access.sh
+source "$SCRIPT_DIR/local_admin_access.sh"
 
 # --upgrade implies --keep-data: upgrade tests must not wipe volumes or etcd.
 if [[ "$UPGRADE_TEST" == "true" ]]; then
@@ -625,25 +629,35 @@ else
     log "SKIP: etcdctl not installed on $CTRL_NODE — cannot verify mTLS enforcement"
 fi
 
-log "Fetching cluster TLS certificates for API verification..."
+log "Fetching the cluster identity CA for API verification..."
 CA_CERT_LOCAL="/tmp/cca-e2e-ca.pem"
-CLIENT_CERT_LOCAL="/tmp/cca-e2e-client.pem"
-CLIENT_KEY_LOCAL="/tmp/cca-e2e-client-key.pem"
-ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/cluster-identity-ca.pem" > "$CA_CERT_LOCAL"
-ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node-identity-for-api.pem" > "$CLIENT_CERT_LOCAL"
-ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node-identity-for-api-key.pem" > "$CLIENT_KEY_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/cluster-identity-ca.pem 2>/dev/null || sudo cat /etc/ccattler/pki/ca.pem" \
+    > "$CA_CERT_LOCAL" # ca.pem: clusters set up before M280
 CCA_API="https://${CTRL_IP}:9770"
-CURL_TLS="--cacert $CA_CERT_LOCAL --cert $CLIENT_CERT_LOCAL --key $CLIENT_KEY_LOCAL"
 
-log "Verifying cca server API..."
+# control_plane_cca runs `sudo cca <arguments>` on the control node against
+# CCA_API, its own replica; the CLI authenticates with the local admin token
+# (M280 CR-H1: no certificate is an admin credential).
+control_plane_cca() {
+    ssh_vm "$CTRL_NODE" "$(local_admin_cca_remote_command "$CCA_API" "$@")"
+}
+
+# control_plane_api_curl runs curl on the control node with its local admin
+# token, for reads no cca command offers (raw /api/status JSON, /api/state,
+# the debug proxy). Takes curl's arguments; URLs must use CCA_API.
+control_plane_api_curl() {
+    ssh_vm "$CTRL_NODE" "$(local_admin_curl_remote_command "$@")"
+}
+
+log "Verifying cca server API on ${CCA_API} (sudo cca status)..."
 deadline=$((SECONDS + 60))
 while [[ $SECONDS -lt $deadline ]]; do
-    if curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" > /dev/null 2>&1; then
+    if control_plane_cca status >/dev/null 2>&1; then
         break
     fi
     sleep 2
 done
-curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" > /dev/null || fail "cca server /status unreachable after 60s"
+control_plane_cca status >/dev/null || fail "cca server API on ${CCA_API} unreachable after 60s"
 
 # WHOAMI_SEEN_IDS_FILE collects every whoami instance ID a status read saw,
 # one per line; a file, since most reads run in a $(...) subshell (M267 D3).
@@ -654,14 +668,14 @@ WHOAMI_SEEN_IDS_FILE=$(mktemp "${TMPDIR:-/tmp}/cca-e2e-whoami-ids.XXXXXX")
 # check in Step 6. Used by every status read from Step 4 on.
 fetch_cluster_status() {
     local status_json
-    status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || return 1
+    status_json=$(control_plane_api_curl -sf -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || return 1
     echo "$status_json" | jq -r '.instances[]? | select(.service == "whoami") | .id' >> "$WHOAMI_SEEN_IDS_FILE" 2>/dev/null || true
     echo "$status_json"
 }
 
 count_alive_nodes() {
     local status_json
-    status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || { echo 0; return; }
+    status_json=$(control_plane_api_curl -sf -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || { echo 0; return; }
     local count
     count=$(echo "$status_json" | grep -o '"state":"alive"' | wc -l | tr -d ' \n') || true
     echo "${count:-0}"
@@ -682,10 +696,10 @@ if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
     if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
         log "Final node count: $node_count"
         log "Final /status response:"
-        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>&1 || true
+        control_plane_api_curl -s -H "Accept: application/json" "${CCA_API}/api/status" 2>&1 || true
         echo ""
         log "Registered nodes (from API):"
-        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '.nodes[] | "  \(.id): \(.state)"' || true
+        control_plane_api_curl -s -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '.nodes[] | "  \(.id): \(.state)"' || true
         fail "Only $node_count/$EXPECTED_NODES nodes registered after ${CONVERGE_TIMEOUT}s"
     fi
 fi
@@ -857,46 +871,17 @@ if [[ " ${WORKLOAD_NAMES[*]} " == *" whoami "* ]]; then
     log "whoami-churn: $WHOAMI_EXPECTED_INSTANCE_IDS whoami instance IDs expected after deploy"
 fi
 
-# ---- Step 4.5: Install Caddy sync daemon on testbed host ----
-# Only for the deploy environment (long-lived cluster). The test environment is
-# ephemeral and halted after tests — no point exposing it.
+# ---- Step 4.5: Caddy sync daemon on the testbed host (disabled until M281) ----
+# Until M280 the deploy environment installed scripts/caddy-sync.sh, which
+# regenerated the testbed's Caddyfile from route facts.
 #
-# The Caddy sync daemon is a reconciliation loop that watches route facts in the
-# CCattler store and regenerates the Caddyfile when routes change. It also
-# maintains host routes to overlay subnets so the testbed host can reach
-# container IPs directly — no VIP DNAT or Host header tricks needed.
-#
-# This is the bare-metal equivalent of the cloud load balancer integration:
-# route facts are the source of truth, Caddy is just another reconciler.
-
+# Disabled from M280 (decision of the user's reviewer, 2026-11-25): caddy-sync
+# read the store with the control node's certificate, which is no longer an
+# admin credential. M281 replaces it (HAProxy forwards to the gates); until
+# then the external testbed URLs are unavailable and gate coverage comes from
+# gate_tls_checks.sh (direct connections to each agent node's :443).
 if [[ "$CLUSTER_ENV" == "deploy" ]]; then
-    log "Installing Caddy sync daemon on testbed host..."
-
-    sudo cp "$REPO_DIR/scripts/caddy-sync.sh" /usr/local/bin/caddy-sync.sh
-    sudo chmod +x /usr/local/bin/caddy-sync.sh
-
-    sudo cp "$REPO_DIR/deploy/caddy-sync.service" /etc/systemd/system/caddy-sync.service
-    sudo mkdir -p /etc/systemd/system/caddy-sync.service.d
-    printf "[Service]\nEnvironment=CCA_API=https://%s:9770\n" "$CTRL_IP" | sudo tee /etc/systemd/system/caddy-sync.service.d/api-endpoint.conf > /dev/null
-    sudo mkdir -p /etc/ccattler/pki /etc/caddy
-    if [[ ! -f /etc/caddy/Caddyfile ]]; then
-        echo '{ }' | sudo tee /etc/caddy/Caddyfile > /dev/null
-    fi
-
-    sudo cp "$CA_CERT_LOCAL" /etc/ccattler/pki/cluster-identity-ca.pem
-    sudo cp "$CLIENT_CERT_LOCAL" /etc/ccattler/pki/node-identity-for-api.pem
-    sudo cp "$CLIENT_KEY_LOCAL" /etc/ccattler/pki/node-identity-for-api-key.pem
-
-    sudo systemctl daemon-reload
-    sudo systemctl restart caddy.service 2>/dev/null || log "WARNING: caddy failed to start"
-    sudo systemctl enable --now caddy-sync.service 2>/dev/null || log "WARNING: caddy-sync failed to start"
-
-    sleep 5
-    if systemctl is-active --quiet caddy-sync.service; then
-        log "Caddy sync daemon running — routes will reconcile automatically"
-    else
-        log "WARNING: caddy-sync service not active, check: journalctl -u caddy-sync"
-    fi
+    log "SKIP (deferred to M281): caddy-sync and Caddy are not installed on the testbed host"
 fi
 
 log "$(skipped_check_groups_report)"
@@ -917,12 +902,12 @@ log "'cca agent debug' OK — shows containers, resource usage, and images"
 log "Discovering agent debug addresses from etcd..."
 # The agent publishes its debug address under its node_id.
 WORKER1_NODE_ID="$WORKER1_NODE"
-WORKER1_DEBUG_ADDR=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
+WORKER1_DEBUG_ADDR=$(control_plane_api_curl -sf "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
 if [[ -z "$WORKER1_DEBUG_ADDR" ]]; then
     deadline=$((SECONDS + 30))
     while [[ $SECONDS -lt $deadline ]]; do
         sleep 2
-        WORKER1_DEBUG_ADDR=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
+        WORKER1_DEBUG_ADDR=$(control_plane_api_curl -sf "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
         [[ -n "$WORKER1_DEBUG_ADDR" ]] && break
     done
 fi
@@ -938,18 +923,18 @@ log "Debug API rejects requests without a client certificate"
 DEBUG_PROXY="${CCA_API}/api/node/debug/${WORKER1_NODE_ID}"
 
 log "Testing GET /debug/containers on worker-1 (via API proxy)..."
-CONTAINERS_JSON=$(curl -sf $CURL_TLS "${DEBUG_PROXY}/containers" 2>&1) || fail "debug/containers request failed"
+CONTAINERS_JSON=$(control_plane_api_curl -sf "${DEBUG_PROXY}/containers" 2>&1) || fail "debug/containers request failed"
 echo "$CONTAINERS_JSON" | grep -q '"node_id"' || fail "debug/containers missing node_id"
 CONTAINER_COUNT=$(echo "$CONTAINERS_JSON" | grep -o '"count":[0-9]*' | head -1 | cut -d: -f2)
 log "GET /debug/containers OK — $CONTAINER_COUNT containers on worker-1"
 
 log "Testing GET /debug/stats on worker-1..."
-STATS_JSON=$(curl -sf $CURL_TLS "${DEBUG_PROXY}/stats" 2>&1) || fail "debug/stats request failed"
+STATS_JSON=$(control_plane_api_curl -sf "${DEBUG_PROXY}/stats" 2>&1) || fail "debug/stats request failed"
 echo "$STATS_JSON" | grep -q '"workload_count"' || fail "debug/stats missing workload_count"
 log "GET /debug/stats OK"
 
 log "Testing GET /debug/images on worker-1..."
-IMAGES_JSON=$(curl -sf $CURL_TLS "${DEBUG_PROXY}/images" 2>&1) || fail "debug/images request failed"
+IMAGES_JSON=$(control_plane_api_curl -sf "${DEBUG_PROXY}/images" 2>&1) || fail "debug/images request failed"
 echo "$IMAGES_JSON" | grep -q '"images"' || fail "debug/images missing images field"
 log "GET /debug/images OK"
 
@@ -966,7 +951,7 @@ if [[ -n "$INSTANCE_ID" ]]; then
         # The e2e images are shell-less whoami, so exec runs the whoami binary
         # itself; exec takes argv without a shell (Flow 24). "-h" prints usage
         # and exits 0.
-        EXEC_JSON=$(curl -sf $CURL_TLS -X POST "${DEBUG_PROXY}/exec" \
+        EXEC_JSON=$(control_plane_api_curl -sf -X POST "${DEBUG_PROXY}/exec" \
             -H "Content-Type: application/json" \
             -d "{\"instance_id\":\"$WORKER1_INSTANCE\",\"args\":[\"/whoami\",\"-h\"]}" 2>&1) || fail "debug/exec request failed: $EXEC_JSON"
         echo "$EXEC_JSON" | grep -q '"instance_id"' || fail "debug/exec missing instance_id"
@@ -983,7 +968,7 @@ fi
 
 PULL_REF="${LOCAL_REGISTRY}/whoami:latest"
 log "Testing POST /debug/images/pull on worker-1 (image: ${PULL_REF})..."
-PULL_JSON=$(curl -sf $CURL_TLS --max-time 60 -X POST "${DEBUG_PROXY}/images/pull" \
+PULL_JSON=$(control_plane_api_curl -sf --max-time 60 -X POST "${DEBUG_PROXY}/images/pull" \
     -H "Content-Type: application/json" \
     -d "{\"image\":\"${PULL_REF}\"}" 2>&1) || fail "debug/images/pull request failed"
 echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"
@@ -1016,10 +1001,10 @@ log "Phase 69 E2E tests passed"
 # mTLS would otherwise authenticate the request as the control node.
 log "Validating API authorization (M173)..."
 for SENSITIVE_PREFIX in secret s enroll auth/; do
-    PREFIX_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 $CURL_TLS "${CCA_API}/api/state?prefix=${SENSITIVE_PREFIX}" || echo "000")
+    PREFIX_CODE=$(control_plane_api_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${CCA_API}/api/state?prefix=${SENSITIVE_PREFIX}" || echo "000")
     [[ "$PREFIX_CODE" == "403" ]] || fail "state API prefix '${SENSITIVE_PREFIX}' returned HTTP $PREFIX_CODE, want 403"
 done
-TLS_KEY_FACTS=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=desired/route/" | jq '[.[] | select(.key | endswith("/tls/key"))] | length')
+TLS_KEY_FACTS=$(control_plane_api_curl -sf "${CCA_API}/api/state?prefix=desired/route/" | jq '[.[] | select(.key | endswith("/tls/key"))] | length')
 [[ "$TLS_KEY_FACTS" == "0" ]] || fail "state API returned $TLS_KEY_FACTS gate TLS private key facts"
 log "  State API refuses sensitive prefixes and hides gate private keys"
 
@@ -1056,32 +1041,9 @@ ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca user delete ${GRANT_TEST_USER} >/de
 log "  cca role grant and revoke take effect without a server restart"
 
 if [[ "$CLUSTER_ENV" == "deploy" ]]; then
-    # caddy-sync reads routes through /api/state with the node certificate;
-    # every route whose backends are resolved must reach the Caddyfile after
-    # the allowlist change. caddy-sync skips routes without backends on
-    # purpose (run 41685401431: Airflow's webserver was still restarting).
-    ROUTE_DESIRED_JSON=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=desired/route/")
-    ROUTE_DERIVED_JSON=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=derived/route/")
-    ROUTE_HOSTS=$(jq -r --argjson derived "$ROUTE_DERIVED_JSON" '
-        [$derived[] | select((.key | endswith("/backends")) and .value != "")
-         | .key | split("/")[2]] as $routesWithBackends
-        | .[] | select(.key | endswith("/host"))
-        | select((.key | split("/")[2]) as $route | $routesWithBackends | index($route))
-        | .value' <<< "$ROUTE_DESIRED_JSON" | sort -u)
-    ROUTE_COUNT_TOTAL=$(jq -r '[.[] | select(.key | endswith("/host"))] | length' <<< "$ROUTE_DESIRED_JSON")
-    log "  $(echo "$ROUTE_HOSTS" | grep -c .) of $ROUTE_COUNT_TOTAL routes have resolved backends"
-    CADDY_DEADLINE=$((SECONDS + 60))
-    MISSING_ROUTE_HOSTS="$ROUTE_HOSTS"
-    while [[ $SECONDS -lt $CADDY_DEADLINE && -n "$MISSING_ROUTE_HOSTS" ]]; do
-        CADDYFILE_CONTENT=$(sudo cat /etc/caddy/Caddyfile 2>/dev/null || echo "")
-        MISSING_ROUTE_HOSTS=""
-        for routeHost in $ROUTE_HOSTS; do
-            grep -qF "$routeHost" <<< "$CADDYFILE_CONTENT" || MISSING_ROUTE_HOSTS="$MISSING_ROUTE_HOSTS $routeHost"
-        done
-        [[ -n "$MISSING_ROUTE_HOSTS" ]] && sleep 2
-    done
-    [[ -z "$MISSING_ROUTE_HOSTS" ]] || fail "caddy-sync did not write routes for:$MISSING_ROUTE_HOSTS"
-    log "  caddy-sync wrote all $(echo "$ROUTE_HOSTS" | grep -c .) route hosts to the Caddyfile"
+    # The Caddyfile assertion (every resolved route reaches the testbed's
+    # Caddy) is deferred to M281 with caddy-sync (Step 4.5); not counted as passed.
+    log "  SKIP (deferred to M281): external route path via the testbed load balancer"
 fi
 log "API authorization checks passed (M173)"
 
@@ -1195,9 +1157,9 @@ else
     ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L -n 2>/dev/null | head -40" 2>/dev/null || true
     ssh_vm "$DATAPLANE_CHECK_NODE" "sudo bpftool map list 2>/dev/null | grep -A1 cca_" 2>/dev/null || true
     log "  Networking from API:"
-    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq '.networking' || true
+    control_plane_api_curl -s -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq '.networking' || true
     log "  Nodes from API:"
-    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq '.nodes' || true
+    control_plane_api_curl -s -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq '.nodes' || true
 fi
 
 # ---- Step 5.7: Cross-node VIP connectivity and DNS resolution ----
@@ -1412,9 +1374,8 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
 
     CHURN_PASS=true
 
-    curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
-        -H "Content-Type: application/json" \
-        -d '{"service":"whoami","instances":1}' > /dev/null || fail "Scale whoami to 1 failed"
+    control_plane_cca scale whoami 1 >/dev/null \
+        || fail "Scale whoami to 1 failed"
     log "  Scaled whoami to 1 instance"
 
     sleep 3
@@ -1437,9 +1398,8 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
         CHURN_PASS=false
     fi
 
-    curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
-        -H "Content-Type: application/json" \
-        -d '{"service":"whoami","instances":2}' > /dev/null || fail "Scale whoami back to 2 failed"
+    control_plane_cca scale whoami 2 >/dev/null \
+        || fail "Scale whoami back to 2 failed"
     log "  Restored whoami to 2 instances"
     WHOAMI_EXPECTED_INSTANCE_IDS=$((WHOAMI_EXPECTED_INSTANCE_IDS + 1)) # scale 1→2 creates one instance
 
@@ -1633,17 +1593,15 @@ if [[ "$EXTENDED_TESTS" == "true" && "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI
         DNS_BEFORE=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
         log "  DNS before scale: $WHOAMI_DNS -> $DNS_BEFORE"
 
-        curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
-            -H "Content-Type: application/json" \
-            -d '{"service":"whoami","instances":1}' > /dev/null || log "WARNING: scale to 1 failed"
+        control_plane_cca scale whoami 1 >/dev/null \
+            || log "WARNING: scale to 1 failed"
         sleep 3
 
         DNS_DURING=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
         log "  DNS during scale-down: $WHOAMI_DNS -> $DNS_DURING"
 
-        curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
-            -H "Content-Type: application/json" \
-            -d '{"service":"whoami","instances":2}' > /dev/null || log "WARNING: scale to 2 failed"
+        control_plane_cca scale whoami 2 >/dev/null \
+            || log "WARNING: scale to 2 failed"
         WHOAMI_EXPECTED_INSTANCE_IDS=$((WHOAMI_EXPECTED_INSTANCE_IDS + 1)) # scale 1→2 creates one instance
         sleep 3
 
@@ -1753,9 +1711,9 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]] && ! check_skipped multiport; then
     HOSTPORT_PASS=true
     for instanceID in $MULTIPORT_INSTANCES; do
         [[ -z "$instanceID" ]] && continue
-        HP80=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport/80" 2>/dev/null | jq -r '.[0].value // empty' || echo "")
-        HP8081=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport/8081" 2>/dev/null | jq -r '.[0].value // empty' || echo "")
-        HPLEGACY=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport" 2>/dev/null | jq -r 'length' || echo "0")
+        HP80=$(control_plane_api_curl -sf "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport/80" 2>/dev/null | jq -r '.[0].value // empty' || echo "")
+        HP8081=$(control_plane_api_curl -sf "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport/8081" 2>/dev/null | jq -r '.[0].value // empty' || echo "")
+        HPLEGACY=$(control_plane_api_curl -sf "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport" 2>/dev/null | jq -r 'length' || echo "0")
 
         if [[ -n "$HP80" ]]; then
             log "  Instance $instanceID: hostport/80=$HP80"
@@ -2177,7 +2135,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     log "Local binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 
     # Record pre-upgrade state for comparison.
-    PRE_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
+    PRE_UPGRADE_INSTANCES=$(control_plane_api_curl -sf -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
     PRE_UPGRADE_COUNT=$(echo "$PRE_UPGRADE_INSTANCES" | tr ',' '\n' | wc -l | tr -d ' ')
     log "Pre-upgrade: $PRE_UPGRADE_COUNT instances"
 
@@ -2237,10 +2195,10 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
 
     # Verify API is healthy with new binary.
     log "Verifying API health after upgrade..."
-    curl -sf $CURL_TLS "${CCA_API}/api/status" > /dev/null || fail "Upgrade: API unreachable after binary swap"
+    control_plane_api_curl -sf "${CCA_API}/api/status" > /dev/null || fail "Upgrade: API unreachable after binary swap"
 
     # Verify instance IDs survived the upgrade (data preserved).
-    POST_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
+    POST_UPGRADE_INSTANCES=$(control_plane_api_curl -sf -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
     POST_UPGRADE_COUNT=$(echo "$POST_UPGRADE_INSTANCES" | tr ',' '\n' | wc -l | tr -d ' ')
     log "Post-upgrade: $POST_UPGRADE_COUNT instances"
     if [[ "$PRE_UPGRADE_INSTANCES" != "$POST_UPGRADE_INSTANCES" ]]; then

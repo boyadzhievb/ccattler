@@ -2,7 +2,7 @@
 # WordPress deploy checks (M231, spec deploy-test-runs "WordPress is a deploy
 # workload"). Sourced by cluster_test.sh when the wordpress workload is
 # deployed; uses its log, fail, ssh_vm, vm_has_active_agent, NODE_IPS, VM_NAMES,
-# CTRL_NODE, CCA_API and CURL_TLS.
+# CTRL_NODE, CCA_API and control_plane_api_curl.
 
 WORDPRESS_READY_TIMEOUT=300    # seconds for MariaDB, WordPress and nginx to answer (first start initialises the database)
 WORDPRESS_GATE_HOST="wordpress.home.arpa"
@@ -52,7 +52,7 @@ wordpress_wait_for() {
 run_wordpress_checks() {
     log "Validating WordPress (VIP and gate)..."
     local networking_json nginx_vip nginx_port gate_node=""
-    networking_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null || echo "{}")
+    networking_json=$(control_plane_api_curl -sf -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null || echo "{}")
     nginx_vip=$(echo "$networking_json" | jq -r '.networking[]? | select(.service == "nginx") | .vip' | head -1)
     nginx_port=$(echo "$networking_json" | jq -r '.networking[]? | select(.service == "nginx") | .port' | head -1)
     [[ -n "$nginx_vip" && "$nginx_vip" != "null" ]] || fail "wordpress: service nginx has no VIP in /api/status"

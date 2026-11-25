@@ -477,7 +477,11 @@ export CCA_TOKEN=$(sudo cca user token USERNAME --ttl 24h)
 cca status
 ```
 
-The token is valid for the `--ttl` you chose. Create a new one when it expires. `export` sets it only for the
+The token is valid for the `--ttl` you chose. Create a new one when it expires.
+
+> **Note:** for now a user token does not survive a restart of `cca server`, and with several control-plane hosts
+> it works only on the one that created it. After a restart or an upgrade, run the `export` line again. This is
+> fixed by milestone M283; until then, scripts on the control-plane host use `sudo cca`. `export` sets it only for the
 current shell: in a new terminal or after logging in again, `cca status` fails with `client certificate required`
 until you run the `export` line again. To keep it across logins, put the `export` line in `~/.bashrc`.
 

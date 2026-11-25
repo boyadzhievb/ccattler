@@ -675,9 +675,31 @@ ingress, never to pods):
 - **Removed:** Caddy, caddy-sync.sh and its unit, and the install step.
 - **Changed:** the host setup script and `design/deploy-host.md`.
 
+**Sequence and model (user's reviewer, 2026-11-25):**
+- **The sequence:** M280 closes first, with caddy-sync disabled; M281 follows right after.
+  - M280's gate coverage is the direct-node test (gate_tls_checks.sh).
+  - The external route path and the Caddyfile assertion (cluster_test.sh:1088-1107) are deferred here, not passed.
+  - External testbed URLs are unavailable until M281.
+- **Forwarding:**
+
+  | Frontend | Backend | Mode |
+  |---|---|---|
+  | TCP 80 | agent nodes, port 8080 (`--proxy-listen`) | TCP passthrough |
+  | TCP 443 | agent nodes, port 443 (`--proxy-tls-listen`) | TCP passthrough |
+
+  These are the defaults in cca-agent.service.j2:12-13.
+- **Backends:** only nodes that run the agent's gate proxy (the same rule as `vm_has_active_agent`). Control-plane
+  VMs without an agent are left out.
+- **Health checks:** TCP checks prove that a listener is up, not that a route or certificate works.
+- **External tests** must check SNI routing and that the real gate certificate is presented, verified with
+  `gate-https-ca.pem`. They replace the deferred Caddyfile assertion.
+- **TLS is never terminated on HAProxy.**
+- **Client IPs:** without PROXY protocol, gates see HAProxy's address; this is documented. `send-proxy` stays off
+  until the gate proxy parses it.
+
 **Open, for the proposal:**
-- **The agents' flags:** verify that the deploy cluster's agents run `--proxy` and `--proxy-tls-listen`, and on which
-  ports.
+- **The agents' flags:** verified as the defaults (8080 and 443, cca-agent.service.j2:12-13); check the deploy
+  inventory for overrides.
 - **Client IPs:** at L4 the gates see the host's IP, not the client's, unless the gate proxy supports the PROXY
   protocol (it matters for sticky sessions and rate limits).
 - **Dependence on host routes:** check whether any e2e check relies on caddy-sync's host routes to container IPs.

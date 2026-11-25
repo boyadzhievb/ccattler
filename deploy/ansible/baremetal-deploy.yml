@@ -66,7 +66,6 @@
     - name: Wait for CCattler server to be ready
       shell: >
         curl -sf --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
-        --cert {{ cca_cert_dir }}/node-identity-for-api.pem --key {{ cca_cert_dir }}/node-identity-for-api-key.pem
         https://{{ ansible_host }}:9770/healthz
       retries: 15
       delay: 2
@@ -80,16 +79,14 @@
       pause:
         seconds: 30
 
+    # sudo cca with the local token (M280: no certificate is an admin credential).
     - name: Show cluster status
-      command: >
-        curl -sf
-        --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
-        --cert {{ cca_cert_dir }}/node-identity-for-api.pem
-        --key {{ cca_cert_dir }}/node-identity-for-api-key.pem
-        -H "Accept: application/json"
-        https://{{ ansible_host }}:9770/api/status
+      command: /usr/local/bin/cca get instances -o json
+      environment:
+        CCA_API: "https://{{ ansible_host }}:9770"
       register: cluster_status
+      changed_when: false
 
     - name: Display running instances
       debug:
-        msg: "{{ (cluster_status.stdout | from_json).instances | map(attribute='id') | list }}"
+        msg: "{{ cluster_status.stdout | from_json | map(attribute='id') | list }}"

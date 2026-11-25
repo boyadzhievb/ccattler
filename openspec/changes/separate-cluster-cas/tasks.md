@@ -240,6 +240,46 @@ replica that minted them; that is now milestone M283. Therefore:
     (cross-replica rejection is the M283 bug).
 - **After M283** removes the token-lifetime and replica problem, M281 removes caddy-sync altogether.
 
+### 3d. Rework round 2 (CR-H1) (2026-11-25, lead-developer; outputs in scratchpad rw2-*.txt)
+
+**Decision (user's reviewer, 2026-11-25):** option (i) for caddy-sync is rejected (it replaces the caddy-sync
+block above). caddy-sync is disabled for M280's closing run: cluster_test.sh no longer installs or starts caddy-sync
+or Caddy on the testbed host (scripts/caddy-sync.sh and deploy/caddy-sync.service stay, M281 removes them). The
+external route path and the Caddyfile assertion are deferred to M281; the run logs `SKIP (deferred to M281)` for
+both and does not count them as passed. External testbed URLs are unavailable until M281. M280's gate checks are the
+direct-node ones in gate_tls_checks.sh (curl on the control node to each agent node's :443 with --resolve), which
+never depended on caddy-sync.
+
+- [x] **Shared helper** test/e2e/local_admin_access.sh: `local_admin_cca_remote_command` (`sudo env CCA_API=<that
+  host's replica> cca …`) and `local_admin_curl_remote_command` (raw API reads only where no cca command returns the
+  data: full /api/status JSON, /api/state, the debug proxy). The curl reads `/etc/ccattler/local-token` inside the
+  remote `sh` and passes `Authorization: Bearer` on stdin (`-H @-`); CA from the CLI's candidates, so old `ca.pem`
+  clusters work. Red→green: `TestLocalAdminCurlSendsTokenOnStdinOnly` (base: helper missing, FAIL; now PASS: token
+  absent from sudo's and curl's argv and output, header on stdin, old ca.pem picked).
+- [x] **cluster_test.sh** (+ gate_tls_checks.sh, wordpress_checks.sh): `CURL_TLS` and the copied node certificate
+  removed; status wait = `sudo cca status` on `CCA_API`; scale = `sudo cca scale`; status JSON, /api/state, debug proxy
+  and the M173 prefix checks via `control_plane_api_curl`. The e2e-reader user-token check is unchanged (one server
+  lifetime; no JWT continuity claimed). The CA fetch falls back to `ca.pem`.
+- [x] **Ansible**: baremetal-deploy, ha-deploy, demo-deploy status → `cca get instances -o json` (become, `CCA_API`
+  = that host); /healthz waits (unauthenticated) without a client certificate. Also found: roles/worker "Wait for
+  agent to register" (delegated to controlplane[0]) used the ctrl node certificate → `cca get nodes -o json`.
+  `ansible-playbook --syntax-check` passes for the three playbooks.
+- [x] **health_check.sh, baremetal_ha_test.sh, vm-ha/ha_test.sh**: `control_plane_api_curl`/`api_curl` through the
+  helper, run on the host whose replica the URL names (local tokens are per replica).
+- [x] **Invariant test** `TestAutomationNeverUsesNodeIdentityAsAdminClient` (test/e2e, deploy/ansible): base FAIL,
+  12 uses (baremetal-deploy :69 :87, demo-deploy :107, ha-deploy :72 :105 :123, worker tasks :96, baremetal_ha_test
+  :91, cluster_test :633 :887, health_check :141, vm-ha/ha_test :97); now PASS (`rw2-red.txt`).
+- [x] **Guide** (website/installation.md step 3): note that a user token does not survive a `cca server` restart and
+  works only on the replica that created it until M283. No `CCA_TOKEN` checks added (M283).
+- [x] **Checks:** shellcheck: local_admin_access.sh clean; the other changed scripts have no warning on a changed line
+  and fewer or equal warnings than the base (cluster_test 91→59, gate_tls 6→1, wordpress 1→0). gofmt clean; `go vet
+  ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also `--build-tags
+  etcd_integration` on cmd/cca and store); `go test -count=1 ./...` exit 0; `-race` on security, controllers, cmd/cca
+  exit 0.
+- [ ] **Only the deploy run proves:** `sudo cca status`/`scale`/`get` and the helper curl over ssh on the real hosts
+  (vmherd quoting, curl `-H @-` on the images), the Ansible status tasks and the worker registration wait, the HA tests'
+  per-replica reads, and the two `SKIP (deferred to M281)` lines in the job log.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

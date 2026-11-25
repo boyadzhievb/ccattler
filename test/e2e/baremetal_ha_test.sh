@@ -18,6 +18,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Admin API reads use each control-plane host's local token (M280 CR-H1).
+# shellcheck source=test/e2e/local_admin_access.sh
+source "$SCRIPT_DIR/local_admin_access.sh"
 
 CTRL1_IP="192.168.100.215"
 CTRL2_IP="192.168.100.30"
@@ -88,7 +91,8 @@ api_curl() {
             break
         fi
     done
-    ssh_node "$ctrl_name" "curl -sf --cacert /etc/ccattler/pki/cluster-identity-ca.pem --cert /etc/ccattler/pki/node-identity-for-api.pem --key /etc/ccattler/pki/node-identity-for-api-key.pem https://${ctrl_ip}:9770${path}" 2>/dev/null
+    # Run on ctrl_ip's own host: its local admin token is valid only on that replica (M280 CR-H1).
+    ssh_node "$ctrl_name" "$(local_admin_curl_remote_command -sf "https://${ctrl_ip}:9770${path}")" 2>/dev/null
 }
 
 wait_for_condition() {

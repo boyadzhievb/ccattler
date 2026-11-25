@@ -89,15 +89,14 @@
     state: started
     daemon_reload: true
 
+# sudo cca on the control-plane host with its local token (M280: no
+# certificate is an admin credential), pinned to that host's replica.
 - name: Wait for agent to register via API
   shell: >
-    curl -sf
-    --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
-    --cert {{ cca_cert_dir }}/node-identity-for-api.pem
-    --key {{ cca_cert_dir }}/node-identity-for-api-key.pem
-    -H "Accept: application/json"
-    https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770/api/status
-    | grep -q '"id":"{{ node_id | default(inventory_hostname) }}"'
+    /usr/local/bin/cca get nodes -o json
+    | grep -q '"id": "{{ node_id | default(inventory_hostname) }}"'
+  environment:
+    CCA_API: "https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770"
   delegate_to: "{{ groups['controlplane'][0] }}"
   register: node_registered
   retries: 10

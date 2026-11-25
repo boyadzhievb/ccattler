@@ -67,6 +67,9 @@ becomes an etcd user only once etcd authentication and roles are enabled (M181, 
 token can enroll as a control-plane node. `ccattler-server` and `cca-server` are reserved node IDs (enrollment and
 `cca init`), so no node gets the server's API principal or its etcd client CN `etcd-client-cca-server`. No certificate
 is an admin credential: `node:<node>` has node-agent rights only; root on a control-plane host uses the local token.
+The e2e, HA and deploy scripts do the same (`sudo cca`, or `local_admin_curl_remote_command` in
+test/e2e/local_admin_access.sh for raw API reads, token on curl's stdin); `TestAutomationNeverUsesNodeIdentityAsAdminClient`
+keeps every other use of `node-identity-for-api.pem` out of test/e2e and deploy/ansible.
 
 **Single-CA clusters adding an HA secondary (CR-L7):** `cca init --ca/--ca-key` alone reuses the single CA and writes the
 older layout (`ca.pem`, `node.pem` server+client, `etcd.pem` server+client); its setup.sh uses those files and passes no

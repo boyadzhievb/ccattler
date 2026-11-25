@@ -21,6 +21,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# Admin API reads use each control-plane host's local token (M280 CR-H1).
+# shellcheck source=test/e2e/local_admin_access.sh
+source "$REPO_DIR/test/e2e/local_admin_access.sh"
 # HA_VM_SET picks the VM set: "vmherd" (default, test/e2e/vm-ha, NAT
 # 192.168.125.x) or "lan" (test/e2e/vm-ha-lan on testbed-100.77, bridged
 # 192.168.100.53–.56; used by the e2e-ha workflow).
@@ -94,7 +97,8 @@ api_curl() {
             break
         fi
     done
-    ssh_vm "$ctrl_name" "sudo curl -sf --cacert /etc/ccattler/pki/cluster-identity-ca.pem --cert /etc/ccattler/pki/node-identity-for-api.pem --key /etc/ccattler/pki/node-identity-for-api-key.pem https://${ctrl_ip}:9770${path}" 2>/dev/null
+    # Run on ctrl_ip's own host: its local admin token is valid only on that replica (M280 CR-H1).
+    ssh_vm "$ctrl_name" "$(local_admin_curl_remote_command -sf "https://${ctrl_ip}:9770${path}")" 2>/dev/null
 }
 
 wait_for_condition() {

@@ -58,6 +58,16 @@ ssh_vm() {
     (cd "$VMHERD_DIR" && "$VMHERD_BIN" ssh "$vm_name" -- "$@")
 }
 
+# Admin API reads use the control plane's local token (M280 CR-H1).
+# shellcheck source=test/e2e/local_admin_access.sh
+source "$SCRIPT_DIR/local_admin_access.sh"
+
+# control_plane_api_curl runs curl on the control-plane host with its local
+# admin token; takes curl's arguments (URLs on CCA_API_URL, that host's replica).
+control_plane_api_curl() {
+    ssh_vm "$CTRL_NAME" "$(local_admin_curl_remote_command "$@")"
+}
+
 count_running_instances() {
     local node_name="$1"
     if [[ -n "$STATUS_JSON" ]]; then
@@ -101,17 +111,15 @@ fi
 log "  Control plane: $CTRL_NAME"
 
 # ---- Auto-detect API connection settings ----
-# Discover the API port and TLS configuration from the running cca-server process.
+# Discover the API port from the running cca-server process. Admin reads
+# authenticate with the local token, not a certificate (M280 CR-H1); the TLS
+# scheme follows whether a cluster CA is installed (M280 name or old ca.pem).
 CCA_API_PORT=""
-CCA_TLS_FLAGS=""
 CCA_API_SCHEME="https"
 
 SERVER_CMDLINE=$(ssh_vm "$CTRL_NAME" "tr '\\0' ' ' < /proc/\$(pgrep -f 'cca server' | head -1)/cmdline 2>/dev/null || true" 2>/dev/null || true)
 
 PORT_PATTERN='--api-port[= ]([0-9]+)'
-CA_PATTERN='--tls-ca-file[= ]([^ ]+)'
-CERT_PATTERN='--tls-cert-file[= ]([^ ]+)'
-KEY_PATTERN='--tls-key-file[= ]([^ ]+)'
 
 if [[ -n "$SERVER_CMDLINE" ]]; then
     if [[ "$SERVER_CMDLINE" =~ $PORT_PATTERN ]]; then
@@ -120,37 +128,16 @@ if [[ -n "$SERVER_CMDLINE" ]]; then
 fi
 CCA_API_PORT="${CCA_API_PORT:-9770}"
 
-CCA_TLS_CA=""
-CCA_TLS_CERT=""
-CCA_TLS_KEY=""
-
-if [[ -n "$SERVER_CMDLINE" ]]; then
-    if [[ "$SERVER_CMDLINE" =~ $CA_PATTERN ]]; then
-        CCA_TLS_CA="${BASH_REMATCH[1]}"
-    fi
-    if [[ "$SERVER_CMDLINE" =~ $CERT_PATTERN ]]; then
-        CCA_TLS_CERT="${BASH_REMATCH[1]}"
-    fi
-    if [[ "$SERVER_CMDLINE" =~ $KEY_PATTERN ]]; then
-        CCA_TLS_KEY="${BASH_REMATCH[1]}"
-    fi
-fi
-
-# Fall back to standard PKI paths.
-CCA_TLS_CA="${CCA_TLS_CA:-/etc/ccattler/pki/cluster-identity-ca.pem}"
-CCA_TLS_CERT="${CCA_TLS_CERT:-/etc/ccattler/pki/node-identity-for-api.pem}"
-CCA_TLS_KEY="${CCA_TLS_KEY:-/etc/ccattler/pki/node-identity-for-api-key.pem}"
-
-# Check if TLS certs actually exist on the control plane.
-if ssh_vm "$CTRL_NAME" "test -f $CCA_TLS_CA" 2>/dev/null; then
-    CCA_TLS_FLAGS="--cacert $CCA_TLS_CA --cert $CCA_TLS_CERT --key $CCA_TLS_KEY"
-else
+ca_installed_check=""
+for ca_candidate in $LOCAL_ADMIN_CA_CANDIDATES; do
+    ca_installed_check+="${ca_installed_check:+ || }test -f $ca_candidate"
+done
+if ! ssh_vm "$CTRL_NAME" "$ca_installed_check" 2>/dev/null; then
     CCA_API_SCHEME="http"
-    CCA_TLS_FLAGS=""
 fi
 
 CCA_API_URL="${CCA_API_SCHEME}://localhost:${CCA_API_PORT}"
-log "  API: $CCA_API_URL (TLS: $([ -n "$CCA_TLS_FLAGS" ] && echo "yes" || echo "no"))"
+log "  API: $CCA_API_URL (TLS: $([[ "$CCA_API_SCHEME" == "https" ]] && echo "yes" || echo "no"))"
 
 # ---- Check 2: control plane health (via cca status) ----
 log "Check 2: control plane health"
@@ -174,7 +161,7 @@ fi
 # ---- Check 3: cca server API (JSON via curl on node) ----
 log "Check 3: cca server API"
 STATUS_JSON=""
-if STATUS_JSON=$(ssh_vm "$CTRL_NAME" "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/status" 2>/dev/null); then
+if STATUS_JSON=$(control_plane_api_curl -sf "${CCA_API_URL}/api/status" 2>/dev/null); then
     log "  API /status: reachable"
 else
     warn "API /status: UNREACHABLE"
@@ -205,8 +192,8 @@ collect_convergence_diagnostics() {
 
         for instance_id in $instance_ids; do
             log "  [$svc_name/$instance_id] Probe progress:"
-            probe_json=$(ssh_vm "$CTRL_NAME" \
-                "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/state?prefix=observed/instance/${instance_id}/probe-progress" \
+            probe_json=$(control_plane_api_curl -sf \
+                "${CCA_API_URL}/api/state?prefix=observed/instance/${instance_id}/probe-progress" \
                 2>/dev/null || true)
             if [[ -n "$probe_json" ]] && echo "$probe_json" | jq -e '.[0].value' >/dev/null 2>&1; then
                 echo "$probe_json" | jq -r '.[0].value' | jq -r \
@@ -386,16 +373,16 @@ if [[ -n "$STATUS_JSON" ]]; then
     for vm in "${ALL_VM_NAMES[@]}"; do
         debug_address=$(echo "$STATUS_JSON" | jq -r --arg node "$vm" '.nodes[] | select(.id == $node) | .debug_address // empty' 2>/dev/null || true)
         if [[ -z "$debug_address" ]]; then
-            debug_address=$(ssh_vm "$CTRL_NAME" \
-                "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/state?prefix=observed/node/${vm}/debug_address" 2>/dev/null \
+            debug_address=$(control_plane_api_curl -sf \
+                "${CCA_API_URL}/api/state?prefix=observed/node/${vm}/debug_address" 2>/dev/null \
                 | jq -r '.[0].value // empty' 2>/dev/null || true)
         fi
         if [[ -z "$debug_address" ]]; then
             log "  $vm: no debug address — skipping"
             continue
         fi
-        stats_json=$(ssh_vm "$CTRL_NAME" \
-            "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/node/debug/${vm}/stats" 2>/dev/null || echo "")
+        stats_json=$(control_plane_api_curl -sf \
+            "${CCA_API_URL}/api/node/debug/${vm}/stats" 2>/dev/null || echo "")
         if [[ -z "$stats_json" ]]; then
             log "  $vm: debug API unreachable at $debug_address — skipping"
             continue
