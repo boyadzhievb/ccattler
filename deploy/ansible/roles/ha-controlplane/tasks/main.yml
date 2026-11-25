@@ -30,7 +30,7 @@
 - name: Run setup script on the first node (installs PKI and systemd units)
   command: /tmp/cca-init/setup.sh
   args:
-    creates: /etc/ccattler/pki/ca.pem
+    creates: /etc/ccattler/pki/cluster-identity-ca.pem
   when: inventory_hostname == groups['controlplane'][0]
 
 - name: Generate secret root key on the first node (clusters that predate M177)
@@ -136,38 +136,24 @@
   failed_when: replica_legacy_key_leftovers.matched > 0
   when: retire_legacy_secret_key | default(false) | bool
 
-- name: Fetch CA and shared PKI from the first control-plane node
+# The three CAs of the first node, with their keys (M280 D1): a secondary that
+# reused only the cluster identity CA would mint CAs its peers do not trust.
+- name: Fetch the three CAs and their keys from the first control-plane node
   fetch:
-    src: "{{ item }}"
+    src: "/etc/ccattler/pki/{{ item }}"
     dest: "{{ ha_pki_staging.path }}/"
     flat: true
-  loop:
-    - /etc/ccattler/pki/ca.pem
-    - /etc/ccattler/pki/ca-key.pem
+  loop: "{{ cca_cluster_ca_files }}"
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
   no_log: true
 
-- name: Fetch node cert and key from the first node (used as template)
-  fetch:
-    src: "{{ item }}"
-    dest: "{{ ha_pki_staging.path }}/"
-    flat: true
-  loop:
-    - /etc/ccattler/pki/node.pem
-    - /etc/ccattler/pki/node-key.pem
-  delegate_to: "{{ groups['controlplane'][0] }}"
-  run_once: true
-  no_log: true
-
-- name: Distribute CA to other control-plane nodes
+- name: Distribute the three CAs and their keys to other control-plane nodes
   copy:
     src: "{{ ha_pki_staging.path }}/{{ item }}"
     dest: "{{ cca_cert_dir }}/{{ item }}"
     mode: "0600"
-  loop:
-    - ca.pem
-    - ca-key.pem
+  loop: "{{ cca_cluster_ca_files }}"
   no_log: true
   when: inventory_hostname != groups['controlplane'][0]
 
@@ -186,8 +172,12 @@
     --node-id {{ inventory_hostname }}
     --cluster-cidr {{ cluster_cidr }}
     --vip-cidr {{ vip_cidr }}
-    --ca {{ cca_cert_dir }}/ca.pem
-    --ca-key {{ cca_cert_dir }}/ca-key.pem
+    --ca {{ cca_cert_dir }}/cluster-identity-ca.pem
+    --ca-key {{ cca_cert_dir }}/cluster-identity-ca-key.pem
+    --etcd-access-ca {{ cca_cert_dir }}/etcd-access-ca.pem
+    --etcd-access-ca-key {{ cca_cert_dir }}/etcd-access-ca-key.pem
+    --gate-https-ca {{ cca_cert_dir }}/gate-https-ca.pem
+    --gate-https-ca-key {{ cca_cert_dir }}/gate-https-ca-key.pem
     -o /tmp/cca-init
   args:
     creates: /tmp/cca-init/setup.sh
@@ -196,7 +186,7 @@
 - name: Run setup script on secondary nodes
   command: /tmp/cca-init/setup.sh
   args:
-    creates: /etc/ccattler/pki/node.pem
+    creates: /etc/ccattler/pki/node-identity-for-api.pem
   when: inventory_hostname != groups['controlplane'][0]
 
 # setup.sh copied the keys into place; the copies cca init left would outlive

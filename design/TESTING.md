@@ -140,8 +140,8 @@ Required before `cca secret migrate-keys --confirm-backup` (M177, Flow 29 step 5
 Run on the control-plane node as root. The client certificate is the node certificate from `cca init`; the etcd data directory and member name come from the `etcd` unit (`ETCD_DATA_DIR=/var/lib/etcd/default`, `ETCD_NAME=%H`).
 
 ```sh
-ETCD="--endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/ca.pem \
-  --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
+ETCD="--endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/etcd-access-ca.pem \
+  --cert /etc/ccattler/pki/node-etcd-client-certificate.pem --key /etc/ccattler/pki/node-etcd-client-certificate-key.pem"
 
 # 1. Back up and verify (keep the file off the node as well).
 mkdir -p /var/backups/ccattler && chmod 700 /var/backups/ccattler
@@ -174,7 +174,7 @@ cca status
 - **`unreadable_count > 0`:** a v1 secret the legacy key cannot open, typically written through an HA replica that had generated its own `secret-master.key` before M177 (Ansible keeps that key as `/etc/ccattler/secret-master.key.<timestamp>~` on the replica). Recover the value from its source and re-create it with `cca secret set <name>`: the new value is written v2, the migration completes, and retirement can pass. Retirement stays refused while any unreadable envelope exists.
 - **Node IDs:** the retirement gate excuses API replicas from `legacy_key_file = absent` by matching the server's `--node-id` with the agent's node ID on the same host (Ansible sets both to `inventory_hostname`). Keep them equal on hosts that run both.
 - **Disabled nodes** are not checked by either gate and may still hold the old key file; remove it before re-enabling such a node.
-- **`cca init` output** (e.g. `/tmp/cca-init`) holds `secret-root.key` and `ca-key.pem`: it is control-plane-only material; delete it after `setup.sh` ran, never copy it to workers.
+- **`cca init` output** (e.g. `/tmp/cca-init`) holds `secret-root.key` and the three CA keys (`*-ca-key.pem`): it is control-plane-only material; delete it after `setup.sh` ran, never copy it to workers.
 
 ## HA cluster on testbed-100.77
 

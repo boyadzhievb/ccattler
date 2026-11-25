@@ -37,7 +37,7 @@
     {{ join_token_value }}
     --node-id {{ node_id | default(inventory_hostname) }}
   args:
-    creates: /etc/ccattler/pki/node.pem
+    creates: /etc/ccattler/pki/node-identity-for-api.pem
 
 - name: Remove stale cca0 interface from previous deployment
   shell: |
@@ -92,9 +92,9 @@
 - name: Wait for agent to register via API
   shell: >
     curl -sf
-    --cacert {{ cca_cert_dir }}/ca.pem
-    --cert {{ cca_cert_dir }}/node.pem
-    --key {{ cca_cert_dir }}/node-key.pem
+    --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
+    --cert {{ cca_cert_dir }}/node-identity-for-api.pem
+    --key {{ cca_cert_dir }}/node-identity-for-api-key.pem
     -H "Accept: application/json"
     https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770/api/status
     | grep -q '"id":"{{ node_id | default(inventory_hostname) }}"'

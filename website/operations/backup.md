@@ -6,12 +6,15 @@ CCattler stores all cluster state in etcd. Backing up etcd is the primary mechan
 
 ### Create a snapshot
 
+The paths are those of a cluster set up with `cca init` from M280 on; an older cluster uses
+`/etc/ccattler/pki/node.pem`, `node-key.pem` and `ca.pem` instead.
+
 ```bash
 etcdctl snapshot save /backup/ccattler-$(date +%Y%m%d-%H%M%S).db \
   --endpoints=https://127.0.0.1:2379 \
-  --cert=/etc/ccattler/etcd-client.pem \
-  --key=/etc/ccattler/etcd-client-key.pem \
-  --cacert=/etc/ccattler/ca.pem
+  --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem \
+  --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem \
+  --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 ```
 
 ### Verify a snapshot
@@ -60,7 +63,7 @@ Schedule etcd snapshots with a cron job:
 
 ```bash
 # /etc/cron.d/ccattler-backup
-0 */6 * * * root etcdctl snapshot save /backup/ccattler-$(date +\%Y\%m\%d-\%H\%M\%S).db --endpoints=https://127.0.0.1:2379 --cert=/etc/ccattler/etcd-client.pem --key=/etc/ccattler/etcd-client-key.pem --cacert=/etc/ccattler/ca.pem
+0 */6 * * * root etcdctl snapshot save /backup/ccattler-$(date +\%Y\%m\%d-\%H\%M\%S).db --endpoints=https://127.0.0.1:2379 --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 ```
 
 Rotate old snapshots to avoid filling disk:

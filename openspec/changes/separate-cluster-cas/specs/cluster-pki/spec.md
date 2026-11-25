@@ -39,10 +39,17 @@ signed by the etcd CA and carry ServerAuth only. Each CA's key SHALL be written 
 #### Scenario: Files written by cca init
 - **GIVEN** `cca init --advertise-address 192.0.2.10 --node-id ctrl -o DIR`
 - **WHEN** it finishes
-- **THEN** DIR holds `ca.pem`, `etcd-ca.pem` and `gate-ca.pem`, each with its `-key.pem` at 0600. `etcd.pem` is
-  signed by the etcd CA (ServerAuth only), `etcd-client.pem` by the etcd CA (ClientAuth only), and `node.pem` by
-  the cluster CA. No two CAs share a key
-- Test: `TestInitWritesThreeCAs`
+- **THEN** DIR holds the CAs `cluster-identity-ca.pem`, `etcd-access-ca.pem` and `gate-https-ca.pem`, each with
+  its `-key.pem` at 0600, and these leaf certificates, each with its own key:
+  - `etcd-serving-certificate.pem` from the etcd access CA (ServerAuth only);
+  - `cca-server-etcd-client-certificate.pem` (CN `etcd-client-cca-server`) and `node-etcd-client-certificate.pem`
+    (CN `etcd-client-ctrl`) from the etcd access CA (ClientAuth only);
+  - `api-server-identity-certificate.pem` (CN `ccattler-server`, ServerAuth and ClientAuth) and
+    `node-identity-for-api.pem` (CN `ctrl`, ClientAuth only) from the cluster identity CA.
+
+  No two CAs share a key. Every certificate has O=CCattler and the OU of its purpose, and every file starts with a
+  `# CCattler …` description line and still parses (design.md D1a)
+- Test: `TestInitWritesThreeCAs`, `TestInitFilesParseWithDescriptionLine`
 
 ### Requirement: etcd trusts only the etcd CA, and its clients use etcd client certificates
 etcd SHALL trust only the etcd CA for client certificates. The server and every agent SHALL connect to etcd with an
@@ -51,18 +58,44 @@ etcd.
 
 #### Scenario: Node certificate refused by etcd
 - **GIVEN** a cluster set up with `cca init` and `setup.sh`
-- **WHEN** a client presents `node.pem` (cluster CA) to etcd
-- **THEN** etcd refuses it, while `etcd-client.pem` is accepted
+- **WHEN** a client presents `node-identity-for-api.pem` or `api-server-identity-certificate.pem` (cluster identity
+  CA) to etcd
+- **THEN** etcd refuses both, while `node-etcd-client-certificate.pem` and `cca-server-etcd-client-certificate.pem`
+  are accepted
 - Test: `TestEtcdRefusesClusterCACertificates` (real etcd, `etcd_integration` tag); check
   `deploy-run:gate-cert-not-client`
 
 #### Scenario: A worker gets its etcd client certificate at enrollment
 - **GIVEN** a cluster with an etcd CA and a valid join token
 - **WHEN** `cca join` enrolls a worker
-- **THEN** the response carries the node certificate (cluster CA) and an etcd client certificate (etcd CA, ClientAuth
-  only, CommonName `etcd-client-<node>`). `cca join` writes both, and the agent's etcd connection uses the etcd
-  client certificate
+- **THEN** the response carries the node identity for the API (cluster identity CA) and the node's own etcd client
+  certificate (etcd access CA, ClientAuth only, CommonName `etcd-client-<node>`). `cca join` writes
+  `node-identity-for-api.pem`, `node-etcd-client-certificate.pem` and `etcd-access-ca.pem` with their keys, and the
+  agent's etcd connection uses the etcd client certificate. No two nodes share an etcd client certificate or key
 - Test: `TestEnrollmentIssuesEtcdClientCertificate`, `TestJoinWritesEtcdClientCertificate`
+
+### Requirement: Descriptions never authorize
+The Subject OU and the description line SHALL be descriptive only. Authorization SHALL use the certificate's usage,
+its issuer's trust per listener, and the CommonName; never the OU.
+
+#### Scenario: A client certificate with a misleading OU
+- **GIVEN** a cluster identity CA certificate with CN `worker-1` and OU `API server identity`
+- **WHEN** it is presented to the API
+- **THEN** its principal is `node:worker-1`, the same as without the OU
+- Test: `TestMTLSPrincipalIgnoresSubjectUnit`
+
+### Requirement: etcd client identities are distinct but not yet separately authorized
+The cca server and every node SHALL each have their own etcd client certificate and key. Until etcd authentication
+and roles exist (milestone M181), every accepted etcd client certificate SHALL be documented as having full etcd
+access. The security model, the threat model, PKI_GRAPH and the release notes SHALL state that residual trust and
+SHALL NOT call the identities separately authorized. (User decision 2026-11-25.)
+
+#### Scenario: Residual trust is written down
+- **GIVEN** the M280 documentation changes
+- **WHEN** the security model, the threat model and PKI_GRAPH are read
+- **THEN** each states that until M181 any accepted etcd client certificate, the server's or a node's, has full etcd
+  access, and that a compromised node keeps store access through its own etcd client certificate
+- Check: `grep -n "M181" design/security-model.md design/threat-model.md design/graphs/PKI_GRAPH.md` (task 2.6)
 
 ### Requirement: The API accepts client identities only from the cluster CA
 The API SHALL verify client certificates against the cluster CA only, and map only those to a `node:<CommonName>`

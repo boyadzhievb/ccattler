@@ -296,10 +296,10 @@ ls -la /var/lib/ccattler/logs/
 etcd stores all cluster state. All keys are under the `/ccattler/` prefix.
 
 ```bash
-# Set up TLS flags (required for mTLS clusters)
-export ETCDCTL_CACERT=/etc/ccattler/pki/ca.pem
-export ETCDCTL_CERT=/etc/ccattler/pki/node.pem
-export ETCDCTL_KEY=/etc/ccattler/pki/node-key.pem
+# Set up TLS flags (required for mTLS clusters; before M280: pki/ca.pem, node.pem, node-key.pem)
+export ETCDCTL_CACERT=/etc/ccattler/pki/etcd-access-ca.pem
+export ETCDCTL_CERT=/etc/ccattler/pki/node-etcd-client-certificate.pem
+export ETCDCTL_KEY=/etc/ccattler/pki/node-etcd-client-certificate-key.pem
 export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
 
 # Check etcd health
@@ -386,7 +386,7 @@ curl -X POST http://localhost:9771/debug/images/pull \
 **Symptom:** `cca join` fails or times out.
 
 **Check:**
-1. Is the server running and reachable? `cca status` (or `curl --cacert /etc/ccattler/pki/ca.pem https://<server>:9770/healthz`)
+1. Is the server running and reachable? `cca status` (or `curl --cacert /etc/ccattler/pki/cluster-identity-ca.pem https://<server>:9770/healthz`)
 2. Is the token valid? `cca token list` on the server
 3. Is the CA certificate correct? Use `--ca-cert` flag with the server's CA
 

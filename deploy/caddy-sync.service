@@ -11,9 +11,9 @@ ExecStart=/usr/local/bin/caddy-sync.sh
 Restart=on-failure
 RestartSec=10
 Environment=CCA_API=https://127.0.0.1:9770
-Environment=CCA_CA=/etc/ccattler/pki/ca.pem
-Environment=CCA_CERT=/etc/ccattler/pki/node.pem
-Environment=CCA_KEY=/etc/ccattler/pki/node-key.pem
+Environment=CCA_CA=/etc/ccattler/pki/cluster-identity-ca.pem
+Environment=CCA_CERT=/etc/ccattler/pki/node-identity-for-api.pem
+Environment=CCA_KEY=/etc/ccattler/pki/node-identity-for-api-key.pem
 Environment=CADDY_FILE=/etc/caddy/Caddyfile
 Environment=SYNC_INTERVAL=30
 Environment=REQUEST_DELAY=2

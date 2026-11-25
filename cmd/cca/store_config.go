@@ -16,14 +16,6 @@ const (
 	endpointsEnvVariable  = "CCA_ENDPOINTS"
 	defaultEtcdEndpoints  = "localhost:2379"
 	defaultStoreKeyPrefix = "/ccattler/"
-
-	// defaultEtcdCertPath is the standard location for the node TLS certificate
-	// used for etcd client authentication when endpoints use https://.
-	defaultEtcdCertPath = "/etc/ccattler/pki/node.pem"
-	// defaultEtcdKeyPath is the standard location for the node TLS private key.
-	defaultEtcdKeyPath = "/etc/ccattler/pki/node-key.pem"
-	// defaultEtcdCACertPath is the standard location for the cluster CA certificate.
-	defaultEtcdCACertPath = "/etc/ccattler/pki/ca.pem"
 )
 
 // storeDefaults holds resolved store configuration that can be used as defaults
@@ -79,16 +71,16 @@ func resolveStoreDefaults() storeDefaults {
 	return defaults
 }
 
-// populateEtcdTLSDefaults sets TLS cert paths from the canonical location when
-// the resolved endpoints use https:// and the cert files exist on disk.
+// populateEtcdTLSDefaults sets the etcd client files from the installed PKI
+// (M280 names, else node.pem and ca.pem) when the endpoints use https://.
 func populateEtcdTLSDefaults(defaults *storeDefaults) {
 	if !strings.Contains(defaults.etcdEndpoints, "https://") {
 		return
 	}
-	if fileExists(defaultEtcdCertPath) && fileExists(defaultEtcdKeyPath) && fileExists(defaultEtcdCACertPath) {
-		defaults.etcdCertPath = defaultEtcdCertPath
-		defaults.etcdKeyPath = defaultEtcdKeyPath
-		defaults.etcdCACertPath = defaultEtcdCACertPath
+	if etcdClientFiles, found := findInstalledPKIFileSet(installedEtcdClientFileSets); found {
+		defaults.etcdCertPath = etcdClientFiles.certificatePath
+		defaults.etcdKeyPath = etcdClientFiles.privateKeyPath
+		defaults.etcdCACertPath = etcdClientFiles.caCertificatePath
 	}
 }
 

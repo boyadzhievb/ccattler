@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -193,7 +194,7 @@ func parseJoinCommandArgs(args []string) (joinCommandConfig, error) {
 	flagSet := newDaemonFlagSet("join")
 	flagSet.StringVar(&parsedConfig.nodeID, "node-id", "", "name of this node (required)")
 	flagSet.StringVar(&parsedConfig.caCertPath, "ca-cert", "",
-		"CA certificate that must have signed the server (default: /etc/ccattler/pki/ca.pem, else the token's fingerprint)")
+		"CA certificate that must have signed the server (default: /etc/ccattler/pki/cluster-identity-ca.pem or ca.pem, else the token's fingerprint)")
 	flagSet.StringVar(&parsedConfig.dataDirectory, "data-dir", parsedConfig.dataDirectory,
 		"directory for the issued certificate, key and CA")
 	positionalArguments, parseError := parseFlagsAndPositionals(flagSet, args)
@@ -211,13 +212,9 @@ func parseJoinCommandArgs(args []string) (joinCommandConfig, error) {
 		parsedConfig.joinToken = positionalArguments[1]
 	}
 
-	// Use standard system paths when they exist and no explicit override was given.
-	const systemPKIDirectory = "/etc/ccattler/pki"
-	systemCACertPath := systemPKIDirectory + "/ca.pem"
+	// Use the installed cluster CA (M280 name first, then the older ca.pem) when no override was given.
 	if parsedConfig.caCertPath == "" {
-		if _, statError := os.Stat(systemCACertPath); statError == nil {
-			parsedConfig.caCertPath = systemCACertPath
-		}
+		parsedConfig.caCertPath = firstExistingPath(installedClusterCACandidatePaths)
 	}
 
 	return parsedConfig, nil
@@ -241,12 +238,15 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	}
 
 	localNodePrivateKey, enrollmentCSRPEM := generateNodeKeypairAndCSR(parsedConfig.nodeID, localIPAddresses)
+	// Its own key for etcd (M280 D4); a server without an etcd access CA ignores the CSR.
+	localEtcdPrivateKey, etcdCSRPEM := generateNodeKeypairAndCSR(security.NodeEtcdClientCommonNamePrefix+parsedConfig.nodeID, nil)
 
 	enrollmentRequestPayload, _ := json.Marshal(map[string]interface{}{
 		"token":        rawToken,
 		"node_id":      parsedConfig.nodeID,
 		"ip_addresses": ipStrings,
 		"csr_pem":      string(enrollmentCSRPEM),
+		"etcd_csr_pem": string(etcdCSRPEM),
 	})
 
 	enrollmentResponse := sendEnrollmentRequest(enrollmentHTTPClient, parsedConfig.serverAddress, enrollmentRequestPayload)
@@ -258,8 +258,8 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		nodePrivateKeyPEM = marshalECPrivateKeyToPEM(localNodePrivateKey)
 	}
 
-	writeEnrollmentCredentials(parsedConfig.dataDirectory,
-		enrollmentResponse.CertificatePEM, nodePrivateKeyPEM, enrollmentResponse.CACertPEM)
+	credentialPaths := writeEnrollmentCredentials(parsedConfig.dataDirectory, enrollmentResponse,
+		nodePrivateKeyPEM, marshalECPrivateKeyToPEM(localEtcdPrivateKey))
 
 	saveEtcdEndpointsConfig(parsedConfig.serverAddress)
 	saveServerAddressConfig(parsedConfig.serverAddress)
@@ -267,8 +267,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
 	fmt.Println()
 	fmt.Println("Start the agent with:")
-	fmt.Printf("  cca agent --node-id %s --cert %s/node.pem --key %s/node-key.pem --ca %s/ca.pem\n",
-		parsedConfig.nodeID, parsedConfig.dataDirectory, parsedConfig.dataDirectory, parsedConfig.dataDirectory)
+	fmt.Printf("  %s\n", buildJoinedAgentStartCommand(parsedConfig.nodeID, credentialPaths))
 }
 
 // splitCompositeToken splits a composite "<hex-token>.<ca-fingerprint>" into
@@ -320,6 +319,9 @@ type enrollmentResponsePayload struct {
 	CACertPEM      string `json:"ca_cert_pem"`
 	Principal      string `json:"principal"`
 	Error          string `json:"error"`
+	// EtcdCertificatePEM is this node's etcd client certificate (M280 D4); empty from a server without an etcd access CA.
+	EtcdCertificatePEM string `json:"etcd_certificate_pem"`
+	EtcdCACertPEM      string `json:"etcd_ca_cert_pem"` // the etcd access CA, with EtcdCertificatePEM
 }
 
 // sendEnrollmentRequest posts the enrollment payload to the server and returns
@@ -498,38 +500,6 @@ func buildFingerprintVerifier(expectedCAFingerprint string) func(rawCerts [][]by
 		}
 		return nil
 	}
-}
-
-// writeEnrollmentCredentials saves the certificate, private key, and CA
-// certificate received during enrollment to the specified data directory.
-// Creates the directory if it does not exist and prints the file paths.
-func writeEnrollmentCredentials(dataDirectory, certificatePEM, privateKeyPEM, caCertPEM string) {
-	if mkdirError := os.MkdirAll(dataDirectory, 0700); mkdirError != nil {
-		fmt.Fprintf(os.Stderr, "error creating data directory: %v\n", mkdirError)
-		os.Exit(1)
-	}
-
-	certPath := dataDirectory + "/node.pem"
-	keyPath := dataDirectory + "/node-key.pem"
-	caOutputPath := dataDirectory + "/ca.pem"
-
-	if writeError := os.WriteFile(certPath, []byte(certificatePEM), 0600); writeError != nil {
-		fmt.Fprintf(os.Stderr, "error writing certificate: %v\n", writeError)
-		os.Exit(1)
-	}
-	if writeError := os.WriteFile(keyPath, []byte(privateKeyPEM), 0600); writeError != nil {
-		fmt.Fprintf(os.Stderr, "error writing private key: %v\n", writeError)
-		os.Exit(1)
-	}
-	if writeError := os.WriteFile(caOutputPath, []byte(caCertPEM), 0600); writeError != nil {
-		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
-		os.Exit(1)
-	}
-
-	fmt.Println()
-	fmt.Printf("  Certificate: %s\n", certPath)
-	fmt.Printf("  Private key: %s\n", keyPath)
-	fmt.Printf("  CA cert:     %s\n", caOutputPath)
 }
 
 const bashCompletionScript = `# cca bash completion — source this or add to .bashrc:

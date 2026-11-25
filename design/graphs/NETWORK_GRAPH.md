@@ -696,14 +696,15 @@ Server.handleNodeGateKeyDelivery  POST /api/node/gate-keys   api/node_gate_key_d
 
 ### RouteTLSController (controllers/route_tls.go) — auto gate certificates
 ```
-RouteTLSController.Reconcile(ctx, facts)                       :62
+RouteTLSController.Reconcile(ctx, facts)                       :66
 ├── Watch: desired/route/, derived/route/, secrets/route/ (sealed keys: renewal put gets a revision guard)
 ├── parseAutoTLSRoutes(facts)                                  :136  → routes with tls/mode=auto and a host
 ├── parseExistingDerivedTLSFacts(facts)                        :171
 ├── FOR EACH auto route:
 │   └── needsCertificateIssuance(not-after) (missing or within 30 days) ∨ sealed key missing with no plaintext key
-│       └── issueSealedGateCertificate(ctx, route, host)       :105
-│           ├── CertificateAuthority.IssueCertificate(DNSNames=[host], TTL=90d)
+│       ∨ gateCertificateNeedsReissue(route, stored cert)        :199  (M280 D3: unparsable, ClientAuth, or not IsIssuerOf the issuer)
+│       └── issueSealedGateCertificate(ctx, route, host)       :166
+│           ├── gateCertificateIssuer.IssueCertificate(Usage=UsageServer, OU="gate HTTPS", DNSNames=[host], TTL=90d)
 │           ├── security.SealSecretValue(keyProviderSource.CurrentKeyProvider(), key PEM)  (envelope, base64)
 │           └── one change group "route-tls-issue/{name}":
 │               PUT derived/route/{name}/tls/{cert,not-after}, PUT secrets/route/{name}/tls/key
@@ -712,7 +713,9 @@ RouteTLSController.Reconcile(ctx, facts)                       :62
 └── cleanupUnneededSealedGateKeys(facts, parseSystemKeyGateNames(facts))
     → DELETE secrets/route/{gate}/tls/key unless the gate exists with tls auto,
       or manual without tls/key_secret (same rule as GateKeySecretName)
-Wired in cmd/cca/command_server.go:417 when the cluster CA is loaded; key provider from loadSecretKeyProvider (cmd/cca/server_secret_keys.go:25), shared with the secret store.
+Wired in cmd/cca/command_server.go (startControllersWithLeaderElection) with resolveGateCertificateIssuer
+(cmd/cca/server_cluster_cas.go): the gate HTTPS CA from --gate-ca-cert/--gate-ca-key, else the cluster CA (clusters
+before M280); see [PKI_GRAPH.md](PKI_GRAPH.md); key provider from loadSecretKeyProvider (cmd/cca/server_secret_keys.go:25), shared with the secret store.
 ```
 
 ### GateKeyMigrationController (controllers/gate_key_migration.go) — plaintext key cutover (Flow 28 step 7)

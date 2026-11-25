@@ -64,11 +64,11 @@ func newSecretDeliveryTestServer(testContext *testing.T) *Server {
 func putGateKeyHandlerTestFacts(testContext *testing.T, rawStore store.StateStore, secretStore *security.SecretStore) {
 	testContext.Helper()
 	ctx := context.Background()
-	certificateAuthority, caError := security.NewCertificateAuthority(time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
 	if caError != nil {
 		testContext.Fatal(caError)
 	}
-	issued, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: "web.example.com", DNSNames: []string{"web.example.com"}, TTL: time.Hour})
+	issued, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient, CommonName: "web.example.com", DNSNames: []string{"web.example.com"}, TTL: time.Hour})
 	if issueError != nil {
 		testContext.Fatal(issueError)
 	}
@@ -198,9 +198,9 @@ func TestGateKeyHandlerRequiresSecretWriteAndRejectsMismatch(testContext *testin
 	apiServer.SetAPIAuthorizer(apiAuthorizer)
 	adminPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "admin"}
 
-	certificateAuthority, _ := security.NewCertificateAuthority(time.Hour)
-	issued, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: "manual.example.com", DNSNames: []string{"manual.example.com"}, TTL: time.Hour})
-	other, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: "manual.example.com", DNSNames: []string{"manual.example.com"}, TTL: time.Hour})
+	certificateAuthority, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
+	issued, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient, CommonName: "manual.example.com", DNSNames: []string{"manual.example.com"}, TTL: time.Hour})
+	other, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient, CommonName: "manual.example.com", DNSNames: []string{"manual.example.com"}, TTL: time.Hour})
 	ctx := context.Background()
 	_, _ = apiServer.factStore.Put(ctx, types.KeyDesiredRouteTLSMode("manual"), []byte(types.RouteTLSModeManual))
 	_, _ = apiServer.factStore.Put(ctx, types.KeyDesiredRouteTLSCert("manual"), issued.CertificatePEM)

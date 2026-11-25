@@ -340,15 +340,11 @@ func buildPublishedDebugURL(debugListenAddress string, advertiseAddress string, 
 // server config built from the credentials, or nil when none were found.
 func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACertPath string) *tls.Config {
 	if tlsCertPath == "" {
-		const systemPKIDirectory = "/etc/ccattler/pki"
-		discoveredCertPath := systemPKIDirectory + "/node.pem"
-		discoveredKeyPath := systemPKIDirectory + "/node-key.pem"
-		discoveredCACertPath := systemPKIDirectory + "/ca.pem"
-		if fileExists(discoveredCertPath) && fileExists(discoveredKeyPath) && fileExists(discoveredCACertPath) {
-			tlsCertPath = discoveredCertPath
-			tlsKeyPath = discoveredKeyPath
-			tlsCACertPath = discoveredCACertPath
-			fmt.Printf("Agent %s auto-discovered credentials from %s\n", nodeID, systemPKIDirectory)
+		if nodeIdentityFiles, found := findInstalledPKIFileSet(installedNodeIdentityFileSets); found {
+			tlsCertPath = nodeIdentityFiles.certificatePath
+			tlsKeyPath = nodeIdentityFiles.privateKeyPath
+			tlsCACertPath = nodeIdentityFiles.caCertificatePath
+			fmt.Printf("Agent %s auto-discovered credentials %s\n", nodeID, tlsCertPath)
 		}
 	}
 	if tlsCertPath == "" {

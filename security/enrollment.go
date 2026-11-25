@@ -4,6 +4,7 @@
 package security
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -28,10 +29,15 @@ const JoinTokenPrefix = "enrollment/token/"
 // EnrolledNodePrefix is the fact store prefix for enrolled node records.
 const EnrolledNodePrefix = "enrollment/node/"
 
+// ServerCertificateCommonName is the CommonName of the API server's certificate
+// (rotating with --tls, api-server-identity-certificate.pem from cca init). Its
+// "node:ccattler-server" principal is bound to cluster-admin.
+const ServerCertificateCommonName = "ccattler-server"
+
 // reservedNodeIDs are node IDs that enrollment never issues, because their
-// "node:<id>" principal is the auto-TLS server identity bound to cluster-admin.
+// "node:<id>" principal is the server identity bound to cluster-admin.
 var reservedNodeIDs = map[string]bool{
-	"ccattler-server": true,
+	ServerCertificateCommonName: true,
 }
 
 // tokenHashPrefix is the number of characters from the raw token value stored
@@ -79,6 +85,9 @@ type EnrollmentService struct {
 	certificateAuthority *CertificateAuthority
 	rbacAuthorizer       *RBACAuthorizer
 	certificateTTL       time.Duration
+	// etcdClientCertificateAuthority is the etcd access CA that signs each node's
+	// etcd client certificate (M280 D4); nil on clusters from before M280.
+	etcdClientCertificateAuthority *CertificateAuthority
 }
 
 // NewEnrollmentService creates an enrollment service backed by the given store
@@ -95,6 +104,13 @@ func NewEnrollmentService(
 		rbacAuthorizer:       rbacAuthorizer,
 		certificateTTL:       certificateTTL,
 	}
+}
+
+// SetEtcdClientCertificateAuthority makes enrollment sign the node's etcd client
+// CSR with the etcd access CA (M280 D4). Without it, enrollment returns no etcd
+// material and cca join keeps using the node certificate for etcd.
+func (enrollmentService *EnrollmentService) SetEtcdClientCertificateAuthority(etcdAccessCA *CertificateAuthority) {
+	enrollmentService.etcdClientCertificateAuthority = etcdAccessCA
 }
 
 // GenerateJoinToken creates a join token that a node can use to enroll. If
@@ -163,6 +179,7 @@ type EnrollmentRequest struct {
 	NodeID      string   // requested node ID
 	IPAddresses []net.IP // node's IP addresses for the certificate
 	CSRPEM      []byte   // PEM-encoded certificate signing request (empty = legacy flow)
+	EtcdCSRPEM  []byte   // PEM-encoded CSR for the node's etcd client certificate (M280; empty from older cca join)
 }
 
 // EnrollmentResponse is returned to the node after successful enrollment.
@@ -171,6 +188,10 @@ type EnrollmentResponse struct {
 	PrivateKeyPEM  []byte // PEM-encoded private key
 	CACertPEM      []byte // PEM-encoded CA certificate for peer verification
 	Principal      string // assigned security principal
+	// EtcdCertificatePEM is the node's etcd client certificate (etcd access CA,
+	// ClientAuth only, CN etcd-client-<node>); empty without an etcd access CA.
+	EtcdCertificatePEM []byte
+	EtcdCACertPEM      []byte // the etcd access CA etcd serves under; empty with EtcdCertificatePEM
 }
 
 // EnrollNode validates the join token and the requested node identity, signs
@@ -197,6 +218,11 @@ func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, requ
 	if signError != nil {
 		return nil, signError
 	}
+	// Signed before the token is consumed, so a failure leaves the token usable.
+	etcdCertificatePEM, etcdSignError := enrollmentService.signNodeEtcdClientCSR(request)
+	if etcdSignError != nil {
+		return nil, etcdSignError
+	}
 
 	principal := "node:" + request.NodeID
 	if commitError := enrollmentService.commitEnrollment(ctx, tokenKey, tokenRevision, request.NodeID, principal, certExpiry, enrolledRecordRevision); commitError != nil {
@@ -204,11 +230,16 @@ func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, requ
 	}
 	enrollmentService.bindRBACRoleForNode(principal)
 
-	return &EnrollmentResponse{
+	enrollmentResponse := &EnrollmentResponse{
 		CertificatePEM: certificatePEM,
 		CACertPEM:      enrollmentService.certificateAuthority.CACertificatePEM(),
 		Principal:      principal,
-	}, nil
+	}
+	if etcdCertificatePEM != nil {
+		enrollmentResponse.EtcdCertificatePEM = etcdCertificatePEM
+		enrollmentResponse.EtcdCACertPEM = enrollmentService.etcdClientCertificateAuthority.CACertificatePEM()
+	}
+	return enrollmentResponse, nil
 }
 
 // validateJoinToken reads and validates the join token from the fact store.
@@ -303,28 +334,23 @@ func (enrollmentService *EnrollmentService) commitEnrollment(
 	return nil
 }
 
-// signNodeCSR decodes and parses the node's CSR and signs it with the cluster
-// CA. The CA sets CN to the node ID and the DNS SANs to the node ID names;
-// only the CSR's public key is used. The private key stays on the node.
+// signNodeCSR signs the node's CSR with the cluster identity CA. The CA sets
+// CN to the node ID and the DNS SANs to the node ID names; only the CSR's
+// public key is used. The private key stays on the node.
 func (enrollmentService *EnrollmentService) signNodeCSR(request EnrollmentRequest) ([]byte, time.Time, error) {
 	if len(request.CSRPEM) == 0 {
 		return nil, time.Time{}, fmt.Errorf("enrollment rejected: CSR required (legacy server-generated keypair is no longer supported)")
 	}
-
-	csrBlock, _ := pem.Decode(request.CSRPEM)
-	if csrBlock == nil {
-		return nil, time.Time{}, fmt.Errorf("invalid CSR PEM encoding")
-	}
-
-	parsedCSR, parseError := x509.ParseCertificateRequest(csrBlock.Bytes)
+	parsedCSR, parseError := parseEnrollmentCSR(request.CSRPEM)
 	if parseError != nil {
-		return nil, time.Time{}, fmt.Errorf("parse CSR: %w", parseError)
+		return nil, time.Time{}, parseError
 	}
 
 	signResponse, signError := enrollmentService.certificateAuthority.SignCSR(SignCSRRequest{
 		CSR:         parsedCSR,
 		TTL:         enrollmentService.certificateTTL,
 		CommonName:  request.NodeID,
+		SubjectUnit: SubjectUnitNodeIdentityForAPI,
 		DNSNames:    []string{request.NodeID, request.NodeID + ".cca.local"},
 		IPAddresses: request.IPAddresses,
 	})
@@ -333,6 +359,51 @@ func (enrollmentService *EnrollmentService) signNodeCSR(request EnrollmentReques
 	}
 
 	return signResponse.CertificatePEM, signResponse.NotAfter, nil
+}
+
+// NodeEtcdClientCommonNamePrefix starts the CommonName of a node's etcd client
+// certificate, etcd-client-<node>. A distinct identity, not a separately
+// authorized one: until M181 every accepted etcd client certificate has full etcd access.
+const NodeEtcdClientCommonNamePrefix = "etcd-client-"
+
+// signNodeEtcdClientCSR signs the node's etcd CSR with the etcd access CA as a
+// ClientAuth-only certificate with CN etcd-client-<node> and no SANs (M280 D4).
+// Returns nil without an etcd access CA or without an etcd CSR (an older cca join).
+func (enrollmentService *EnrollmentService) signNodeEtcdClientCSR(request EnrollmentRequest) ([]byte, error) {
+	if enrollmentService.etcdClientCertificateAuthority == nil || len(request.EtcdCSRPEM) == 0 {
+		return nil, nil
+	}
+	parsedCSR, parseError := parseEnrollmentCSR(request.EtcdCSRPEM)
+	if parseError != nil {
+		return nil, fmt.Errorf("etcd client %w", parseError)
+	}
+	if nodeCSR, nodeParseError := parseEnrollmentCSR(request.CSRPEM); nodeParseError == nil &&
+		bytes.Equal(nodeCSR.RawSubjectPublicKeyInfo, parsedCSR.RawSubjectPublicKeyInfo) {
+		return nil, fmt.Errorf("enrollment rejected: the etcd client CSR reuses the node identity key; each certificate needs its own key")
+	}
+	signResponse, signError := enrollmentService.etcdClientCertificateAuthority.SignCSR(SignCSRRequest{
+		CSR:         parsedCSR,
+		TTL:         enrollmentService.certificateTTL,
+		CommonName:  NodeEtcdClientCommonNamePrefix + request.NodeID,
+		SubjectUnit: SubjectUnitNodeEtcdClient,
+	})
+	if signError != nil {
+		return nil, fmt.Errorf("sign etcd client CSR: %w", signError)
+	}
+	return signResponse.CertificatePEM, nil
+}
+
+// parseEnrollmentCSR decodes and parses one PEM certificate signing request.
+func parseEnrollmentCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
+	csrBlock, _ := pem.Decode(csrPEM)
+	if csrBlock == nil {
+		return nil, fmt.Errorf("invalid CSR PEM encoding")
+	}
+	parsedCSR, parseError := x509.ParseCertificateRequest(csrBlock.Bytes)
+	if parseError != nil {
+		return nil, fmt.Errorf("parse CSR: %w", parseError)
+	}
+	return parsedCSR, nil
 }
 
 // bindRBACRoleForNode binds the node-agent RBAC role to the given principal.

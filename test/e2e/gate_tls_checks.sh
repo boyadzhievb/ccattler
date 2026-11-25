@@ -13,7 +13,7 @@
 # cluster), else the first agent node (bare metal: control plane only, no
 # gate listener). Plan and test IDs: design/milestones/m170-gate-tls-e2e.md.
 
-GATE_TLS_CA="/etc/ccattler/pki/ca.pem"        # cluster CA that signs auto gate certs
+GATE_TLS_CA="/etc/ccattler/pki/gate-https-ca.pem"  # gate HTTPS CA that signs auto gate certs (M280)
 GATE_TLS_PORT=443                              # agent --proxy-tls-listen port
 GATE_HTTP_PORT=8080                            # agent --proxy-listen port (Ansible proxy_port)
 GATE_TLS_ISSUE_TIMEOUT=90                      # seconds for RouteTLSController to issue certs

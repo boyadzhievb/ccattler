@@ -27,7 +27,7 @@ const joinTokenTestAuditCapacity = 100
 func TestJoinTokenRoutesRequireClusterAdmin(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
-	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if caError != nil {
 		t.Fatal(caError)
 	}
@@ -70,7 +70,7 @@ func newJoinTokenTestServer(t *testing.T) (*Server, store.StateStore, *security.
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
-	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if caError != nil {
 		t.Fatal(caError)
 	}

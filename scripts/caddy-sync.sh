@@ -11,18 +11,18 @@
 #
 # Environment:
 #   CCA_API           CCattler API URL (default: https://192.168.124.10:9770)
-#   CCA_CA            CA cert path (default: /etc/ccattler/pki/ca.pem)
-#   CCA_CERT          Client cert path (default: /etc/ccattler/pki/node.pem)
-#   CCA_KEY           Client key path (default: /etc/ccattler/pki/node-key.pem)
+#   CCA_CA            CA cert path (default: /etc/ccattler/pki/cluster-identity-ca.pem)
+#   CCA_CERT          Client cert path (default: /etc/ccattler/pki/node-identity-for-api.pem)
+#   CCA_KEY           Client key path (default: /etc/ccattler/pki/node-identity-for-api-key.pem)
 #   CADDY_FILE        Caddyfile path (default: /etc/caddy/Caddyfile)
 #   SYNC_INTERVAL     Seconds between reconciliation cycles (default: 30)
 
 set -euo pipefail
 
 CCA_API="${CCA_API:-https://192.168.124.10:9770}"
-CCA_CA="${CCA_CA:-/etc/ccattler/pki/ca.pem}"
-CCA_CERT="${CCA_CERT:-/etc/ccattler/pki/node.pem}"
-CCA_KEY="${CCA_KEY:-/etc/ccattler/pki/node-key.pem}"
+CCA_CA="${CCA_CA:-/etc/ccattler/pki/cluster-identity-ca.pem}"
+CCA_CERT="${CCA_CERT:-/etc/ccattler/pki/node-identity-for-api.pem}"
+CCA_KEY="${CCA_KEY:-/etc/ccattler/pki/node-identity-for-api-key.pem}"
 CADDY_FILE="${CADDY_FILE:-/etc/caddy/Caddyfile}"
 SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
 REQUEST_DELAY="${REQUEST_DELAY:-2}"

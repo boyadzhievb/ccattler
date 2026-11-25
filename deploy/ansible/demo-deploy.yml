@@ -103,9 +103,9 @@
     - name: Verify Airflow instances are running
       command: >
         curl -sf
-        --cacert {{ cca_cert_dir }}/ca.pem
-        --cert {{ cca_cert_dir }}/node.pem
-        --key {{ cca_cert_dir }}/node-key.pem
+        --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
+        --cert {{ cca_cert_dir }}/node-identity-for-api.pem
+        --key {{ cca_cert_dir }}/node-identity-for-api-key.pem
         -H "Accept: application/json"
         https://{{ ansible_host }}:9770/api/status
       register: cluster_status

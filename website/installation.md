@@ -332,7 +332,7 @@ Second run detects the existing inventory and deploys CCattler across your hosts
 | etcd | Control plane node | `etcd.service` |
 | cca server | Control plane node | `cca-server.service` |
 | cca agent | Every worker node | `cca-agent.service` |
-| Certificates | `/etc/ccattler/` | Auto-generated CA + node certs |
+| Certificates | `/etc/ccattler/pki` | Three CAs (cluster identity, etcd access, gate HTTPS) and each process's own certificates |
 
 ## Set up a cluster by hand
 
@@ -347,7 +347,7 @@ Install the prerequisites, including etcd ([Prepare a fresh host](#prepare-a-fre
 then the `cca` binary ([Quick install](#quick-install)). Then:
 
 ```bash
-# Generate the cluster CA, this host's certificates, the secret root key and a setup script
+# Generate the three cluster CAs, this host's certificates, the secret root key and a setup script
 cca init --advertise-address CONTROL_PLANE_IP --node-id ctrl -o ~/cca-init
 
 # Review the script, then run it: installs the certificates under /etc/ccattler,
@@ -363,12 +363,28 @@ sudo cca status
 ```
 
 **Adding worker hosts later?** Their agents reach etcd on this host on 2379/tcp. With firewalld or ufw active,
-`setup.sh` opens that port only from the networks you name, because every client certificate the cluster CA issues can use
-etcd. Add `--etcd-client-cidr` with the network of your worker hosts to the `cca init` line, for example
+`setup.sh` opens that port only from the networks you name: etcd has no per-client permissions yet, so every etcd
+client certificate (the server's and each node's) has full access to it. Add `--etcd-client-cidr` with the network of your worker hosts to the `cca init` line, for example
 `--etcd-client-cidr 192.168.1.0/24` (repeat the flag or separate several networks with commas). Without it the port
 stays closed, and `setup.sh` prints the firewalld and ufw commands that open it later.
 
-`~/cca-init` holds the CA private key and the secret root key. Once `setup.sh` has copied them to `/etc/ccattler`,
+`cca init` writes three CAs, each for one purpose, and one certificate per process; every file starts with a
+`# CCattler ...` line that says what it is:
+
+| File | What it is |
+|---|---|
+| `cluster-identity-ca.pem` | CA of the API server and node identities; the API trusts only it |
+| `etcd-access-ca.pem` | CA etcd trusts; it signs etcd's serving certificate and the etcd client certificates |
+| `gate-https-ca.pem` | CA of auto gate certificates: clients of TLS gates trust it |
+| `api-server-identity-certificate.pem` | `cca server`'s API certificate |
+| `node-identity-for-api.pem` | `cca agent`'s identity to the API |
+| `etcd-serving-certificate.pem` | etcd's serving certificate |
+| `cca-server-etcd-client-certificate.pem`, `node-etcd-client-certificate.pem` | the server's and the agent's etcd client certificates |
+
+Each has its key next to it with `-key.pem`. Clusters set up by an earlier release keep `ca.pem` and `node.pem`;
+`cca server` warns at every start that they share one CA, and re-initializing with `cca init` separates them.
+
+`~/cca-init` holds the CA private keys and the secret root key. Once `setup.sh` has copied them to `/etc/ccattler`,
 keep a backup of that directory somewhere safe and delete `~/cca-init`.
 
 If something fails, read the logs: `sudo journalctl -u cca-server -u cca-agent -u etcd -e`.
@@ -397,7 +413,7 @@ sudo cca token create --node-id worker-1 --ttl 15m
 **On the worker**, join and point the agent at the control plane:
 
 ```bash
-# Enroll: writes this node's certificate and the cluster CA to /etc/ccattler/pki
+# Enroll: writes this node's API identity, its own etcd client certificate and both CAs to /etc/ccattler/pki
 sudo cca join https://CONTROL_PLANE_IP:9770 <token> --node-id worker-1
 
 # Tell the agent where etcd is
@@ -418,12 +434,12 @@ ExecStart=/usr/local/bin/cca agent \
   --node-id worker-1 \
   --advertise-address WORKER_IP \
   --api-server CONTROL_PLANE_IP:9770 \
-  --cert /etc/ccattler/pki/node.pem \
-  --key /etc/ccattler/pki/node-key.pem \
-  --ca /etc/ccattler/pki/ca.pem \
-  --etcd-cert /etc/ccattler/pki/node.pem \
-  --etcd-key /etc/ccattler/pki/node-key.pem \
-  --etcd-ca /etc/ccattler/pki/ca.pem \
+  --cert /etc/ccattler/pki/node-identity-for-api.pem \
+  --key /etc/ccattler/pki/node-identity-for-api-key.pem \
+  --ca /etc/ccattler/pki/cluster-identity-ca.pem \
+  --etcd-cert /etc/ccattler/pki/node-etcd-client-certificate.pem \
+  --etcd-key /etc/ccattler/pki/node-etcd-client-certificate-key.pem \
+  --etcd-ca /etc/ccattler/pki/etcd-access-ca.pem \
   --dns-upstream CONTROL_PLANE_IP:15353
 Restart=on-failure
 RestartSec=5

@@ -1285,6 +1285,14 @@ Split from M179 on 2026-11-12; scheduled right after M179 (number chosen so noth
 ### Phase 181 — Store Access Isolation (M181)
 
 - [ ] Design doc: agent access to state (etcd roles vs API gateway)
+- [ ] From M280 (2026-11-25): M280 gives distinct etcd identities (`cca-server-etcd-client-certificate.pem`, CN
+  `etcd-client-cca-server`; one `node-etcd-client-certificate.pem` per node, CN `etcd-client-<node-id>`, all from the
+  etcd access CA), but etcd's client-certificate auth only checks the CA, so each still has full access.
+  - Use these identities for etcd users and roles.
+  - Start with an inventory of every etcd operation the server and agent perform.
+  - Investigate whether a component-level role on existing prefixes already gives meaningful least privilege (agents
+    unable to write `desired/`, `auth/`, `placement/` or `secrets/`) before assuming a key-layout migration.
+  - Include bootstrap (root user, `auth enable`) and lock-out recovery.
 - [ ] Agents limited to their node's keys and read-only desired state
 - [ ] Secret provenance (M177 security review F4): with direct etcd write access an agent holding the old legacy key can plant v1 envelopes under `secrets/`/`credentials/` (and roll back v2 values or `keyring/`); the M177 migration re-encrypts whatever v1 it finds. Closing agent write access to `secrets/`, `credentials/`, `keyring/` and `observed/keyring/` removes this; also decide on version binding for v2 values
 - [ ] Secret delivery checks binding (found during M174): agents can no longer write placements, grants or `observed/instance/{id}/service`; instance → service mapping from a control-plane-only fact

@@ -44,13 +44,66 @@ No runtime flow in `design/runtime-invariant-flows.md` covers PKI. This change a
 ## Decisions
 
 ### D1. Three CAs, created by cca init
-- **Files:** `ca.pem`/`ca-key.pem` (cluster), `etcd-ca.pem`/`etcd-ca-key.pem`, `gate-ca.pem`/`gate-ca-key.pem`, each
-  self-signed, 10 years like today's CA, keys at 0600. setup.sh installs them in `/etc/ccattler/pki`.
-- **The etcd CA** signs `etcd.pem` (ServerAuth, SANs as today) and `etcd-client.pem` (ClientAuth, CN
-  `etcd-client-<node>`) for the control-plane node's server and agent.
+- **Files:** names as in D1a (they supersede the first draft's `ca.pem`, `etcd-ca.pem` and `gate-ca.pem`):
+  `cluster-identity-ca.pem`, `etcd-access-ca.pem` and `gate-https-ca.pem`, each with `-key.pem`. Each is
+  self-signed and valid 10 years like today's CA, with keys at 0600. setup.sh installs them in `/etc/ccattler/pki`.
+- **The etcd access CA** signs `etcd-serving-certificate.pem` (ServerAuth, SANs as today) and two client
+  certificates (ClientAuth): `cca-server-etcd-client-certificate.pem` (CN `etcd-client-cca-server`) and
+  `node-etcd-client-certificate.pem` (CN `etcd-client-<node>`).
+- **HA secondaries:** `cca init --ca/--ca-key --etcd-access-ca/--etcd-access-ca-key --gate-https-ca/--gate-https-ca-key`
+  reuses all three CAs of the first node, all six flags or none. A secondary reusing only the cluster CA would mint
+  CAs its peers do not trust.
 - **The gate CA key** is needed only by `cca server`, where RouteTLSController runs; it lives on control-plane hosts.
 - **Kubernetes comparison:** kubeadm creates `ca`, `etcd/ca` and `front-proxy-ca`; the etcd CA is not trusted by the
   API server for user clients.
+
+### D1a. Self-explanatory names and descriptions (user request, 2026-11-25, during apply)
+New clusters use file names that say what each certificate is, and every certificate describes itself in its
+Subject (O, OU) and in a one-line comment before the PEM block. Go's `pem.Decode` and `openssl` ignore text before
+`-----BEGIN`.
+
+Names revised the same day (user, 2026-11-25): longer names that say who presents each certificate and to whom; the
+etcd client certificates are split per presenting process, and the API server gets its own certificate. In `cca init`
+clusters the API server used to present `node.pem` (setup.sh `--cert …/node.pem` for `cca server`,
+command_init.go:457), the same file as the local agent's identity.
+
+| File (new clusters) | Replaces | Signed by | Subject O / OU / CN | Usages |
+|---|---|---|---|---|
+| `cluster-identity-ca.pem` | `ca.pem` | self | CCattler / cluster identity CA / CCattler cluster identity CA | CA |
+| `etcd-access-ca.pem` | (new) | self | CCattler / etcd access CA / CCattler etcd access CA | CA |
+| `gate-https-ca.pem` | (new) | self | CCattler / gate HTTPS CA / CCattler gate HTTPS CA | CA |
+| `api-server-identity-certificate.pem` | `node.pem` (as `cca server --cert`) | cluster identity CA | CCattler / API server identity / `ccattler-server` | server + client (client for the agent debug API) |
+| `node-identity-for-api.pem` | `node.pem` (as agent `--cert`) | cluster identity CA | CCattler / node identity for API / `<node-id>` | client |
+| `etcd-serving-certificate.pem` | `etcd.pem` | etcd access CA | CCattler / etcd serving certificate / `etcd-<node-id>` | server |
+| `cca-server-etcd-client-certificate.pem` | `node.pem` (as server `--etcd-cert`) | etcd access CA | CCattler / cca-server etcd client / `etcd-client-cca-server` | client |
+| `node-etcd-client-certificate.pem` | `node.pem` (as agent `--etcd-cert`) | etcd access CA | CCattler / node etcd client / `etcd-client-<node-id>` | client |
+| rotating server certificate (memory) | — | cluster identity CA | CCattler / API server identity / `ccattler-server` | server + client |
+| gate certificates (store) | — | gate HTTPS CA | CCattler / gate HTTPS / `<route host>` | server |
+
+- **Per-node identities:** each node has its own etcd client certificate and key (`cca join` issues the node's); none
+  is shared between nodes or between the server and an agent.
+- **What enforces the boundary:** certificate purpose (ExtKeyUsage), issuer trust per listener (D5) and explicit
+  identity validation (the CommonName, M171 reserved names). Never the OU, which is descriptive only.
+- **Out of M280, by user decision 2026-11-25:** restricting what each etcd identity may access (etcd RBAC: users,
+  roles per key prefix, `auth enable`). It belongs to the existing milestone M181 "Store Access Isolation" (etcd roles from the certificate CommonName, an API gateway as the target, short-lived certificates; triaged from review 3 on 2026-11-23). A duplicate M281 was created by mistake and folded back into M181 the same day.
+  - **Why separate:** M280 fixes which certificates are trusted; RBAC fixes what an accepted identity may do. The
+    immediate fix does not depend on RBAC. Enabling etcd auth changes every client connection, and it needs an
+    inventory of operations, a permission model, bootstrap and recovery, and tests for every path.
+- **Residual trust, stated explicitly in M280:** etcd's `--client-cert-auth` only checks that a certificate chains to
+  the etcd access CA. The CommonName becomes an etcd user only once etcd auth is enabled. Until M181, therefore:
+  - every holder of an accepted etcd client certificate, the server's or any node's, has full etcd access;
+  - a compromised node, gate nodes included, can still read and write the whole store with its own node etcd client
+    certificate. M280 closes the gate-certificate path, not that one;
+  - docs, PKI_GRAPH, the security model and the changelog SHALL NOT describe the new CommonNames as separately
+    authorized etcd identities. They are distinct identities that M181 can authorize differently.
+
+- **Keys:** the same names with `-key.pem`.
+- **Comment line:** for example `# CCattler node etcd client of node ctrl, signed by etcd-access-ca.pem, used by cca
+  agent to connect to etcd`.
+- **Identity:** authorization keeps using the CommonName only; the OU is descriptive and never authorizes.
+- **Old clusters:** they keep their files and units; no rename.
+- **Where the names live:** the file names are constants in one place; setup.sh, `cca join` and the Ansible templates
+  use them.
 
 ### D2. Usage per purpose, not one default
 `IssueCertificate` gets a required `Usage` field with typed constants: `UsageServer`, `UsageClient`,
@@ -75,9 +128,12 @@ of a renewal. The controller's change budget is unchanged.
 - **Enrollment:** `EnrollmentResponse` gains `EtcdCertificatePEM`, `EtcdPrivateKeyPEM` and `EtcdCAPEM`. The server
   signs a second CSR, or generates the key server-side, as today's node key flow does: D4 follows today's flow, with
   the etcd CA key, `UsageClient`, and CN `etcd-client-<node>`.
-- **cca join:** writes `etcd-client.pem`, `etcd-client-key.pem` and `etcd-ca.pem`, and the agent unit uses them.
-- **Old servers:** a server without an etcd CA returns none, and `cca join` keeps using `node.pem` for etcd, as
-  today.
+- **The server needs the etcd access CA key** to sign: new flags `--etcd-access-ca-key` (with `--etcd-ca`), set by
+  setup.sh on control-plane hosts.
+- **cca join:** writes `node-identity-for-api.pem`, `node-etcd-client-certificate.pem` and `etcd-access-ca.pem`, with
+  their keys, and the agent unit uses them.
+- **Old servers:** a server without an etcd access CA key returns none, and `cca join` keeps today's file names and
+  uses the node certificate for etcd, as before.
 
 ### D5. Trust per listener
 
@@ -117,7 +173,8 @@ short Flow "Cluster PKI" in runtime-invariant-flows.md links to it.
 |---|---|
 | Gate CA files configured but unreadable | `cca server` exits with the path and error, like the cluster CA today |
 | Old cluster, no gate CA | Gate certificates come from the cluster CA with ServerAuth only; warning at start |
-| Agent enrolled before M280 joins a new server | It keeps its node.pem for etcd; etcd (etcd CA only) refuses it; the agent logs a TLS error. Documented: re-run `cca join` (a new-cluster setup has no such agents) |
+| Agent enrolled before M280 joins a new server | It keeps its old `node.pem` for etcd; etcd (etcd access CA only) refuses it; the agent logs a TLS error. Documented: re-run `cca join` (a new-cluster setup has no such agents) |
+| HA secondary given only `--ca/--ca-key` | `cca init` refuses: all six existing-CA flags or none |
 | Enrollment without an etcd CA on the server | No etcd certificate in the response; `cca join` keeps today's behaviour |
 | Re-issue loop | A certificate with ServerAuth only from the configured issuer is never re-issued (test) |
 
@@ -125,7 +182,7 @@ short Flow "Cluster PKI" in runtime-invariant-flows.md links to it.
 
 - **[Ansible-built clusters]** The templates change with this release, and the deploy testbed builds fresh clusters,
   so the full run tests the new layout.
-- **[Users who pinned ca.pem for TLS gates]** Their clients must trust `gate-ca.pem` on new clusters. This goes in
+- **[Users who pinned ca.pem for TLS gates]** Their clients must trust `gate-https-ca.pem` on new clusters. This goes in
   the changelog and the guide.
 - **[Old clusters stay exposed to the etcd/API identity mix]** The gate hole closes with D3, and old clusters get the
   warning. Node certificates remain etcd root clients there, as before. That is accepted under user decision 1.

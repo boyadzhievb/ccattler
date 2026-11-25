@@ -40,8 +40,8 @@ by etcd, and a front-proxy CA. Serving certificates never act as client identiti
   working. `cca server` warns at every start that it shares one CA for etcd, the API and gates, and says to
   re-initialize. Its gate certificates still get the ServerAuth-only fix.
 - **Docs:** the guide, `design/security-model.md`, `design/gate-tls-termination.md` (clients of a TLS gate trust
-  `gate-ca.pem`), the threat model, and the Ansible templates (worker agent `--etcd-cert` and `--etcd-ca`; HA etcd
-  trust).
+  `gate-https-ca.pem`), the threat model, and the Ansible templates (worker agent `--etcd-cert` and `--etcd-ca`; HA
+  etcd trust).
 
 Out of scope:
 - A migration of existing clusters (`cca pki migrate`, or automatic): a follow-up milestone if users need it.
@@ -67,8 +67,10 @@ Out of scope:
 - **Ansible:** the worker and HA templates.
 - **Graphs:** SECURITY/AUTH and NETWORK (gate TLS).
 - **Compatibility:**
-  - New clusters change file layout: new files `etcd-ca.pem`, `gate-ca.pem` and `etcd-client.pem`, with keys.
-  - TLS-gate clients that pinned `ca.pem` must trust `gate-ca.pem` on new clusters.
+  - New clusters change file layout to the self-explanatory names of design.md D1a (user decision during apply,
+    2026-11-25). For example, `cluster-identity-ca.pem` replaces `ca.pem`, and `node.pem` is split into
+    `node-identity-for-api.pem` and `node-etcd-client-certificate.pem`.
+  - TLS-gate clients that pinned `ca.pem` must trust `gate-https-ca.pem` on new clusters.
   - Old clusters keep their files.
 
 How it is proven done:

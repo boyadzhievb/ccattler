@@ -82,7 +82,7 @@ scp_to_vm() {
 }
 
 etcd_tls_flags() {
-    echo "--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
+    echo "--cacert /etc/ccattler/pki/etcd-access-ca.pem --cert /etc/ccattler/pki/node-etcd-client-certificate.pem --key /etc/ccattler/pki/node-etcd-client-certificate-key.pem"
 }
 
 api_curl() {
@@ -94,7 +94,7 @@ api_curl() {
             break
         fi
     done
-    ssh_vm "$ctrl_name" "sudo curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${ctrl_ip}:9770${path}" 2>/dev/null
+    ssh_vm "$ctrl_name" "sudo curl -sf --cacert /etc/ccattler/pki/cluster-identity-ca.pem --cert /etc/ccattler/pki/node-identity-for-api.pem --key /etc/ccattler/pki/node-identity-for-api-key.pem https://${ctrl_ip}:9770${path}" 2>/dev/null
 }
 
 wait_for_condition() {

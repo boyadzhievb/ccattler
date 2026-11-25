@@ -12,10 +12,16 @@ ExecStart=/usr/local/bin/cca server \
   --listen {{ ansible_host }}:9770 \
   --node-id {{ inventory_hostname }} \
   --tls \
-  --cert {{ cca_cert_dir }}/node.pem \
-  --key {{ cca_cert_dir }}/node-key.pem \
-  --ca {{ cca_cert_dir }}/ca.pem \
-  --ca-key {{ cca_cert_dir }}/ca-key.pem \
+  --cert {{ cca_cert_dir }}/api-server-identity-certificate.pem \
+  --key {{ cca_cert_dir }}/api-server-identity-certificate-key.pem \
+  --ca {{ cca_cert_dir }}/cluster-identity-ca.pem \
+  --ca-key {{ cca_cert_dir }}/cluster-identity-ca-key.pem \
+  --gate-ca-cert {{ cca_cert_dir }}/gate-https-ca.pem \
+  --gate-ca-key {{ cca_cert_dir }}/gate-https-ca-key.pem \
+  --etcd-cert {{ cca_cert_dir }}/cca-server-etcd-client-certificate.pem \
+  --etcd-key {{ cca_cert_dir }}/cca-server-etcd-client-certificate-key.pem \
+  --etcd-ca {{ cca_cert_dir }}/etcd-access-ca.pem \
+  --etcd-access-ca-key {{ cca_cert_dir }}/etcd-access-ca-key.pem \
   --dns --dns-listen {{ ansible_host }}:15353 \
   --cluster-cidr {{ cluster_cidr }} \
   --vip-cidr {{ vip_cidr }}

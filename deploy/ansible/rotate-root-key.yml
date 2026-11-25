@@ -32,8 +32,8 @@
     root_key_path: /etc/ccattler/secret-root.key
     first_control_plane_host: "{{ groups['controlplane'][0] }}"
     etcd_client_flags: >-
-      --endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/ca.pem
-      --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem
+      --endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/etcd-access-ca.pem
+      --cert /etc/ccattler/pki/node-etcd-client-certificate.pem --key /etc/ccattler/pki/node-etcd-client-certificate-key.pem
   tasks:
     - name: Refuse clusters whose root key is a cloud key (AWS KMS, GCP Cloud KMS)
       command: systemctl cat cca-server

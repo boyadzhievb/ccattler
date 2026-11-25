@@ -5,7 +5,10 @@ package controllers
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -26,19 +29,19 @@ const (
 )
 
 // RouteTLSController watches desired route TLS facts and issues or renews
-// certificates via the cluster CA for gates with tls mode "auto". The
+// certificates for gates with tls mode "auto", ServerAuth only (M280 D3). The
 // certificate and expiry are plain derived facts; the private key is sealed
 // at secrets/route/{gate}/tls/key (Flow 28) and never written as a fact.
 type RouteTLSController struct {
-	certificateAuthority *security.CertificateAuthority // certificateAuthority issues gate certificates.
-	envelopeCodec        security.SecretEnvelopeCodec   // envelopeCodec seals gate private keys bound to their store key (shared with the secret store).
+	gateCertificateIssuer *security.CertificateAuthority // the gate HTTPS CA, or the cluster CA on clusters from before M280.
+	envelopeCodec         security.SecretEnvelopeCodec   // envelopeCodec seals gate private keys bound to their store key (shared with the secret store).
 }
 
-// NewRouteTLSController creates a controller that auto-issues TLS certificates
-// for gates using the given cluster certificate authority and seals their
-// private keys with the server's keyring envelope codec (Flow 29).
-func NewRouteTLSController(certificateAuthority *security.CertificateAuthority, envelopeCodec security.SecretEnvelopeCodec) *RouteTLSController {
-	return &RouteTLSController{certificateAuthority: certificateAuthority, envelopeCodec: envelopeCodec}
+// NewRouteTLSController creates a controller that issues gate certificates
+// from gateCertificateIssuer (the gate HTTPS CA, else the cluster CA) and seals
+// their private keys with the server's keyring envelope codec (Flow 29).
+func NewRouteTLSController(gateCertificateIssuer *security.CertificateAuthority, envelopeCodec security.SecretEnvelopeCodec) *RouteTLSController {
+	return &RouteTLSController{gateCertificateIssuer: gateCertificateIssuer, envelopeCodec: envelopeCodec}
 }
 
 // Name returns "route-tls", identifying this controller in logs.
@@ -86,7 +89,9 @@ func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, fac
 		// A valid certificate whose sealed key is gone (and no pre-M176 plaintext
 		// key waits for migration) can never be delivered: issue a new pair.
 		sealedKeyMissing := !sealedGates[routeName] && existingDerivedTLS[types.KeyDerivedRouteTLSKey(routeName)] == ""
-		if !needsCertificateIssuance(existingDerivedTLS[notAfterKey]) && !sealedKeyMissing {
+		storedCertificatePEM := existingDerivedTLS[types.KeyDerivedRouteTLSCert(routeName)]
+		if !needsCertificateIssuance(existingDerivedTLS[notAfterKey]) && !sealedKeyMissing &&
+			!routeTLSController.gateCertificateNeedsReissue(routeName, storedCertificatePEM) {
 			continue
 		}
 
@@ -159,10 +164,12 @@ func cleanupUnneededSealedGateKeys(facts []store.Fact, systemKeyGates map[string
 // returns one change group: the certificate and expiry facts plus the sealed
 // private key at secrets/route/{gate}/tls/key, committed in one transaction.
 func (routeTLSController *RouteTLSController) issueSealedGateCertificate(ctx context.Context, routeName string, hostname string) ([]Change, error) {
-	issuedCertificate, issueError := routeTLSController.certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
-		CommonName: hostname,
-		DNSNames:   []string{hostname},
-		TTL:        gateCertificateTTL,
+	issuedCertificate, issueError := routeTLSController.gateCertificateIssuer.IssueCertificate(security.IssueCertificateRequest{
+		CommonName:  hostname,
+		SubjectUnit: security.SubjectUnitGateHTTPS,
+		Usage:       security.UsageServer,
+		DNSNames:    []string{hostname},
+		TTL:         gateCertificateTTL,
 	})
 	if issueError != nil {
 		return nil, issueError
@@ -183,6 +190,32 @@ func (routeTLSController *RouteTLSController) issueSealedGateCertificate(ctx con
 		Change{Type: store.OpPut, Key: sealedKeyStoreKey, Value: sealedPrivateKey},
 		Change{Type: store.OpPut, Key: types.KeyDerivedRouteTLSNotAfter(routeName), Value: []byte(issuedCertificate.NotAfter.Format(time.RFC3339))},
 	), nil
+}
+
+// gateCertificateNeedsReissue reports whether a stored gate certificate must be
+// replaced before expiry (M280 D3): it does not parse, carries ClientAuth (an
+// earlier release), or was not signed by the configured issuer (a gate HTTPS CA
+// added later). A ServerAuth-only certificate from the issuer is kept: no loop.
+func (routeTLSController *RouteTLSController) gateCertificateNeedsReissue(routeName string, storedCertificatePEM string) bool {
+	certificateBlock, _ := pem.Decode([]byte(storedCertificatePEM))
+	if certificateBlock == nil {
+		logging.Default().Info("route-tls: re-issuing a gate certificate that is not PEM", "route", routeName)
+		return true
+	}
+	storedCertificate, parseError := x509.ParseCertificate(certificateBlock.Bytes)
+	if parseError != nil {
+		logging.Default().Info("route-tls: re-issuing a gate certificate that does not parse", "route", routeName)
+		return true
+	}
+	if slices.Contains(storedCertificate.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
+		logging.Default().Info("route-tls: re-issuing a gate certificate that carries ClientAuth", "route", routeName)
+		return true
+	}
+	if !routeTLSController.gateCertificateIssuer.IsIssuerOf(storedCertificate) {
+		logging.Default().Info("route-tls: re-issuing a gate certificate from another issuer", "route", routeName)
+		return true
+	}
+	return false
 }
 
 // autoTLSRoute maps route name to its hostname for routes with tls mode "auto".

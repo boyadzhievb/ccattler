@@ -29,11 +29,11 @@ func newGateKeyDeliveryTestFixture(testContext *testing.T) (*deliveryTestFixture
 // issueTestGatePair issues a certificate and key for host from a fresh CA.
 func issueTestGatePair(testContext *testing.T, host string) *IssuedCertificate {
 	testContext.Helper()
-	certificateAuthority, caError := NewCertificateAuthority(gateKeyTestCertificateTTL)
+	certificateAuthority, caError := NewCertificateAuthority(ClusterIdentityCertificateAuthority, gateKeyTestCertificateTTL)
 	if caError != nil {
 		testContext.Fatalf("NewCertificateAuthority: %v", caError)
 	}
-	issued, issueError := certificateAuthority.IssueCertificate(IssueCertificateRequest{CommonName: host, DNSNames: []string{host}, TTL: gateKeyTestCertificateTTL})
+	issued, issueError := certificateAuthority.IssueCertificate(IssueCertificateRequest{Usage: UsageServerAndClient, CommonName: host, DNSNames: []string{host}, TTL: gateKeyTestCertificateTTL})
 	if issueError != nil {
 		testContext.Fatalf("IssueCertificate: %v", issueError)
 	}

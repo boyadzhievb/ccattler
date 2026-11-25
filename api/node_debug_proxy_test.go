@@ -47,7 +47,7 @@ type debugProxyFixture struct {
 // issueProxyTestKeyPair issues a CA-signed key pair for commonName.
 func issueProxyTestKeyPair(t *testing.T, certificateAuthority *security.CertificateAuthority, commonName string) tls.Certificate {
 	t.Helper()
-	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 		CommonName:  commonName,
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 		TTL:         time.Hour,
@@ -67,7 +67,7 @@ func issueProxyTestKeyPair(t *testing.T, certificateAuthority *security.Certific
 // TLS uses a "ccattler-server" certificate. node "worker-1" points at the stub.
 func newDebugProxyFixture(t *testing.T, agentCommonName string) *debugProxyFixture {
 	t.Helper()
-	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if caError != nil {
 		t.Fatalf("create CA: %v", caError)
 	}
@@ -243,7 +243,7 @@ func TestNodeDebugProxyReportsMissingDebugAddress(t *testing.T) {
 // TTL from certificateAuthority and returns it parsed.
 func parsedTestCertificate(t *testing.T, certificateAuthority *security.CertificateAuthority, commonName string, certificateTTL time.Duration) *x509.Certificate {
 	t.Helper()
-	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: commonName, TTL: certificateTTL})
+	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient, CommonName: commonName, TTL: certificateTTL})
 	if issueError != nil {
 		t.Fatalf("issue certificate: %v", issueError)
 	}
@@ -275,8 +275,8 @@ func enrolledNodeCertificate(t *testing.T, certificateAuthority *security.Certif
 // verification for the agent debug proxy (code scanning alert #21): chain to
 // the cluster CA, validity period, and CN pinned to the node ID.
 func TestVerifyNodeCertificate(t *testing.T) {
-	clusterAuthority, _ := security.NewCertificateAuthority(24 * time.Hour)
-	foreignAuthority, _ := security.NewCertificateAuthority(24 * time.Hour)
+	clusterAuthority, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
+	foreignAuthority, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	clusterRoots := x509.NewCertPool()
 	clusterRoots.AppendCertsFromPEM(clusterAuthority.CACertificatePEM())
 

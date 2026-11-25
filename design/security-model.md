@@ -29,9 +29,34 @@ No unauthenticated cluster communication.
 API-1  API-2
 ```
 
-- Root CA is offline (never on a running control-plane machine) — *planned; current implementation uses a single CA*
+- Root CA is offline (never on a running control-plane machine) — *planned; today each CA's key is on the control plane*
 - Short-lived certificates (1hr) with automatic rotation — *planned; current certs are long-lived from enrollment*
 - SPIFFE-style workload identities: `spiffe://cluster/node/node-1`, `spiffe://cluster/controller/scheduler`
+
+### Cluster PKI today: three CAs (M280)
+
+The tree above is the target. What `cca init` builds from M280 on is three self-signed CAs, one per purpose; file
+names, usages and the trust matrix are in [graphs/PKI_GRAPH.md](graphs/PKI_GRAPH.md), lifecycle in Flow "Cluster
+PKI" ([runtime-invariant-flows.md](runtime-invariant-flows.md)).
+
+| CA | Signs | Trusted for client certificates by |
+|---|---|---|
+| cluster identity CA | API server and node identities | the API, the agent debug API |
+| etcd access CA | etcd's serving certificate, the cca-server and node etcd client certificates | etcd only |
+| gate HTTPS CA | gate serving certificates (ServerAuth only) | nobody; clients of TLS gates trust it as a server CA |
+
+- **Purpose is enforced by usage and issuer, never by the OU.** Every certificate gets a required usage
+  (`UsageServer`, `UsageClient`, `UsageServerAndClient`); gate certificates are ServerAuth only in every cluster, and
+  stored ones with ClientAuth are re-issued. The Subject OU and the file's description line are descriptive only;
+  the API principal comes from the CommonName (`node:<CN>`).
+- **Each process has its own etcd client certificate.** `cca join` sends a second CSR and receives
+  `etcd-client-<node>`; the server uses `etcd-client-cca-server`.
+- **Residual trust until M181 (user decision 2026-11-25).** etcd has no authentication or roles yet, so every
+  accepted etcd client certificate, the server's or any node's, has full etcd access, and a compromised node, gate
+  nodes included, keeps store access through its own node etcd client certificate. The new CommonNames are distinct
+  identities, not separately authorized ones; M181 (Store Access Isolation) adds etcd roles per identity.
+- **Old clusters** keep one CA (`ca.pem`) and get the gate fix only; `cca server` warns at every start until the
+  cluster is re-initialized with `cca init`.
 
 ## Node Enrollment
 

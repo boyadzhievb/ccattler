@@ -65,9 +65,9 @@
   shell: >
     ETCDCTL_API=3 etcdctl
     --endpoints https://{{ ansible_host }}:2379
-    --cacert {{ cca_cert_dir }}/ca.pem
-    --cert {{ cca_cert_dir }}/node.pem
-    --key {{ cca_cert_dir }}/node-key.pem
+    --cacert {{ cca_cert_dir }}/etcd-access-ca.pem
+    --cert {{ cca_cert_dir }}/node-etcd-client-certificate.pem
+    --key {{ cca_cert_dir }}/node-etcd-client-certificate-key.pem
     endpoint health
   retries: 15
   delay: 3
@@ -79,9 +79,9 @@
   shell: >
     ETCDCTL_API=3 etcdctl
     --endpoints https://{{ ansible_host }}:2379
-    --cacert {{ cca_cert_dir }}/ca.pem
-    --cert {{ cca_cert_dir }}/node.pem
-    --key {{ cca_cert_dir }}/node-key.pem
+    --cacert {{ cca_cert_dir }}/etcd-access-ca.pem
+    --cert {{ cca_cert_dir }}/node-etcd-client-certificate.pem
+    --key {{ cca_cert_dir }}/node-etcd-client-certificate-key.pem
     member list -w table
   register: etcd_members
   changed_when: false

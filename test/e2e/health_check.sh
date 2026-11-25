@@ -137,9 +137,9 @@ if [[ -n "$SERVER_CMDLINE" ]]; then
 fi
 
 # Fall back to standard PKI paths.
-CCA_TLS_CA="${CCA_TLS_CA:-/etc/ccattler/pki/ca.pem}"
-CCA_TLS_CERT="${CCA_TLS_CERT:-/etc/ccattler/pki/node.pem}"
-CCA_TLS_KEY="${CCA_TLS_KEY:-/etc/ccattler/pki/node-key.pem}"
+CCA_TLS_CA="${CCA_TLS_CA:-/etc/ccattler/pki/cluster-identity-ca.pem}"
+CCA_TLS_CERT="${CCA_TLS_CERT:-/etc/ccattler/pki/node-identity-for-api.pem}"
+CCA_TLS_KEY="${CCA_TLS_KEY:-/etc/ccattler/pki/node-identity-for-api-key.pem}"
 
 # Check if TLS certs actually exist on the control plane.
 if ssh_vm "$CTRL_NAME" "test -f $CCA_TLS_CA" 2>/dev/null; then

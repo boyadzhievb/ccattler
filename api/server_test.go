@@ -396,7 +396,7 @@ func newTestServerWithEnrollment(t *testing.T) (string, string, func()) {
 	apiServer := NewServer(factStore)
 	configureTestAuth(apiServer)
 
-	certificateAuthority, err := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
@@ -1767,5 +1767,46 @@ func TestMetricsInstanceGaugeDoesNotGrowAcrossScrapes(t *testing.T) {
 		if firstScrape != wantLine || secondScrape != wantLine {
 			t.Errorf("state %s: scrapes reported %q then %q, want %q both times", state, firstScrape, secondScrape, wantLine)
 		}
+	}
+}
+
+// TestEnrollReturnsEtcdClientCertificate: POST /api/enroll passes the node's
+// etcd CSR to enrollment and returns the etcd client certificate and the etcd
+// access CA in the JSON payload cca join reads (M280 D4).
+func TestEnrollReturnsEtcdClientCertificate(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
+	clusterCA, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
+	etcdAccessCA, _ := security.NewCertificateAuthority(security.EtcdAccessCertificateAuthority, time.Hour)
+	enrollmentService := security.NewEnrollmentService(factStore, clusterCA, nil, time.Hour)
+	enrollmentService.SetEtcdClientCertificateAuthority(etcdAccessCA)
+	apiServer.SetEnrollmentService(enrollmentService)
+	joinToken, _ := enrollmentService.GenerateJoinToken(context.Background(), "", 15*time.Minute)
+	address, startError := apiServer.Start(":0")
+	if startError != nil {
+		t.Fatal(startError)
+	}
+	defer apiServer.Close()
+
+	requestBody := fmt.Sprintf(`{"token":%q,"node_id":"worker-1","csr_pem":%q,"etcd_csr_pem":%q}`,
+		joinToken.Token, generateTestCSRPEM(t, "worker-1"), generateTestCSRPEM(t, "etcd-client-worker-1"))
+	httpResponse, postError := http.Post("http://"+address+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	if postError != nil {
+		t.Fatal(postError)
+	}
+	defer httpResponse.Body.Close()
+	var enrollResponse enrollmentResponseBody
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&enrollResponse); decodeError != nil || enrollResponse.Error != "" {
+		t.Fatalf("enroll: %v %s", decodeError, enrollResponse.Error)
+	}
+	etcdBlock, _ := pem.Decode([]byte(enrollResponse.EtcdCertificatePEM))
+	if etcdBlock == nil || enrollResponse.EtcdCACertPEM != string(etcdAccessCA.CACertificatePEM()) {
+		t.Fatalf("no etcd client certificate or wrong etcd CA in the response: %+v", enrollResponse)
+	}
+	etcdCertificate, parseError := x509.ParseCertificate(etcdBlock.Bytes)
+	if parseError != nil || etcdCertificate.Subject.CommonName != "etcd-client-worker-1" || !etcdAccessCA.IsIssuerOf(etcdCertificate) {
+		t.Fatalf("etcd client certificate: %v, CN %q", parseError, etcdCertificate.Subject.CommonName)
 	}
 }

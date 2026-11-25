@@ -98,7 +98,7 @@ Things to know when checking by hand:
   (`[ERROR]` with the Ansible on Debian 13) on fresh VMs; it now only touches
   chains that exist and succeeds.
 - The CLI has no command to read a single fact; use the state API on the
-  control node: `curl --cacert /etc/ccattler/pki/ca.pem -H "Authorization: Bearer $(sudo cat /etc/ccattler/local-token)" "https://127.0.0.1:9770/api/state?key=observed/gate-keys/migration"`.
+  control node: `curl --cacert /etc/ccattler/pki/cluster-identity-ca.pem -H "Authorization: Bearer $(sudo cat /etc/ccattler/local-token)" "https://127.0.0.1:9770/api/state?key=observed/gate-keys/migration"`.
 
 ## Gaps found during the manual deployment
 

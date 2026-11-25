@@ -59,6 +59,20 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - Secret store uses AES-256-GCM encryption at rest
 - Endpoint scheme validation rejects `http://` when TLS is configured (Phase 45)
 
+**M280 (every cluster-CA certificate was an etcd root client):** before M280 one CA signed node, server, etcd and
+gate certificates, all with ClientAuth, and etcd trusted it. A gate certificate, whose key every gate node holds and
+whose host a `workload.create` user chooses, was an etcd root client and, for host `ccattler-server`, the
+cluster-admin server principal at the API. Fixed: gate certificates are ServerAuth only everywhere, and new clusters
+have three CAs where etcd trusts only the etcd access CA ([graphs/PKI_GRAPH.md](graphs/PKI_GRAPH.md)).
+
+**Residual risk until M181 (accepted, user decision 2026-11-25):** etcd's client-certificate check only proves the
+certificate chains to the etcd access CA; without etcd authentication and roles, every accepted etcd client
+certificate, the server's or any node's, has full etcd access. A compromised node, gate nodes included, therefore
+keeps reading and writing the whole store through its own node etcd client certificate. The per-node CommonNames
+(`etcd-client-<node>`, `etcd-client-cca-server`) are distinct identities, not separately authorized ones. M181 (Store
+Access Isolation) closes this with etcd roles per identity. Old single-CA clusters additionally keep node certificates
+from the cluster CA as etcd clients until they are re-initialized.
+
 ### T2: Command Injection via Runtime Exec (HIGH)
 
 **Attack surface:** User-supplied values flow into os/exec calls:
@@ -212,10 +226,10 @@ User CLI ──→ API Server ──→ etcd (fact store)
 
 | File | Expected | Actual | Status |
 |------|----------|--------|--------|
-| CA cert (`ca.pem`) | 0644 | 0644 | OK (public) |
-| CA key | Removed from non-CA nodes | Removed | OK |
-| Node cert (`node.pem`) | 0600 | 0600 | OK |
-| Node key (`node-key.pem`) | 0600 | 0600 | OK |
+| CA certs (`cluster-identity-ca.pem`, `etcd-access-ca.pem`, `gate-https-ca.pem`; old clusters `ca.pem`) | 0644 | 0644 | OK (public) |
+| CA keys | Control-plane hosts only | Control-plane hosts only | OK |
+| Leaf certs (setup.sh 0644; `cca join` 0600) | 0644 | 0644 / 0600 | OK |
+| Leaf keys (`*-key.pem`; old clusters `node-key.pem`) | 0600 | 0600 | OK |
 | Materialized secrets | 0600 | 0600 | OK |
 | Secret mount directories | 0700 | 0700 | OK |
 

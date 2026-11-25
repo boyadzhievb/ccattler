@@ -3,6 +3,14 @@ cni_plugins_version: "1.9.1"
 go_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
 cca_cert_dir: /etc/ccattler/pki
+# The CAs cca init creates (M280 D1a) and their keys; HA secondaries reuse all of them.
+cca_cluster_ca_files:
+  - cluster-identity-ca.pem
+  - cluster-identity-ca-key.pem
+  - etcd-access-ca.pem
+  - etcd-access-ca-key.pem
+  - gate-https-ca.pem
+  - gate-https-ca-key.pem
 
 # Network CIDRs — randomized on every deployment to prove nothing is hardcoded.
 # cluster_cidr: overlay network for container IPs (each node gets a /24 subnet).

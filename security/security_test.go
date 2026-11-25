@@ -49,7 +49,7 @@ func generateTestCSR(t *testing.T, nodeID string, ipAddresses []net.IP) []byte {
 }
 
 func TestCertificateAuthorityCreation(t *testing.T) {
-	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
@@ -64,12 +64,12 @@ func TestCertificateAuthorityCreation(t *testing.T) {
 }
 
 func TestIssueCertificate(t *testing.T) {
-	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
 
-	issuedCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
+	issuedCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{Usage: UsageServerAndClient,
 		CommonName:  "node-1",
 		DNSNames:    []string{"node-1.cca.local"},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
@@ -91,12 +91,12 @@ func TestIssueCertificate(t *testing.T) {
 }
 
 func TestMutualTLSHandshake(t *testing.T) {
-	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
 
-	serverCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
+	serverCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{Usage: UsageServerAndClient,
 		CommonName:  "api-server",
 		DNSNames:    []string{"localhost"},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
@@ -106,7 +106,7 @@ func TestMutualTLSHandshake(t *testing.T) {
 		t.Fatalf("issue server cert: %v", err)
 	}
 
-	clientCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
+	clientCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{Usage: UsageServerAndClient,
 		CommonName: "node-1",
 		TTL:        1 * time.Hour,
 	})
@@ -153,12 +153,12 @@ func TestMutualTLSHandshake(t *testing.T) {
 }
 
 func TestMTLSRejectsUnauthenticatedClient(t *testing.T) {
-	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
 
-	serverCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
+	serverCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{Usage: UsageServerAndClient,
 		CommonName:  "api-server",
 		DNSNames:    []string{"localhost"},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
@@ -194,14 +194,14 @@ func TestMTLSRejectsUnauthenticatedClient(t *testing.T) {
 }
 
 func TestCertificateRotator(t *testing.T) {
-	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
 
 	rotator, err := NewCertificateRotator(
 		certificateAuthority,
-		IssueCertificateRequest{
+		IssueCertificateRequest{Usage: UsageServerAndClient,
 			CommonName: "node-1",
 			TTL:        1 * time.Hour,
 		},
@@ -237,14 +237,14 @@ func TestCertificateRotator(t *testing.T) {
 // a CertificateRotator provides the server cert via GetCertificate, and the
 // tls.Config requires and verifies client certificates from the same CA.
 func TestRotatorBasedMTLSServer(t *testing.T) {
-	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("create CA: %v", err)
 	}
 
 	serverCertRotator, err := NewCertificateRotator(
 		certificateAuthority,
-		IssueCertificateRequest{
+		IssueCertificateRequest{Usage: UsageServerAndClient,
 			CommonName:  "ccattler-server",
 			DNSNames:    []string{"localhost"},
 			IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
@@ -278,7 +278,7 @@ func TestRotatorBasedMTLSServer(t *testing.T) {
 	})
 	go http.Serve(listener, mux) //nolint:gosec // test HTTP server
 
-	clientCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
+	clientCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{Usage: UsageServerAndClient,
 		CommonName: "agent-node-1",
 		TTL:        1 * time.Hour,
 	})
@@ -983,7 +983,7 @@ func TestEnrollmentFullLifecycle(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	rbacAuthorizer := NewRBACAuthorizer()
 	for _, role := range BuiltinRoles() {
 		rbacAuthorizer.AddRole(role)
@@ -1048,7 +1048,7 @@ func TestGenerateJoinTokenIncludesCAFingerprint(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1104,7 +1104,7 @@ func TestCompositeTokenStringFormat(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1142,7 +1142,7 @@ func TestEnrollNodeAcceptsRawTokenFromComposite(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1171,7 +1171,7 @@ func TestCAFingerprintConsistentAcrossTokens(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1194,7 +1194,7 @@ func TestEnrollmentTokenForSpecificNode(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1228,7 +1228,7 @@ func TestEnrollmentTokenExpiry(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1248,7 +1248,7 @@ func TestEnrollmentListAndRemove(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	rbacAuthorizer := NewRBACAuthorizer()
 	for _, role := range BuiltinRoles() {
 		rbacAuthorizer.AddRole(role)
@@ -1280,7 +1280,7 @@ func TestEnrollmentListAndRemove(t *testing.T) {
 }
 
 func TestSignCSR_ValidRequest(t *testing.T) {
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 
 	// Generate a keypair on the "node side".
 	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
@@ -1332,7 +1332,7 @@ func TestSignCSR_ValidRequest(t *testing.T) {
 }
 
 func TestSignCSR_InvalidSignature(t *testing.T) {
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 
 	// Build a CSR with one key, then tamper with it by using a different key's signature.
 	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
@@ -1361,7 +1361,7 @@ func TestSignCSR_InvalidSignature(t *testing.T) {
 }
 
 func TestSignCSR_IgnoresCSRSubjectAndSANs(t *testing.T) {
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 
 	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	csrTemplate := &x509.CertificateRequest{
@@ -1404,7 +1404,7 @@ func TestSignCSR_IgnoresCSRSubjectAndSANs(t *testing.T) {
 }
 
 func TestSignCSR_RequiresCommonName(t *testing.T) {
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 
 	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, &x509.CertificateRequest{
@@ -1421,7 +1421,7 @@ func TestEnrollNode_CSRFlow(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1477,7 +1477,7 @@ func TestEnrollNode_LegacyFlowRejected(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 
@@ -1501,7 +1501,7 @@ func TestTokenHashing(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, _ := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
 	ctx := context.Background()
 

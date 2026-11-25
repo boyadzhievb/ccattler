@@ -34,9 +34,9 @@ sudo systemctl start etcd
 # Verify etcd is healthy
 etcdctl endpoint health \
   --endpoints=https://127.0.0.1:2379 \
-  --cert=/etc/ccattler/etcd-client.pem \
-  --key=/etc/ccattler/etcd-client-key.pem \
-  --cacert=/etc/ccattler/ca.pem
+  --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem \
+  --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem \
+  --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 
 sudo systemctl start cca-server
 ```
@@ -85,9 +85,9 @@ sudo rm -rf /var/lib/etcd/default.etcd
 sudo systemctl start etcd
 etcdctl endpoint health \
   --endpoints=https://127.0.0.1:2379 \
-  --cert=/etc/ccattler/etcd-client.pem \
-  --key=/etc/ccattler/etcd-client-key.pem \
-  --cacert=/etc/ccattler/ca.pem
+  --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem \
+  --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem \
+  --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 ```
 
 4. Start the CCattler server:
@@ -104,7 +104,7 @@ cca token create --node-id node-1
 
 # On the node
 sudo systemctl stop cca-agent
-cca join <server-address> <token> --node-id node-1 --ca-cert /etc/ccattler/ca.pem
+cca join <server-address> <token> --node-id node-1 --ca-cert /etc/ccattler/cluster-identity-ca.pem
 sudo systemctl start cca-agent
 ```
 
@@ -185,9 +185,9 @@ In HA mode, multiple CCattler server replicas run simultaneously. Only the leade
 # Check which server instance holds the leader lease
 etcdctl get /ccattler/leader \
   --endpoints=https://127.0.0.1:2379 \
-  --cert=/etc/ccattler/etcd-client.pem \
-  --key=/etc/ccattler/etcd-client-key.pem \
-  --cacert=/etc/ccattler/ca.pem
+  --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem \
+  --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem \
+  --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 ```
 
 ```bash
@@ -215,9 +215,9 @@ done
 # On each standby server
 etcdctl endpoint health \
   --endpoints=https://127.0.0.1:2379 \
-  --cert=/etc/ccattler/etcd-client.pem \
-  --key=/etc/ccattler/etcd-client-key.pem \
-  --cacert=/etc/ccattler/ca.pem
+  --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem \
+  --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem \
+  --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 ```
 
 3. If etcd itself has lost quorum (more than half the etcd members are down), no leader election can succeed. Restore etcd quorum first:
@@ -225,9 +225,9 @@ etcdctl endpoint health \
 ```bash
 etcdctl member list \
   --endpoints=https://127.0.0.1:2379 \
-  --cert=/etc/ccattler/etcd-client.pem \
-  --key=/etc/ccattler/etcd-client-key.pem \
-  --cacert=/etc/ccattler/ca.pem
+  --cert=/etc/ccattler/pki/cca-server-etcd-client-certificate.pem \
+  --key=/etc/ccattler/pki/cca-server-etcd-client-certificate-key.pem \
+  --cacert=/etc/ccattler/pki/etcd-access-ca.pem
 ```
 
 4. Check server logs for election errors:
@@ -282,7 +282,7 @@ cca scale <critical-service> <desired-count>
 cca token create --node-id replacement-node-1
 
 # On the new node
-cca join <server-address> <token> --node-id replacement-node-1 --ca-cert /etc/ccattler/ca.pem
+cca join <server-address> <token> --node-id replacement-node-1 --ca-cert /etc/ccattler/cluster-identity-ca.pem
 sudo systemctl start cca-agent
 ```
 
@@ -332,7 +332,7 @@ cca token create --node-id <node-id>
 
 # On the node
 sudo systemctl stop cca-agent
-cca join <server-address> <token> --node-id <node-id> --ca-cert /etc/ccattler/ca.pem
+cca join <server-address> <token> --node-id <node-id> --ca-cert /etc/ccattler/cluster-identity-ca.pem
 sudo systemctl start cca-agent
 ```
 
@@ -357,7 +357,7 @@ sudo systemctl restart cca-server
 ```bash
 cca token create --node-id <node-id>
 # On the node
-cca join <server-address> <token> --node-id <node-id> --ca-cert /etc/ccattler/ca.pem
+cca join <server-address> <token> --node-id <node-id> --ca-cert /etc/ccattler/cluster-identity-ca.pem
 sudo systemctl restart cca-agent
 ```
 

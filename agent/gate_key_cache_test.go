@@ -24,11 +24,11 @@ import (
 // issueTestGateKeyPair issues a gate pair for host from a fresh test CA.
 func issueTestGateKeyPair(testContext *testing.T, gateName string, host string) DeliveredGateKeyPair {
 	testContext.Helper()
-	certificateAuthority, caError := security.NewCertificateAuthority(time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
 	if caError != nil {
 		testContext.Fatal(caError)
 	}
-	issued, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: host, DNSNames: []string{host}, TTL: time.Hour})
+	issued, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient, CommonName: host, DNSNames: []string{host}, TTL: time.Hour})
 	if issueError != nil {
 		testContext.Fatal(issueError)
 	}

@@ -23,7 +23,7 @@ import (
 // it as a tls.Certificate.
 func issueTestKeyPair(testContext *testing.T, certificateAuthority *security.CertificateAuthority, commonName string) tls.Certificate {
 	testContext.Helper()
-	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 		CommonName:  commonName,
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 		TTL:         time.Hour,
@@ -43,7 +43,7 @@ func issueTestKeyPair(testContext *testing.T, certificateAuthority *security.Cer
 // seeded with a grant for "ccattler-server". Returns its address and the CA.
 func startMutualTLSDebugServer(testContext *testing.T) (string, *security.CertificateAuthority) {
 	testContext.Helper()
-	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if caError != nil {
 		testContext.Fatalf("create CA: %v", caError)
 	}
@@ -135,7 +135,7 @@ func TestDebugServerMutualTLSAdmitsClusterAdminPrincipal(testContext *testing.T)
 
 func TestDebugServerMutualTLSRejectsForeignCA(testContext *testing.T) {
 	listenAddress, _ := startMutualTLSDebugServer(testContext)
-	foreignAuthority, _ := security.NewCertificateAuthority(24 * time.Hour)
+	foreignAuthority, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 
 	httpResponse, requestError := getWithClientCertificate(listenAddress, []tls.Certificate{issueTestKeyPair(testContext, foreignAuthority, "ccattler-server")})
 	if requestError == nil {

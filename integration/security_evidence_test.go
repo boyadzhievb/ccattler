@@ -596,12 +596,12 @@ func TestSecretNeverInPlaintext(t *testing.T) {
 // and subsequent requests succeed without interruption.
 func TestCertificateRotation(t *testing.T) {
 	t.Parallel()
-	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if caError != nil {
 		t.Fatalf("create CA: %v", caError)
 	}
 
-	serverCertificate, serverCertError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+	serverCertificate, serverCertError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 		CommonName:  "ccattler-server",
 		DNSNames:    []string{"localhost"},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
@@ -634,7 +634,7 @@ func TestCertificateRotation(t *testing.T) {
 
 	agentRotator, rotatorError := security.NewCertificateRotator(
 		certificateAuthority,
-		security.IssueCertificateRequest{
+		security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 			CommonName: "agent-node-1",
 			TTL:        1 * time.Hour,
 		},
@@ -683,7 +683,7 @@ func TestCertificateRotation(t *testing.T) {
 	initialCertificateNotAfter := agentRotator.CurrentCertificate().NotAfter
 
 	t.Run("requests succeed after manual certificate rotation", func(t *testing.T) {
-		newCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+		newCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 			CommonName: "agent-node-1",
 			TTL:        2 * time.Hour,
 		})
@@ -705,7 +705,7 @@ func TestCertificateRotation(t *testing.T) {
 		// with a different TTL to prove the swap occurs.
 		rotatedRotator, rotatedError := security.NewCertificateRotator(
 			certificateAuthority,
-			security.IssueCertificateRequest{
+			security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 				CommonName: "agent-node-1-rotated",
 				TTL:        2 * time.Hour,
 			},
@@ -769,11 +769,11 @@ func TestCertificateRotation(t *testing.T) {
 	})
 
 	t.Run("certificate from different CA rejected", func(t *testing.T) {
-		foreignCA, foreignCAError := security.NewCertificateAuthority(24 * time.Hour)
+		foreignCA, foreignCAError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 		if foreignCAError != nil {
 			t.Fatalf("create foreign CA: %v", foreignCAError)
 		}
-		foreignCertificate, foreignCertError := foreignCA.IssueCertificate(security.IssueCertificateRequest{
+		foreignCertificate, foreignCertError := foreignCA.IssueCertificate(security.IssueCertificateRequest{Usage: security.UsageServerAndClient,
 			CommonName: "attacker-node",
 			TTL:        1 * time.Hour,
 		})

@@ -154,7 +154,7 @@ read_state_key_as() {
   local identity="$1" key="$2"
   local token="${TOKENS[$identity]:-}"
   [[ -n "$token" ]] || fatal "no token for $identity"
-  local remote_cmd="addr=\$(cat /etc/ccattler/server-address 2>/dev/null || echo 127.0.0.1:9770); curl -s -o /dev/null -w '%{http_code}' --cacert /etc/ccattler/ca.pem -H 'Authorization: Bearer $token' \"https://\$addr/api/state?key=$key\""
+  local remote_cmd="addr=\$(cat /etc/ccattler/server-address 2>/dev/null || echo 127.0.0.1:9770); curl -s -o /dev/null -w '%{http_code}' --cacert /etc/ccattler/cluster-identity-ca.pem -H 'Authorization: Bearer $token' \"https://\$addr/api/state?key=$key\""
   local http_code
   http_code=$(vmherd ssh "$CTRL_VM" -- "$remote_cmd" 2>&1) || fatal "marker read failed for $identity: $http_code"
   [[ "$http_code" == "200" || "$http_code" == "404" ]] || fatal "marker read of $key as $identity returned HTTP $http_code"

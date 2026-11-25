@@ -23,7 +23,7 @@ func newTestEnrollmentService(t *testing.T) (*EnrollmentService, store.StateStor
 	t.Helper()
 	memoryStore := store.NewMemoryStore()
 	t.Cleanup(func() { memoryStore.Close() })
-	certificateAuthority, caError := NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, caError := NewCertificateAuthority(ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if caError != nil {
 		t.Fatalf("create CA: %v", caError)
 	}

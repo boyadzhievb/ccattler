@@ -239,12 +239,14 @@ DiscoverOIDCEndpoints(issuerURL)                               [:285]
 
 ## Certificate Authority (security/ca.go)
 
+Which CA signs which certificate and who trusts it: [PKI_GRAPH.md](PKI_GRAPH.md).
+
 ### CA lifecycle
 ```
-NewCertificateAuthority(validityDuration)                      [:41]
+NewCertificateAuthority(kind, validityDuration)                [:55]
 ├── ecdsa.GenerateKey(P-256)
 ├── x509.CreateCertificate(self-signed)
-│   ├── Subject: O=CCattler, CN=CCattler Root CA
+│   ├── Subject: O=CCattler, OU="<kind> CA", CN="CCattler <kind> CA"   [kind: cluster identity | etcd access | gate HTTPS, M280]
 │   ├── KeyUsage: CertSign | CRLSign
 │   ├── IsCA: true, MaxPathLen: 1
 │   └── NotBefore: now - 1min (clock skew)
@@ -259,22 +261,26 @@ LoadCertificateAuthorityFromFiles(certPath, keyPath)           [:91]
 
 ### Certificate issuance
 ```
-CertificateAuthority.IssueCertificate(request)                 [:183]
+CertificateAuthority.IssueCertificate(request)                 [:260]
+├── request.Usage.extendedKeyUsages()                          [zero value refused: every caller chooses, M280 D2]
 ├── ecdsa.GenerateKey(P-256) → leaf key pair
 ├── generateSerialNumber()                                     [:396, random 128-bit]
 ├── x509.CreateCertificate(leafTemplate, caCert, leafPub, caKey)
-│   ├── ExtKeyUsage: ServerAuth, ClientAuth
+│   ├── Subject: leafSubject(CN, SubjectUnit)                 [O=CCattler, descriptive OU; never authorizes]
+│   ├── ExtKeyUsage: UsageServer | UsageClient | UsageServerAndClient
 │   └── NotBefore: now - 1min
 ├── pem.EncodeToMemory → CertificatePEM, PrivateKeyPEM
 └── return IssuedCertificate{CertificatePEM, PrivateKeyPEM, NotAfter}
 
-CertificateAuthority.SignCSR(signRequest)                      [:301]
+CertificateAuthority.SignCSR(signRequest)                      [:380]
 ├── signRequest.CSR.CheckSignature()                           [verify CSR integrity]
 ├── require signRequest.CommonName                             [CA chooses identity; CSR subject/SANs ignored]
-├── buildCSRLeafTemplate(serial, CN, dns, ips, notAfter)       [:341]
+├── buildCSRLeafTemplate(serial, leafSubject(CN, OU), dns, ips, notAfter)
 │   └── O=CCattler, ExtKeyUsage = ClientAuth only
 ├── x509.CreateCertificate(template, caCert, CSR.PublicKey, caKey)
 └── return SignCSRResponse{CertificatePEM, NotAfter}
+
+CertificateAuthority.IsIssuerOf(certificate)                   [:437, RouteTLSController re-issue check]
 
 CertificateAuthority.ServerTLSConfig(serverCert)               [:246]
 └── tls.Config{ClientAuth: RequireAndVerifyClientCert, MinVersion: TLS13}
@@ -322,7 +328,9 @@ EnrollmentService.GenerateJoinToken(ctx, nodeID, tokenTTL)     [:96]
 
 ### EnrollNode
 ```
-EnrollmentService.EnrollNode(ctx, request)                     [:180]
+EnrollmentService.SetEtcdClientCertificateAuthority(etcdCA)    [:112, cca server with --etcd-access-ca-key]
+
+EnrollmentService.EnrollNode(ctx, request)                     [:201]
 ├── types.ValidateNodeID(request.NodeID)                       [lowercase DNS name]
 ├── hashTokenValue(request.Token) → tokenKey
 ├── validateJoinToken(ctx, tokenKey, request)                  [:216]
@@ -333,16 +341,26 @@ EnrollmentService.EnrollNode(ctx, request)                     [:180]
 │   ├── reservedNodeIDs["ccattler-server"] → reject
 │   ├── factStore.Scan("auth/grant/node/<nodeID>/") non-empty → reject
 │   └── factStore.Get("enrollment/node/<nodeID>") exists && !tokenBound → reject
-├── signNodeCSR(request)                                       [:309]
-│   ├── pem.Decode(CSRPEM) → x509.ParseCertificateRequest
-│   └── ca.SignCSR(SignCSRRequest{CSR, TTL, CN=nodeID, DNSNames, IPs})
+├── signNodeCSR(request)                                       [:340]
+│   ├── parseEnrollmentCSR(CSRPEM)                             [:397]
+│   └── clusterCA.SignCSR({CSR, TTL, CN=nodeID, OU="node identity for API", DNSNames, IPs})
+├── signNodeEtcdClientCSR(request)                             [:372, M280 D4; nil without etcd CA or EtcdCSRPEM]
+│   ├── parseEnrollmentCSR(EtcdCSRPEM); refuse the node identity's public key (own key)
+│   └── etcdAccessCA.SignCSR({CSR, TTL, CN="etcd-client-<node>", OU="node etcd client"})  [ClientAuth only]
 ├── commitEnrollment(ctx, tokenKey, tokenRev, ..., enrolledRev) [:271]
 │   └── factStore.Transaction(
 │         compare tokenKey@tokenRev, enrollment/node/<nodeID>@enrolledRev,
 │         delete tokenKey, put "enrollment/node/<nodeID>")      [one-time use, atomic]
 ├── bindRBACRoleForNode(principal)                             [:339]
 │   └── rbacAuthorizer.BindRole({principal, "node-agent"})
-└── return EnrollmentResponse{CertPEM, CACertPEM, Principal}
+└── return EnrollmentResponse{CertPEM, CACertPEM, Principal, EtcdCertificatePEM?, EtcdCACertPEM?}
+
+cca join (cmd/cca/command_misc.go executeJoinCommand)
+├── generateNodeKeypairAndCSR(nodeID) and (etcd-client-<node>)  [two keys; both CSRs in POST /api/enroll]
+└── writeEnrollmentCredentials (cmd/cca/join_credentials.go)
+    ├── etcd cert in response → node-identity-for-api.pem, cluster-identity-ca.pem,
+    │   node-etcd-client-certificate.pem, etcd-access-ca.pem (+ keys, description lines)
+    └── none (server before M280) → node.pem, node-key.pem, ca.pem as before
 ```
 
 ### Enrollment queries
@@ -410,10 +428,13 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | `validateJoinToken` | EnrollNode |
 | `checkNodeIdentityAvailable` | EnrollNode |
 | `signNodeCSR` | EnrollNode |
+| `signNodeEtcdClientCSR` | EnrollNode |
+| `parseEnrollmentCSR` | signNodeCSR, signNodeEtcdClientCSR |
 | `bindRBACRoleForNode` | EnrollNode |
 | `commitEnrollment` | EnrollNode |
 | `CertificateAuthority.IssueCertificate` | renewCertificate, EnrollNode (legacy) |
-| `CertificateAuthority.SignCSR` | signNodeCSR |
+| `CertificateAuthority.SignCSR` | signNodeCSR, signNodeEtcdClientCSR |
+| `CertificateAuthority.IsIssuerOf` | RouteTLSController.gateCertificateNeedsReissue |
 | `renewCertificate` | NewCertificateRotator, renewalLoop |
 | `ExecuteOIDCBrowserFlow` | cca login |
 | `exchangeAuthorizationCode` | ExecuteOIDCBrowserFlow |
@@ -454,10 +475,10 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | security/oidc_browser_flow.go:53 | ExecuteOIDCBrowserFlow — OAuth2 PKCE flow |
 | security/oidc_discovery.go:52 | OIDCDiscoveryClient — JWKS fetch + cache |
 | security/principal.go:28 | Principal struct, context propagation |
-| security/ca.go:183 | CertificateAuthority.IssueCertificate |
-| security/ca.go:301 | CertificateAuthority.SignCSR |
+| security/ca.go:260 | CertificateAuthority.IssueCertificate |
+| security/ca.go:380 | CertificateAuthority.SignCSR |
 | security/rotator.go:36 | CertificateRotator — auto-renewal |
-| security/enrollment.go:180 | EnrollmentService.EnrollNode |
+| security/enrollment.go:201 | EnrollmentService.EnrollNode |
 | security/enrollment.go:103 | EnrollmentService.GenerateJoinToken |
 | security/bootstrap.go:37 | GenerateBootstrapToken |
 | security/bootstrap.go:64 | ValidateBootstrapToken |

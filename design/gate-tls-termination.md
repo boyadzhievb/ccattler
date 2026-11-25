@@ -1,5 +1,11 @@
 # Gate TLS Termination — M169 Design
 
+> **M280:** auto gate certificates are issued with ServerAuth only, by the **gate HTTPS CA** (`gate-https-ca.pem`,
+> `cca server --gate-ca-cert/--gate-ca-key`) on clusters created by `cca init` from M280, and by the cluster CA on
+> older clusters. Clients of a TLS gate trust `gate-https-ca.pem` (old clusters: `ca.pem`). A stored certificate
+> with ClientAuth or from another issuer is re-issued at once. Where this page says "cluster CA" for gates, read
+> "the gate issuer". See [graphs/PKI_GRAPH.md](graphs/PKI_GRAPH.md).
+
 ## Problem
 
 Gates forward traffic via L4 DNAT (nftables) or L7 cookie proxy (Go reverse proxy), but neither terminates TLS. Exposing HTTPS endpoints requires the backend application to handle its own certificates. This is awkward: every service needs cert management, and the cluster CA — which already issues node and mTLS certs — sits idle for workload-facing TLS.

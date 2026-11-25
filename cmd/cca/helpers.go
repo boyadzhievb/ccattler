@@ -28,13 +28,6 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// caCertSearchPaths lists locations where the CLI looks for the server CA
-// certificate to enable TLS. Checked in order; first match wins.
-var caCertSearchPaths = []string{
-	"/etc/ccattler/ca.pem",
-	"/etc/ccattler/pki/ca.pem",
-}
-
 // statusAPIScheme is the scheme the CLI uses: an explicit one in the API
 // address wins; otherwise "https" when a CA cert is found, "http" otherwise.
 // statusAPIListenAddress is the host:port the CLI connects to.
@@ -78,10 +71,8 @@ func resolveStatusAPIScheme() string {
 	if contextEntry != nil && contextEntry.CACertPath != "" {
 		return "https"
 	}
-	for _, candidatePath := range caCertSearchPaths {
-		if fileExists(candidatePath) {
-			return "https"
-		}
+	if firstExistingPath(installedClusterCACandidatePaths) != "" {
+		return "https"
 	}
 	return "http"
 }
@@ -94,7 +85,7 @@ func statusAPIBaseURL() string {
 // buildTLSTransportFromCACert returns an http.RoundTripper that trusts the
 // CCattler CA certificate. Returns http.DefaultTransport if no CA cert is found.
 func buildTLSTransportFromCACert() http.RoundTripper {
-	for _, candidatePath := range caCertSearchPaths {
+	for _, candidatePath := range installedClusterCACandidatePaths {
 		caCertPEM, readError := os.ReadFile(candidatePath) //nolint:gosec // reading known CA cert path
 		if readError != nil {
 			continue
@@ -168,17 +159,18 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 		// and no explicit cert paths were provided.
 		endpointsRequireTLS := strings.Contains(etcdEndpoints, "https://")
 		if etcdCertPath == "" && etcdKeyPath == "" && etcdCACertPath == "" && endpointsRequireTLS {
-			if fileExists(defaultEtcdCertPath) && fileExists(defaultEtcdKeyPath) && fileExists(defaultEtcdCACertPath) {
-				etcdCertPath = defaultEtcdCertPath
-				etcdKeyPath = defaultEtcdKeyPath
-				etcdCACertPath = defaultEtcdCACertPath
+			if etcdClientFiles, found := findInstalledPKIFileSet(installedEtcdClientFileSets); found {
+				etcdCertPath = etcdClientFiles.certificatePath
+				etcdKeyPath = etcdClientFiles.privateKeyPath
+				etcdCACertPath = etcdClientFiles.caCertificatePath
 			} else {
+				newEtcdClientFiles := installedEtcdClientFileSets[0]
 				return nil, fmt.Errorf("etcd endpoints use https:// but TLS certificates not found\n"+
-					"  Expected:  %s, %s, %s\n"+
+					"  Expected:  %s, %s, %s (or node.pem, node-key.pem, ca.pem from before M280)\n"+
 					"  Fix:       run 'cca join <server> <token> --node-id <id>' to enroll this node,\n"+
 					"             or provide --etcd-cert, --etcd-key, --etcd-ca flags\n"+
 					"  See:       design/security-model.md for certificate setup",
-					defaultEtcdCertPath, defaultEtcdKeyPath, defaultEtcdCACertPath)
+					newEtcdClientFiles.certificatePath, newEtcdClientFiles.privateKeyPath, newEtcdClientFiles.caCertificatePath)
 			}
 		}
 

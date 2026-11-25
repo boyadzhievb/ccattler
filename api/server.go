@@ -1649,7 +1649,8 @@ type enrollmentRequestBody struct {
 	Token       string   `json:"token"`
 	NodeID      string   `json:"node_id"`
 	IPAddresses []string `json:"ip_addresses"`
-	CSRPEM      string   `json:"csr_pem,omitempty"` // PEM-encoded CSR for CSR-based enrollment
+	CSRPEM      string   `json:"csr_pem,omitempty"`      // PEM-encoded CSR for CSR-based enrollment
+	EtcdCSRPEM  string   `json:"etcd_csr_pem,omitempty"` // PEM-encoded CSR for the node's etcd client certificate (M280)
 }
 
 // enrollmentResponseBody is the JSON response for POST /api/enroll.
@@ -1659,6 +1660,9 @@ type enrollmentResponseBody struct {
 	CACertPEM      string `json:"ca_cert_pem,omitempty"`
 	Principal      string `json:"principal,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// EtcdCertificatePEM is the node's etcd client certificate (M280 D4); empty on a server without an etcd access CA.
+	EtcdCertificatePEM string `json:"etcd_certificate_pem,omitempty"`
+	EtcdCACertPEM      string `json:"etcd_ca_cert_pem,omitempty"` // the etcd access CA, with EtcdCertificatePEM
 }
 
 // handleEnroll serves POST /api/enroll for node enrollment. The joining node
@@ -1714,6 +1718,7 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 		NodeID:      requestBody.NodeID,
 		IPAddresses: parsedIPAddresses,
 		CSRPEM:      []byte(requestBody.CSRPEM),
+		EtcdCSRPEM:  []byte(requestBody.EtcdCSRPEM),
 	})
 	if enrollmentError != nil {
 		responseWriter.WriteHeader(http.StatusForbidden)
@@ -1722,10 +1727,12 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 	}
 
 	_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{
-		CertificatePEM: string(enrollmentResponse.CertificatePEM),
-		PrivateKeyPEM:  string(enrollmentResponse.PrivateKeyPEM),
-		CACertPEM:      string(enrollmentResponse.CACertPEM),
-		Principal:      enrollmentResponse.Principal,
+		CertificatePEM:     string(enrollmentResponse.CertificatePEM),
+		PrivateKeyPEM:      string(enrollmentResponse.PrivateKeyPEM),
+		CACertPEM:          string(enrollmentResponse.CACertPEM),
+		Principal:          enrollmentResponse.Principal,
+		EtcdCertificatePEM: string(enrollmentResponse.EtcdCertificatePEM),
+		EtcdCACertPEM:      string(enrollmentResponse.EtcdCACertPEM),
 	})
 }
 

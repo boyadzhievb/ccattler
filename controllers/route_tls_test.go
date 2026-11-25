@@ -6,7 +6,10 @@ package controllers
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +22,7 @@ import (
 // newTestCertificateAuthority creates a short-lived CA for unit tests.
 func newTestCertificateAuthority(t *testing.T) *security.CertificateAuthority {
 	t.Helper()
-	certificateAuthority, err := security.NewCertificateAuthority(24 * time.Hour)
+	certificateAuthority, err := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("failed to create test CA: %v", err)
 	}
@@ -137,7 +140,7 @@ func TestRouteTLSControllerSkipsValidCert(t *testing.T) {
 		kv(types.KeyDesiredRouteHost("web-public"), "app.example.com"),
 		kv(types.KeyDesiredRouteService("web-public"), "frontend"),
 		kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
-		kv(types.KeyDerivedRouteTLSCert("web-public"), "existing-cert"),
+		kv(types.KeyDerivedRouteTLSCert("web-public"), currentGateCertificatePEM(t, routeTLSController, "app.example.com")),
 		kv(types.KeyDerivedRouteTLSKey("web-public"), "existing-key"),
 		kv(types.KeyDerivedRouteTLSNotAfter("web-public"), futureExpiry),
 	)
@@ -306,7 +309,7 @@ func TestRouteTLSControllerDeletesSealedKeysNoGateNeeds(t *testing.T) {
 	facts := buildFacts(
 		kv(types.KeyDesiredRouteHost("auto-gate"), "auto.example.com"),
 		kv(types.KeyDesiredRouteTLSMode("auto-gate"), "auto"),
-		kv(types.KeyDerivedRouteTLSCert("auto-gate"), "cert"),
+		kv(types.KeyDerivedRouteTLSCert("auto-gate"), currentGateCertificatePEM(t, routeTLSController, "auto.example.com")),
 		kv(types.KeyDerivedRouteTLSNotAfter("auto-gate"), futureExpiry),
 		kv(sealedKey("auto-gate"), "sealed"),
 		kv(types.KeyDesiredRouteHost("inline-gate"), "inline.example.com"),
@@ -346,7 +349,7 @@ func TestRouteTLSControllerReissuesLostSealedKey(t *testing.T) {
 	facts := buildFacts(
 		kv(types.KeyDesiredRouteHost("web-public"), "app.example.com"),
 		kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
-		kv(types.KeyDerivedRouteTLSCert("web-public"), "existing-cert"),
+		kv(types.KeyDerivedRouteTLSCert("web-public"), currentGateCertificatePEM(t, routeTLSController, "app.example.com")),
 		kv(types.KeyDerivedRouteTLSNotAfter("web-public"), futureExpiry),
 	)
 	changes, err := routeTLSController.Reconcile(context.Background(), facts)
@@ -364,5 +367,148 @@ func TestRouteTLSControllerReissuesLostSealedKey(t *testing.T) {
 	}
 	if opened := openSealedTestSecret(t, envelopeCodec, "web-public", sealedValue); !strings.Contains(string(opened), "PRIVATE KEY") {
 		t.Error("re-issued key does not open as a private key")
+	}
+}
+
+// issuedGateCertificate runs one reconcile for an auto gate on host and returns
+// the parsed certificate it issued.
+func issuedGateCertificate(t *testing.T, routeTLSController *RouteTLSController, host string) *x509.Certificate {
+	t.Helper()
+	facts := buildFacts(
+		kv(types.KeyDesiredRouteHost("web-public"), host),
+		kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
+	)
+	changes, reconcileError := routeTLSController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedRouteTLSCert("web-public") {
+			return parseTestCertificatePEM(t, change.Value)
+		}
+	}
+	t.Fatalf("no gate certificate issued: %d changes", len(changes))
+	return nil
+}
+
+// currentGateCertificatePEM issues a gate certificate as this release does
+// (ServerAuth only, from the controller's issuer), which reconcile keeps.
+func currentGateCertificatePEM(t *testing.T, routeTLSController *RouteTLSController, host string) string {
+	t.Helper()
+	issued, issueError := routeTLSController.gateCertificateIssuer.IssueCertificate(security.IssueCertificateRequest{
+		CommonName: host, SubjectUnit: security.SubjectUnitGateHTTPS, Usage: security.UsageServer,
+		DNSNames: []string{host}, TTL: gateCertificateTTL,
+	})
+	if issueError != nil {
+		t.Fatal(issueError)
+	}
+	return string(issued.CertificatePEM)
+}
+
+// parseTestCertificatePEM decodes and parses one PEM certificate.
+func parseTestCertificatePEM(t *testing.T, certificatePEM []byte) *x509.Certificate {
+	t.Helper()
+	certificateBlock, _ := pem.Decode(certificatePEM)
+	if certificateBlock == nil {
+		t.Fatal("no PEM block in certificate")
+	}
+	certificate, parseError := x509.ParseCertificate(certificateBlock.Bytes)
+	if parseError != nil {
+		t.Fatal(parseError)
+	}
+	return certificate
+}
+
+// TestGateCertificateHasServerAuthOnly: a gate certificate must never act as a
+// client identity, so it carries the ServerAuth usage and nothing else (M280).
+func TestGateCertificateHasServerAuthOnly(t *testing.T) {
+	routeTLSController, _ := newTestRouteTLSController(t)
+	gateCertificate := issuedGateCertificate(t, routeTLSController, "app.example.com")
+	if !slices.Equal(gateCertificate.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}) {
+		t.Fatalf("gate certificate ExtKeyUsage = %v, want [ServerAuth] only", gateCertificate.ExtKeyUsage)
+	}
+}
+
+// TestRouteTLSReissuesGateCertificateWithClientAuth: a stored gate certificate
+// from an earlier release (ServerAuth and ClientAuth) is re-issued at once,
+// although it is far from expiry and its sealed key exists (M280 D3).
+func TestRouteTLSReissuesGateCertificateWithClientAuth(t *testing.T) {
+	certificateAuthority := newTestCertificateAuthority(t)
+	routeTLSController := NewRouteTLSController(certificateAuthority, newTestEnvelopeCodec(t))
+	oldGateCertificate := issueOldGateCertificateWithClientAuth(t, certificateAuthority, "app.example.com")
+	futureExpiry := time.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
+	facts := buildFacts(
+		kv(types.KeyDesiredRouteHost("web-public"), "app.example.com"),
+		kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
+		kv(types.KeyDerivedRouteTLSCert("web-public"), string(oldGateCertificate)),
+		kv(types.KeyDerivedRouteTLSNotAfter("web-public"), futureExpiry),
+		kv("secrets/"+types.SecretNameRouteTLSKey("web-public"), "sealed-old-key"),
+	)
+	changes, reconcileError := routeTLSController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	var reissuedCertificate *x509.Certificate
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedRouteTLSCert("web-public") {
+			reissuedCertificate = parseTestCertificatePEM(t, change.Value)
+		}
+	}
+	if reissuedCertificate == nil {
+		t.Fatalf("gate certificate with ClientAuth was not re-issued (%d changes)", len(changes))
+	}
+	if slices.Contains(reissuedCertificate.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
+		t.Errorf("re-issued gate certificate still carries ClientAuth: %v", reissuedCertificate.ExtKeyUsage)
+	}
+}
+
+// TestRouteTLSReissuesGateCertificateFromAnotherIssuer: a ServerAuth-only gate
+// certificate signed by another CA (the cluster CA, before a gate HTTPS CA was
+// configured) is re-issued from the configured issuer (M280 D3).
+func TestRouteTLSReissuesGateCertificateFromAnotherIssuer(t *testing.T) {
+	gateHTTPSCA, caError := security.NewCertificateAuthority(security.GateHTTPSCertificateAuthority, 24*time.Hour)
+	if caError != nil {
+		t.Fatal(caError)
+	}
+	earlierIssuerController := NewRouteTLSController(newTestCertificateAuthority(t), newTestEnvelopeCodec(t))
+	routeTLSController := NewRouteTLSController(gateHTTPSCA, newTestEnvelopeCodec(t))
+	facts := buildFacts(
+		kv(types.KeyDesiredRouteHost("web-public"), "app.example.com"),
+		kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
+		kv(types.KeyDerivedRouteTLSCert("web-public"), currentGateCertificatePEM(t, earlierIssuerController, "app.example.com")),
+		kv(types.KeyDerivedRouteTLSNotAfter("web-public"), time.Now().Add(60*24*time.Hour).Format(time.RFC3339)),
+		kv("secrets/"+types.SecretNameRouteTLSKey("web-public"), "sealed-old-key"),
+	)
+	changes, reconcileError := routeTLSController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedRouteTLSCert("web-public") {
+			if !gateHTTPSCA.IsIssuerOf(parseTestCertificatePEM(t, change.Value)) {
+				t.Fatal("re-issued gate certificate is not from the gate HTTPS CA")
+			}
+			return
+		}
+	}
+	t.Fatalf("gate certificate from another issuer was not re-issued (%d changes)", len(changes))
+}
+
+// TestRouteTLSKeepsCurrentGateCertificate: a ServerAuth-only certificate from
+// the configured issuer is never re-issued before renewal is due, so the
+// re-issue rule cannot loop (M280 D3, design failure case "Re-issue loop").
+func TestRouteTLSKeepsCurrentGateCertificate(t *testing.T) {
+	routeTLSController, _ := newTestRouteTLSController(t)
+	for reconcileRound := range 3 {
+		changes, reconcileError := routeTLSController.Reconcile(context.Background(), buildFacts(
+			kv(types.KeyDesiredRouteHost("web-public"), "app.example.com"),
+			kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
+			kv(types.KeyDerivedRouteTLSCert("web-public"), currentGateCertificatePEM(t, routeTLSController, "app.example.com")),
+			kv(types.KeyDerivedRouteTLSNotAfter("web-public"), time.Now().Add(60*24*time.Hour).Format(time.RFC3339)),
+			kv("secrets/"+types.SecretNameRouteTLSKey("web-public"), "sealed-key"),
+		))
+		if reconcileError != nil || len(changes) != 0 {
+			t.Fatalf("round %d: %d changes, error %v; want none", reconcileRound, len(changes), reconcileError)
+		}
 	}
 }

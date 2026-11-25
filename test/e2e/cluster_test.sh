@@ -279,7 +279,7 @@ ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
 # Worker nodes always run an agent (the control-plane node does not in every env).
 WORKER_NODES_WITH_AGENT=("$WORKER1_NODE" "$WORKER2_NODE")
 ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
-ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
+ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/etcd-access-ca.pem --cert /etc/ccattler/pki/node-etcd-client-certificate.pem --key /etc/ccattler/pki/node-etcd-client-certificate-key.pem"
 
 # VM lifecycle tools (VM environments only — bare-metal skips all VM lifecycle).
 if [[ "$BAREMETAL" != "true" ]]; then
@@ -629,9 +629,9 @@ log "Fetching cluster TLS certificates for API verification..."
 CA_CERT_LOCAL="/tmp/cca-e2e-ca.pem"
 CLIENT_CERT_LOCAL="/tmp/cca-e2e-client.pem"
 CLIENT_KEY_LOCAL="/tmp/cca-e2e-client-key.pem"
-ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT_LOCAL"
-ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT_LOCAL"
-ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/cluster-identity-ca.pem" > "$CA_CERT_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node-identity-for-api.pem" > "$CLIENT_CERT_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node-identity-for-api-key.pem" > "$CLIENT_KEY_LOCAL"
 CCA_API="https://${CTRL_IP}:9770"
 CURL_TLS="--cacert $CA_CERT_LOCAL --cert $CLIENT_CERT_LOCAL --key $CLIENT_KEY_LOCAL"
 
@@ -883,9 +883,9 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
         echo '{ }' | sudo tee /etc/caddy/Caddyfile > /dev/null
     fi
 
-    sudo cp "$CA_CERT_LOCAL" /etc/ccattler/pki/ca.pem
-    sudo cp "$CLIENT_CERT_LOCAL" /etc/ccattler/pki/node.pem
-    sudo cp "$CLIENT_KEY_LOCAL" /etc/ccattler/pki/node-key.pem
+    sudo cp "$CA_CERT_LOCAL" /etc/ccattler/pki/cluster-identity-ca.pem
+    sudo cp "$CLIENT_CERT_LOCAL" /etc/ccattler/pki/node-identity-for-api.pem
+    sudo cp "$CLIENT_KEY_LOCAL" /etc/ccattler/pki/node-identity-for-api-key.pem
 
     sudo systemctl daemon-reload
     sudo systemctl restart caddy.service 2>/dev/null || log "WARNING: caddy failed to start"

@@ -36,9 +36,23 @@ type CertificateAuthority struct {
 	mutex            sync.Mutex
 }
 
-// NewCertificateAuthority generates a self-signed root CA certificate and key.
-// The CA is valid for the given duration.
-func NewCertificateAuthority(validityDuration time.Duration) (*CertificateAuthority, error) {
+// CertificateAuthorityKind names the purpose of one of the cluster's CAs (M280
+// D1, D1a). It fills the CA's Subject OU and CN; it never authorizes anything.
+type CertificateAuthorityKind string
+
+const (
+	// ClusterIdentityCertificateAuthority signs the API server and node identities the API trusts.
+	ClusterIdentityCertificateAuthority CertificateAuthorityKind = "cluster identity"
+	// EtcdAccessCertificateAuthority signs etcd's serving certificate and the etcd client certificates.
+	EtcdAccessCertificateAuthority CertificateAuthorityKind = "etcd access"
+	// GateHTTPSCertificateAuthority signs gate serving certificates; neither the API nor etcd trusts it.
+	GateHTTPSCertificateAuthority CertificateAuthorityKind = "gate HTTPS"
+)
+
+// NewCertificateAuthority generates a self-signed root CA of the given kind,
+// valid for the given duration. Its Subject is O=CCattler, OU="<kind> CA",
+// CN="CCattler <kind> CA".
+func NewCertificateAuthority(kind CertificateAuthorityKind, validityDuration time.Duration) (*CertificateAuthority, error) {
 	caPrivateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate CA key: %w", err)
@@ -52,8 +66,9 @@ func NewCertificateAuthority(validityDuration time.Duration) (*CertificateAuthor
 	caTemplate := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"CCattler"},
-			CommonName:   "CCattler Root CA",
+			Organization:       []string{subjectOrganization},
+			OrganizationalUnit: []string{string(kind) + " CA"},
+			CommonName:         "CCattler " + string(kind) + " CA",
 		},
 		NotBefore:             time.Now().Add(certificateNotBeforeClockSkew),
 		NotAfter:              time.Now().Add(validityDuration),
@@ -163,12 +178,74 @@ func (certificateAuthority *CertificateAuthority) CAPrivateKeyPEM() ([]byte, err
 	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}), nil
 }
 
+// subjectOrganization is the Subject O of every certificate CCattler issues.
+const subjectOrganization = "CCattler"
+
+// CertificateUsage is the TLS role an issued certificate may play (M280 D2).
+// Its zero value is no usage: IssueCertificate refuses it, so every caller
+// chooses. Go's TLS stack and etcd refuse a client certificate without ClientAuth.
+type CertificateUsage int
+
+const (
+	// UsageServer is ServerAuth only: etcd serving and gate certificates.
+	UsageServer CertificateUsage = iota + 1
+	// UsageClient is ClientAuth only: node identities and etcd clients.
+	UsageClient
+	// UsageServerAndClient is both: the API server, also a client of the agent debug API.
+	UsageServerAndClient
+)
+
+// extendedKeyUsages returns the ExtKeyUsage list of the usage, or an error for
+// the zero value or an unknown one.
+func (usage CertificateUsage) extendedKeyUsages() ([]x509.ExtKeyUsage, error) {
+	switch usage {
+	case UsageServer:
+		return []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, nil
+	case UsageClient:
+		return []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil
+	case UsageServerAndClient:
+		return []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}, nil
+	}
+	return nil, fmt.Errorf("certificate usage required (UsageServer, UsageClient or UsageServerAndClient), got %d", usage)
+}
+
+// CertificateSubjectUnit is the descriptive Subject OU of a leaf certificate
+// (M280 D1a). Authorization uses the CommonName only; the OU never authorizes.
+type CertificateSubjectUnit string
+
+const (
+	// SubjectUnitAPIServerIdentity marks the API server's certificate (CN ccattler-server or a static one).
+	SubjectUnitAPIServerIdentity CertificateSubjectUnit = "API server identity"
+	// SubjectUnitNodeIdentityForAPI marks a node's client identity to the API.
+	SubjectUnitNodeIdentityForAPI CertificateSubjectUnit = "node identity for API"
+	// SubjectUnitEtcdServing marks etcd's serving certificate.
+	SubjectUnitEtcdServing CertificateSubjectUnit = "etcd serving certificate"
+	// SubjectUnitCCAServerEtcdClient marks cca server's etcd client certificate.
+	SubjectUnitCCAServerEtcdClient CertificateSubjectUnit = "cca-server etcd client"
+	// SubjectUnitNodeEtcdClient marks one node's etcd client certificate.
+	SubjectUnitNodeEtcdClient CertificateSubjectUnit = "node etcd client"
+	// SubjectUnitGateHTTPS marks a gate serving certificate.
+	SubjectUnitGateHTTPS CertificateSubjectUnit = "gate HTTPS"
+)
+
+// leafSubject returns the Subject of a leaf certificate: O=CCattler, the OU
+// when given, and the CommonName.
+func leafSubject(commonName string, subjectUnit CertificateSubjectUnit) pkix.Name {
+	subject := pkix.Name{Organization: []string{subjectOrganization}, CommonName: commonName}
+	if subjectUnit != "" {
+		subject.OrganizationalUnit = []string{string(subjectUnit)}
+	}
+	return subject
+}
+
 // IssueCertificateRequest holds the parameters for issuing a new certificate.
 type IssueCertificateRequest struct {
-	CommonName  string
-	DNSNames    []string
-	IPAddresses []net.IP
-	TTL         time.Duration
+	CommonName  string                 // identity the certificate names (the principal for client usage)
+	SubjectUnit CertificateSubjectUnit // descriptive OU (D1a)
+	Usage       CertificateUsage       // required TLS role; the zero value is refused (D2)
+	DNSNames    []string               // DNS SANs
+	IPAddresses []net.IP               // IP SANs
+	TTL         time.Duration          // validity from now
 }
 
 // IssuedCertificate contains the PEM-encoded certificate and private key.
@@ -181,6 +258,10 @@ type IssuedCertificate struct {
 // IssueCertificate creates a new certificate signed by this CA. The certificate
 // is valid for the requested TTL and includes the specified identifiers.
 func (certificateAuthority *CertificateAuthority) IssueCertificate(request IssueCertificateRequest) (*IssuedCertificate, error) {
+	extendedKeyUsages, usageError := request.Usage.extendedKeyUsages()
+	if usageError != nil {
+		return nil, fmt.Errorf("issue certificate for %q: %w", request.CommonName, usageError)
+	}
 	certificateAuthority.mutex.Lock()
 	certificateAuthority.serialCounter++
 	certificateAuthority.mutex.Unlock()
@@ -199,16 +280,13 @@ func (certificateAuthority *CertificateAuthority) IssueCertificate(request Issue
 
 	leafTemplate := &x509.Certificate{
 		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{"CCattler"},
-			CommonName:   request.CommonName,
-		},
-		DNSNames:    request.DNSNames,
-		IPAddresses: request.IPAddresses,
-		NotBefore:   time.Now().Add(certificateNotBeforeClockSkew),
-		NotAfter:    notAfter,
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		Subject:      leafSubject(request.CommonName, request.SubjectUnit),
+		DNSNames:     request.DNSNames,
+		IPAddresses:  request.IPAddresses,
+		NotBefore:    time.Now().Add(certificateNotBeforeClockSkew),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  extendedKeyUsages,
 	}
 
 	leafCertificateBytes, err := x509.CreateCertificate(
@@ -285,6 +363,7 @@ type SignCSRRequest struct {
 	CSR         *x509.CertificateRequest // parsed CSR from the enrolling node; only its public key is used
 	TTL         time.Duration            // how long the signed certificate should be valid
 	CommonName  string                   // certificate CN chosen by the CA (the validated node ID)
+	SubjectUnit CertificateSubjectUnit   // descriptive OU chosen by the CA (D1a)
 	DNSNames    []string                 // DNS SANs chosen by the CA
 	IPAddresses []net.IP                 // IP SANs chosen by the CA
 }
@@ -312,9 +391,8 @@ func (certificateAuthority *CertificateAuthority) SignCSR(signRequest SignCSRReq
 	}
 
 	notAfter := time.Now().Add(signRequest.TTL)
-	leafTemplate := buildCSRLeafTemplate(
-		serialNumber, signRequest.CommonName, signRequest.DNSNames, signRequest.IPAddresses, notAfter,
-	)
+	leafTemplate := buildCSRLeafTemplate(serialNumber, leafSubject(signRequest.CommonName, signRequest.SubjectUnit),
+		signRequest.DNSNames, signRequest.IPAddresses, notAfter)
 
 	leafCertificateBytes, err := x509.CreateCertificate(
 		rand.Reader, leafTemplate, certificateAuthority.caCertificate,
@@ -336,25 +414,28 @@ func (certificateAuthority *CertificateAuthority) SignCSR(signRequest SignCSRReq
 }
 
 // buildCSRLeafTemplate creates the x509.Certificate template used when signing
-// a CSR. Enrolled node certificates are client-auth only: they identify the
-// node to the API server and etcd and must never be usable as a server cert.
+// a CSR. Enrolled certificates (a node's API identity, its etcd client
+// certificate) are client-auth only and never usable as a server certificate.
 func buildCSRLeafTemplate(
-	serialNumber *big.Int, commonName string,
+	serialNumber *big.Int, subject pkix.Name,
 	dnsNames []string, ipAddresses []net.IP, notAfter time.Time,
 ) *x509.Certificate {
 	return &x509.Certificate{
 		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{"CCattler"},
-			CommonName:   commonName,
-		},
-		DNSNames:    dnsNames,
-		IPAddresses: ipAddresses,
-		NotBefore:   time.Now().Add(certificateNotBeforeClockSkew),
-		NotAfter:    notAfter,
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Subject:      subject,
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddresses,
+		NotBefore:    time.Now().Add(certificateNotBeforeClockSkew),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
+}
+
+// IsIssuerOf reports whether this CA signed the certificate. RouteTLSController
+// uses it to re-issue gate certificates from another issuer (M280 D3).
+func (certificateAuthority *CertificateAuthority) IsIssuerOf(certificate *x509.Certificate) bool {
+	return certificate.CheckSignatureFrom(certificateAuthority.caCertificate) == nil
 }
 
 // generateSerialNumber returns a random serial number for X.509 certificates.

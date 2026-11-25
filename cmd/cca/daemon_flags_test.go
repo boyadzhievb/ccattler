@@ -410,12 +410,16 @@ func TestInitFlagsEveryFlagReachesItsField(testContext *testing.T) {
 		"--san", "ctrl-1.example", "--san", "10.0.0.9", "--ca-validity", "100h", "--cert-validity", "50h",
 		"--cluster-cidr", "10.50.0.0/16", "--vip-cidr", "10.60.0.0/24",
 		"--ca", "/pki/ca.crt", "--ca-key", "/pki/ca.key",
+		"--etcd-access-ca", "/pki/etcd-ca.crt", "--etcd-access-ca-key", "/pki/etcd-ca.key",
+		"--gate-https-ca", "/pki/gate-ca.crt", "--gate-https-ca-key", "/pki/gate-ca.key",
 	)
 	expectedConfig := initCommandConfig{
 		outputDirectory: "/tmp/cca-init", advertiseAddress: "10.0.0.1", nodeID: "ctrl-1",
 		extraSANs: []string{"ctrl-1.example", "10.0.0.9"}, caValidity: 100 * time.Hour,
 		certValidity: 50 * time.Hour, clusterCIDR: "10.50.0.0/16", vipCIDR: "10.60.0.0/24",
 		existingCAPath: "/pki/ca.crt", existingCAKeyPath: "/pki/ca.key",
+		existingEtcdAccessCAPath: "/pki/etcd-ca.crt", existingEtcdAccessCAKeyPath: "/pki/etcd-ca.key",
+		existingGateHTTPSCAPath: "/pki/gate-ca.crt", existingGateHTTPSCAKeyPath: "/pki/gate-ca.key",
 	}
 	if !reflect.DeepEqual(parsedConfig, expectedConfig) {
 		testContext.Errorf("parsed init flags differ:\n got  %+v\n want %+v", parsedConfig, expectedConfig)

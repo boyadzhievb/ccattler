@@ -81,6 +81,13 @@ type serverCommandConfig struct {
 	etcdKeyPath string
 	// etcdCACertPath is the path to a PEM-encoded CA certificate for verifying etcd server certs.
 	etcdCACertPath string
+	// gateCACertPath is the gate HTTPS CA certificate that signs gate certificates (M280 D3).
+	gateCACertPath string
+	// gateCAKeyPath is the gate HTTPS CA private key; set together with gateCACertPath.
+	gateCAKeyPath string
+	// etcdAccessCAKeyPath is the private key of the etcd access CA (--etcd-ca); with it,
+	// enrollment issues each node its own etcd client certificate (M280 D4).
+	etcdAccessCAKeyPath string
 	// dnsEnabled starts the built-in DNS server alongside the control plane.
 	dnsEnabled bool
 	// dnsListenAddress is the host:port the DNS server binds to (default ":15353").
@@ -170,6 +177,10 @@ func registerServerListenerFlags(flagSet *flag.FlagSet, parsedConfig *serverComm
 		})
 	flagSet.BoolVar(&parsedConfig.tlsEnabled, "tls", false, "mTLS with an auto-generated cluster CA")
 	flagSet.StringVar(&parsedConfig.tlsCAKeyPath, "ca-key", "", "PEM CA private key; enables node enrollment (cca join)")
+	flagSet.StringVar(&parsedConfig.gateCACertPath, "gate-ca-cert", "", "PEM gate HTTPS CA certificate that signs gate certificates")
+	flagSet.StringVar(&parsedConfig.gateCAKeyPath, "gate-ca-key", "", "PEM gate HTTPS CA private key (with --gate-ca-cert)")
+	flagSet.StringVar(&parsedConfig.etcdAccessCAKeyPath, "etcd-access-ca-key", "",
+		"PEM private key of the etcd access CA (--etcd-ca); enrollment then issues etcd client certificates")
 	flagSet.BoolVar(&parsedConfig.dnsEnabled, "dns", false, "start the built-in DNS server")
 	flagSet.Func("dns-listen", "DNS listen address (default :"+defaultDNSListenPort+"); enables --dns",
 		func(flagValue string) error {
@@ -231,6 +242,13 @@ func finalizeServerCommandConfig(parsedConfig serverCommandConfig, explicitListe
 		parsedConfig.tlsEnabled = true
 	}
 
+	if (parsedConfig.gateCACertPath == "") != (parsedConfig.gateCAKeyPath == "") {
+		return parsedConfig, errors.New("--gate-ca-cert and --gate-ca-key must be specified together")
+	}
+	if parsedConfig.etcdAccessCAKeyPath != "" && parsedConfig.etcdCACertPath == "" {
+		return parsedConfig, errors.New("--etcd-access-ca-key needs --etcd-ca, the etcd access CA certificate")
+	}
+
 	if parsedConfig.apiOnly && parsedConfig.controllersOnly {
 		return parsedConfig, errors.New("--api-only and --controllers-only are mutually exclusive")
 	}
@@ -273,6 +291,9 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 
 	if parsedConfig.storeBackend == "etcd" {
 		runServerPreflightChecks(parsedConfig)
+	}
+	if singleCAWarning := singleCAClusterWarning(parsedConfig); singleCAWarning != "" {
+		logging.Default().Warn(singleCAWarning)
 	}
 
 	factStore, storeCreationError := createStateStoreFromServerConfig(
@@ -354,8 +375,8 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewKeyringMigrationController(keyringCodec),
 		controllers.NewKeyringRotationController(keyringCodec, parsedConfig.keyringRetireGrace))
 
-	if clusterCertificateAuthority != nil {
-		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, keyringCodec))
+	if gateCertificateIssuer := resolveGateCertificateIssuer(parsedConfig, clusterCertificateAuthority); gateCertificateIssuer != nil {
+		controllerList = append(controllerList, controllers.NewRouteTLSController(gateCertificateIssuer, keyringCodec))
 	}
 
 	metricsCollector := controllers.NewMetricsCollector()
@@ -648,6 +669,9 @@ func configureAndStartAPIServer(
 
 	if clusterCertificateAuthority != nil {
 		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultNodeCertificateTTL)
+		if etcdAccessCA := loadEtcdAccessCertificateAuthority(parsedConfig); etcdAccessCA != nil {
+			enrollmentService.SetEtcdClientCertificateAuthority(etcdAccessCA)
+		}
 		statusAPIServer.SetEnrollmentService(enrollmentService)
 		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
 	}
@@ -745,7 +769,7 @@ func createCloudProvider(ctx context.Context, providerName string, region string
 // connections while all other endpoints enforce client certs via middleware. The
 // CA certificate is written to /etc/ccattler/ca.pem.
 func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Config, *security.CertificateAuthority) {
-	certificateAuthority, err := security.NewCertificateAuthority(defaultCACertificateValidity)
+	certificateAuthority, err := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, defaultCACertificateValidity)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating CA: %v\n", err)
 		os.Exit(1)
@@ -768,7 +792,10 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Confi
 	}
 
 	certificateRequest := security.IssueCertificateRequest{
-		CommonName:  "ccattler-server",
+		CommonName:  security.ServerCertificateCommonName,
+		SubjectUnit: security.SubjectUnitAPIServerIdentity,
+		// Server and client: the API server is also a client of the agents' debug API.
+		Usage:       security.UsageServerAndClient,
 		DNSNames:    serverDNSNames,
 		IPAddresses: serverIPAddresses,
 		TTL:         defaultServerCertificateTTL,
@@ -908,6 +935,15 @@ func preflightCheckExplicitCertPaths(parsedConfig serverCommandConfig) {
 	if parsedConfig.tlsCAKeyPath != "" {
 		preflightRequireReadableFile(parsedConfig.tlsCAKeyPath, "CA private key (--ca-key)")
 		preflightRequireSecureKeyPermissions(parsedConfig.tlsCAKeyPath, "CA private key")
+	}
+	if parsedConfig.etcdAccessCAKeyPath != "" {
+		preflightRequireReadableFile(parsedConfig.etcdAccessCAKeyPath, "etcd access CA private key (--etcd-access-ca-key)")
+		preflightRequireSecureKeyPermissions(parsedConfig.etcdAccessCAKeyPath, "etcd access CA private key")
+	}
+	if parsedConfig.gateCAKeyPath != "" {
+		preflightRequireReadableFile(parsedConfig.gateCACertPath, "gate HTTPS CA certificate (--gate-ca-cert)")
+		preflightRequireReadableFile(parsedConfig.gateCAKeyPath, "gate HTTPS CA private key (--gate-ca-key)")
+		preflightRequireSecureKeyPermissions(parsedConfig.gateCAKeyPath, "gate HTTPS CA private key")
 	}
 }
 
