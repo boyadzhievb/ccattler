@@ -45,12 +45,36 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
 
 - [x] 3.1 gofmt, golangci-lint, shellcheck on `install.sh`, `go test -count=1 ./...`.
   Result: gofmt clean; golangci-lint ./... 0 issues; go vet clean; shellcheck -s sh install.sh clean; go test -count=1 ./... exit 0 (no FAIL); go test -race cmd/cca runtime ok.
-- [ ] 3.2 Rocky 9.8 VM (192.168.100.108), reverted to the pre-test snapshot: follow `website/installation.md`
+- [x] 3.2 Rocky 9.8 VM (192.168.100.108), reverted to the pre-test snapshot: follow `website/installation.md`
   literally with the published M279 release (order per design.md, user decision 2026-11-24 option c: after 3.4,
   3.5 and the release; a defect found here becomes a follow-up fix). No workaround. Single-node cluster up; the Getting Started service running; VIP answers 200; `ausearch -m AVC` empty;
   journal free of `203/EXEC`. Record the commands and output (check `install-host:rhel-family`).
-- [ ] 3.3 Debian docs host (192.168.100.103): the same guide's Debian path on a fresh install; the cluster up and the
+  Result (2026-11-25, published v1.98.0-beta):
+  - **Host:** fresh since its snapshot, apart from `tar` (guide step 2) and an earlier test install of cca.
+  - **Commands:** the guide's EL9 path, verbatim (scratchpad/guide-rhel-el9.sh): step 2; step 3 (Docker repo
+    containerd.io, AppStream containernetworking-plugins, etcd 3.5.36 `sha256sum -c` OK); the Verify block, all
+    found; the quick install `curl …/releases/latest/download/install.sh | bash`, which downloaded v1.98.0-beta,
+    printed `install -o 0 -g 0 -m 0755` and `restorecon`; the step-1 secure_path snippet (`parsed OK`; `sudo cca
+    version` gives v1.98.0-beta); then cca init and setup.sh.
+  - **setup.sh** (exit 0): "No etcd.service found: creating the etcd user and unit", "etcd healthy (TLS)", and the
+    2379 NOTE.
+  - **Cluster:** cca-server, cca-agent and etcd active, etcd enabled, node `ctrl` alive. The Getting Started example
+    runs 3/3, `curl` to VIP 10.200.0.1:80 gives 200.
+  - **SELinux:** `ausearch -m AVC` shows 0, the journal has 0 `203/EXEC`, and `/usr/local/bin/cca` is
+    `0 0 system_u:object_r:bin_t:s0`.
+
+  No workaround. Check `install-host:rhel-family`: pass.
+- [x] 3.3 Debian docs host (192.168.100.103): the same guide's Debian path on a fresh install; the cluster up and the
   service running. Record it.
+  Result (2026-11-25, published v1.98.0-beta, Debian 13):
+  - **Host:** fresh; sudo and curl came from guide step 1, run by the user.
+  - **Commands:** the guide's Debian path, verbatim (scratchpad/guide-debian.sh): step 2; step 3 (apt containerd
+    nftables etcd-server etcd-client; the CNI tarball); Verify, all found; then the quick install, which printed
+    `install -o 0 -g 0 -m 0755` with no restorecon; `sudo cca version` gives v1.98.0-beta.
+  - **setup.sh** (exit 0): it kept Debian's own etcd unit (`Environment=ETCD_DATA_DIR=/var/lib/etcd/default`), with
+    "etcd healthy (TLS)" and the NOTE that no firewall is active.
+  - **Cluster:** node `ctrl` alive. The Getting Started example runs 3/3, VIP 10.200.0.1:80 gives 200, and
+    `/usr/local/bin/cca` is `0 0` 0755.
 - [x] 3.2a Extra check (user request, 2026-11-24): AlmaLinux 10.3 VM (192.168.100.109, fresh, snapshot taken;
   SELinux enforcing, firewalld on, kernel 6.12). The branch guide was followed literally from step 1, with two
   recorded deviations:
