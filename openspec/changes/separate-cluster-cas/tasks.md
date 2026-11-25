@@ -225,6 +225,20 @@ replica that minted them; that is now milestone M283. Therefore:
   JWT continuity.
 - **The guide:** step 3's user token must not be presented as surviving server restarts until M283 ships. Add a note
   there.
+- **caddy-sync (user decision 2026-11-25, option i): whoever restarts the server refreshes its token.** This is
+  temporary testbed infrastructure, removed in M281.
+  - **Credentials:** the local admin token is used only on the control-plane host, to mint a least-privilege
+    `caddy-sync` user JWT (`sudo cca user token caddy-sync`). Only that JWT goes to the testbed host. The
+    cluster-admin credential never leaves the control plane, and caddy-sync never gets cluster-admin.
+  - **Order** at deploy and at every step that restarts `cca-server`:
+    1. restart and wait until the API is healthy;
+    2. mint a fresh token;
+    3. copy it to the testbed host and replace the token file atomically, root-only;
+    4. only then (re)start caddy-sync.
+  - **The token is never printed,** and never put in command-line arguments or logs.
+  - **Pinning:** caddy-sync talks only to the API replica that minted its token, never through a load balancer
+    (cross-replica rejection is the M283 bug).
+- **After M283** removes the token-lifetime and replica problem, M281 removes caddy-sync altogether.
 
 ## Workflow follow-up
 
