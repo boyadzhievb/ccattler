@@ -208,12 +208,14 @@ Key rotation re-wraps DEKs through the keyring rotation controller (Flow 30, abo
 
 Wired by `configureSecretStoreAndDelivery` (cmd/cca/command_server.go): `AuthorizedStore`
 with service principal `service:secret-delivery` (role `secret-delivery`, read-only).
-`bootstrapControlPlaneNodeEnrollment` → `security.EnsureControlPlaneNodeEnrolled` writes
+`bootstrapControlPlaneNodeEnrollment` (server_startup_identity.go) → `recordControlPlaneNodeEnrollment` →
+`security.EnsureControlPlaneNodeEnrolled` writes
 `enrollment/node/{node}` create-only at startup: the control-plane node got its certificate from
 `cca init` and never ran `cca join`. The node is the CN of `--control-plane-node-cert`
 (`node-identity-for-api.pem`, set by setup.sh and the HA unit, M280 SA-H1), else, on clusters from
-before M280, the CN of the server certificate (`node.pem`, shared with the agent). A flag whose
-certificate fails `verifyControlPlaneNodeCertificate` makes it return an error and `cca server` exits.
+before M280, the CN of the server certificate (`node.pem`, shared with the agent). The flag's
+certificate is verified before the store is created (`checkServerIdentityFiles`, PKI_GRAPH); with the
+flag, a record that is not written or not read back is an error and `cca server` exits (SA3-L1).
 
 ```
 Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}

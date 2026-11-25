@@ -35,6 +35,17 @@ import (
 // back to outputDirectory: the server as setup.sh starts it.
 func serverConfigFromSetupScript(t *testing.T, outputDirectory string, advertiseAddress string, nodeID string) serverCommandConfig {
 	t.Helper()
+	parsedConfig, parseError := parseServerCommandArgs(serverArgsFromSetupScript(t, outputDirectory, advertiseAddress, nodeID))
+	if parseError != nil {
+		t.Fatalf("parse setup.sh server flags: %v", parseError)
+	}
+	return parsedConfig
+}
+
+// serverArgsFromSetupScript returns the cca server arguments of setup.sh's
+// cca-server unit, with the PKI directory mapped to outputDirectory.
+func serverArgsFromSetupScript(t *testing.T, outputDirectory string, advertiseAddress string, nodeID string) []string {
+	t.Helper()
 	setupScript := buildSetupScript(advertiseAddress, nodeID, outputDirectory, "", "", nil, threeCAClusterPKILayout)
 	unitText := setupScriptUnitText(t, setupScript, "/etc/systemd/system/cca-server.service")
 	_, execStart, found := strings.Cut(unitText, "ExecStart=/usr/local/bin/cca server ")
@@ -44,11 +55,7 @@ func serverConfigFromSetupScript(t *testing.T, outputDirectory string, advertise
 	execStart, _, _ = strings.Cut(execStart, "\nRestart=")
 	execStart = strings.ReplaceAll(execStart, "\\\n", " ")
 	execStart = strings.ReplaceAll(execStart, clusterPKIDirectory+"/", outputDirectory+"/")
-	parsedConfig, parseError := parseServerCommandArgs(strings.Fields(execStart))
-	if parseError != nil {
-		t.Fatalf("parse setup.sh server flags: %v", parseError)
-	}
-	return parsedConfig
+	return strings.Fields(execStart)
 }
 
 // newReworkTestCSR returns a PEM CSR with a fresh key.
@@ -74,7 +81,7 @@ func bootstrapServerAsSetupScriptRuns(t *testing.T, factStore store.StateStore, 
 	serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	bootstrapAdminGrants(factStore, bindServerPrincipal(serverTLSConfig, rbacAuthorizer))
-	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
+	if bootstrapError := startServerIdentityAndEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
 		t.Fatal(bootstrapError)
 	}
 	clusterCA, caError := security.LoadCertificateAuthorityFromFiles(parsedConfig.tlsCACertPath, parsedConfig.tlsCAKeyPath)
@@ -148,7 +155,7 @@ func TestServerRecordsNodeFromServerCertificateOnOldClusters(t *testing.T) {
 		writeClusterPKITestFile(t, pkiDirectory, "ca.pem", clusterCA.CACertificatePEM()), true)
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
-	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, serverCommandConfig{}); bootstrapError != nil {
+	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, nil); bootstrapError != nil {
 		t.Fatal(bootstrapError)
 	}
 	if _, getError := factStore.Get(context.Background(), security.EnrolledNodePrefix+"old-ctrl"); getError != nil {

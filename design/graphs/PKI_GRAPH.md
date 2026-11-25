@@ -42,7 +42,7 @@ look for the new names first and fall back to these (`installedEtcdClientFileSet
 |---|---|---|---|
 | API (`--cert`/`--ca`) | cluster identity CA | `loadServerTLSConfig` `ClientCAs` (cmd/cca/command_server.go) | `node:<CN>` (security/authn_mtls.go); OU ignored |
 | etcd (clients) | etcd access CA (new); cluster CA (old) | setup.sh `ETCD_TRUSTED_CA_FILE` (`buildSetupScriptEtcdStep`); HA `--trusted-ca-file` | none: no etcd RBAC, see §3 |
-| etcd (HA peers) | etcd access CA | `--peer-trusted-ca-file`, `--peer-client-cert-auth` (etcd-cluster.conf.j2); 2380/tcp open only to the etcd members (`etcd-peer-firewall.nft.j2`, SA-L1), because every node's etcd client certificate comes from the same CA | — |
+| etcd (HA peers) | etcd access CA | `--peer-trusted-ca-file`, `--peer-client-cert-auth` (etcd-cluster.conf.j2); 2380/tcp open only to the etcd members (`etcd-peer-firewall.nft.j2`, SA-L1; etcd `Requires=` its loader unit and reloads the rules in `ExecStartPre` at every start, SA2-L5/SA3-L4), because every node's etcd client certificate comes from the same CA | — |
 | agent debug API | cluster identity CA | `SetMutualTLS`, agent/debug_api.go | `node:<CN>` holding cluster-admin |
 | gate proxy | none (serving only) | network/gate_proxy.go | — |
 
@@ -64,9 +64,14 @@ becomes an etcd user only once etcd authentication and roles are enabled (M181, 
 
 **Identities around the server (review round 1):** the server records its own node as enrolled from
 `--control-plane-node-cert` (`node-identity-for-api.pem`; old clusters: the server certificate's CN), so no unbound join
-token can enroll as a control-plane node. `verifyControlPlaneNodeCertificate` (command_server.go) requires that file to
-chain to `--ca`, be valid now, be a client certificate and name an unreserved node ID; otherwise `cca server` exits at
-startup with an error naming the path and the reason (user decision 1, 2026-11-25: fail-closed). When the flag is
+token can enroll as a control-plane node. Before the store is created, `executeServerCommand` →
+`checkServerIdentityFiles` (server_startup_identity.go) → `checkServerCAKinds` (each `--ca`, `--etcd-ca`,
+`--gate-ca-cert` of its own kind or from before M280, SA3-L2) → `resolveControlPlaneNodeIdentity` →
+`verifyControlPlaneNodeCertificate` requires that file to chain to `--ca`, be valid now, be a client certificate and
+name an unreserved node ID; otherwise `cca server` exits at startup with an error naming the path and the reason,
+having written nothing (user decision 1, 2026-11-25: fail-closed; rework 4). `bootstrapControlPlaneNodeEnrollment`
+then records the verified node through `recordControlPlaneNodeEnrollment` (write, then read back; a failure exits,
+SA3-L1). When the flag is
 absent and the fallback CN is `ccattler-server` (a three-CA server without the flag), nothing is recorded and the
 server warns (SA2-L1). `ccattler-server` and `cca-server` are reserved node IDs (enrollment, `cca init` and
 `EnsureControlPlaneNodeEnrolled`), so no node gets the server's API principal. The etcd CNs have disjoint prefixes

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,5 +214,53 @@ func TestGateCertificateIsRefusedByEtcd(t *testing.T) {
 		if etcdAcceptsClientCertificate(t, clientURL, clusterSetup.serverCAPEM, gateKeyPair) == nil {
 			t.Errorf("%s: etcd accepted a gate certificate for host %s", setupName, security.ServerCertificateCommonName)
 		}
+	}
+}
+
+// countEtcdKeys returns how many keys etcd at clientURL holds, read with the
+// cca-server etcd client certificate.
+func countEtcdKeys(t *testing.T, clientURL string, serverCAPEM []byte, clientCertificate tls.Certificate) int64 {
+	t.Helper()
+	serverRoots := x509.NewCertPool()
+	serverRoots.AppendCertsFromPEM(serverCAPEM)
+	etcdClient, clientError := clientv3.New(clientv3.Config{Endpoints: []string{clientURL}, DialTimeout: etcdTLSTestRequestTimeout,
+		TLS: &tls.Config{RootCAs: serverRoots, Certificates: []tls.Certificate{clientCertificate}, MinVersion: tls.VersionTLS12}})
+	if clientError != nil {
+		t.Fatal(clientError)
+	}
+	defer func() { _ = etcdClient.Close() }()
+	requestContext, cancel := context.WithTimeout(context.Background(), etcdTLSTestRequestTimeout)
+	defer cancel()
+	countResponse, getError := etcdClient.Get(requestContext, "\x00", clientv3.WithFromKey(), clientv3.WithCountOnly())
+	if getError != nil {
+		t.Fatal(getError)
+	}
+	return countResponse.Count
+}
+
+// TestInvalidNodeCertificateLeavesEtcdUntouched (stop-time check): cca server,
+// started as setup.sh starts it against a real etcd but with a foreign
+// --control-plane-node-cert, exits 1 before it writes anything: no local token,
+// grants, keyring or leader lease reach etcd.
+func TestInvalidNodeCertificateLeavesEtcdUntouched(t *testing.T) {
+	outputDirectory := runClusterPKITestInit(t)
+	initFilePath := func(fileName string) string { return filepath.Join(outputDirectory, fileName) }
+	clientURL := startTLSEtcd(t, etcdTLSServerFiles{initFilePath(etcdServingCertificateFileName),
+		initFilePath(privateKeyFileName(etcdServingCertificateFileName)), initFilePath(etcdAccessCAFileName)})
+	etcdCAPEM := mustReadFile(t, initFilePath(etcdAccessCAFileName))
+	serverEtcdClient := loadInitKeyPair(t, outputDirectory, ccaServerEtcdClientCertificateFileName)
+	waitForEtcdToAccept(t, clientURL, etcdCAPEM, serverEtcdClient)
+	keysBefore := countEtcdKeys(t, clientURL, etcdCAPEM, serverEtcdClient)
+
+	foreignCertificatePath := foreignNodeCertificateFile(t)
+	serverArgs := append([]string{"server"}, serverArgsFromSetupScript(t, outputDirectory, "127.0.0.1", clusterPKITestNodeID)...)
+	serverArgs = append(serverArgs, "--endpoints", clientURL, "--listen", "127.0.0.1:0", "--dns-listen", "127.0.0.1:0",
+		"--secret-root-key", initFilePath("secret-root.key"), "--control-plane-node-cert", foreignCertificatePath)
+	_, stderrContent, exitCode := runCCABinaryFromPackageMain(t, serverArgs...)
+	if exitCode != 1 || !strings.Contains(stderrContent, foreignCertificatePath) {
+		t.Fatalf("cca server with a foreign --control-plane-node-cert: exit %d, stderr %q; want exit 1 naming the path", exitCode, stderrContent)
+	}
+	if keysAfter := countEtcdKeys(t, clientURL, etcdCAPEM, serverEtcdClient); keysAfter != keysBefore {
+		t.Errorf("etcd held %d keys before and %d after the refused start; want it untouched", keysBefore, keysAfter)
 	}
 }

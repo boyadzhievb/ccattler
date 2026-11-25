@@ -22,10 +22,12 @@ CLUSTER_PKI_DIRECTORY="/etc/ccattler/pki" # where setup.sh and cca join install 
 # pki_file_remote_expression prints a shell expression for a cluster host that
 # names m280_file_name when cluster-identity-ca.pem is installed, else
 # single_ca_file_name (a cluster set up before M280, CR2-L4). Evaluated there.
+# The test runs under sudo -n (never prompts): cca join creates the PKI directory
+# 0700, which the SSH user cannot search (CR3-L3).
 pki_file_remote_expression() {
     local m280_file_name="$1" single_ca_file_name="$2"
     # shellcheck disable=SC2016 # $( ) runs on the remote host, not here
-    printf '$(if [ -f %s/cluster-identity-ca.pem ]; then echo %s/%s; else echo %s/%s; fi)' "$CLUSTER_PKI_DIRECTORY" \
+    printf '$(if sudo -n test -f %s/cluster-identity-ca.pem; then echo %s/%s; else echo %s/%s; fi)' "$CLUSTER_PKI_DIRECTORY" \
         "$CLUSTER_PKI_DIRECTORY" "$m280_file_name" "$CLUSTER_PKI_DIRECTORY" "$single_ca_file_name"
 }
 

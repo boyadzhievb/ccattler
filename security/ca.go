@@ -63,8 +63,15 @@ func (kind CertificateAuthorityKind) subjectUnit() string {
 // a CA whose OU names none (a CA from before M280). It checks what a CA file
 // is, never what it may sign (SA2-L3).
 func (certificateAuthority *CertificateAuthority) Kind() (CertificateAuthorityKind, bool) {
+	return CertificateAuthorityKindOf(certificateAuthority.caCertificate)
+}
+
+// CertificateAuthorityKindOf returns the kind a CA certificate's Subject OU
+// names, and false when it names none (a CA from before M280, or not a CCattler
+// CA). cca server checks its CA files with it, without their keys (SA3-L2).
+func CertificateAuthorityKindOf(caCertificate *x509.Certificate) (CertificateAuthorityKind, bool) {
 	for _, kind := range certificateAuthorityKinds {
-		if slices.Contains(certificateAuthority.caCertificate.Subject.OrganizationalUnit, kind.subjectUnit()) {
+		if slices.Contains(caCertificate.Subject.OrganizationalUnit, kind.subjectUnit()) {
 			return kind, true
 		}
 	}

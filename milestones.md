@@ -552,6 +552,17 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 285 — The Rollout Determinism Test Reads the Wall Clock (M285, test bug)
+
+Found during M280 rework 4 (2026-11-25): `TestDeterministicPlanVerification/rollout` failed once under -race, with
+timestamps one second apart.
+- **The cause:** the test case builds `NewRolloutController()`, whose `Now` defaults to `time.Now`
+  (controllers/rollout.go:58). Only the failure controller's clock is frozen (write_domain_test.go), so two reconciles
+  straddling a second boundary differ.
+- **Fix:** freeze `Now` in the rollout case.
+- **Also:** check the other cases for controllers with an injectable clock that is left unset. A test that compares
+  two reconciles must inject every clock.
+
 ### Phase 284 — Concurrent First Start Can Refuse a Complete Keyring (M284, bug, to reproduce first)
 
 Found as `TestKeyringConcurrentBootstrapAgrees` failing once under full-suite load during M280 rework 3 (2026-11-25;
@@ -1672,6 +1683,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M280 — Every Cluster-CA Certificate Is an etcd Root Client | 280 | Security fix (found in the M279 security audit, 2026-11-24): gate certificates were issued by the cluster CA with client authentication, and etcd trusted every certificate from that CA, so a gate key was enough to read and write the whole fact store. Serving certificates no longer authenticate clients, and etcd accepts only its own client identities. |
 | M283 — API Tokens Survive Restarts and Work on Every Replica | 283 | Security bug fix (found in the M280 rework, 2026-11-25): the API token signing key was created in memory at every server start, so every `cca user token` token died at a restart and worked only on the HA replica that minted it. The key now lives sealed in the keyring in etcd and is shared by every replica; it fails closed when lost; keys rotate by key ID, and tokens have a maximum lifetime. Tokens issued before this release must be re-created once. |
 | M284 — Concurrent First Start Can Refuse a Complete Keyring | 284 | Bug fix (found in M280 rework 3, 2026-11-25, to reproduce first): when two control-plane replicas start for the first time at once, one can read the keyring between the other's bootstrap and its own check, and refuse to start with a misleading "restore from backup" error. |
+| M285 — The Rollout Determinism Test Reads the Wall Clock | 285 | Test bug fix (found in M280 rework 4, 2026-11-25): the determinism test leaves the rollout controller on the real clock, so it fails when two reconciles straddle a second; every clock is now injected in that test. |
 | M281 — The Testbed Load Balancer Forwards to Gates | 281 | Testbed: HAProxy replaces Caddy on the testbed host and forwards TCP 80/443 unchanged to the gate nodes, as a cloud network load balancer would (user decision 2026-11-25), instead of reading routes, backends and overlay subnets from the API with a token. No API credential to renew and no internal network map outside the cluster. |
 | M282 — The Debug Proxy Accepts an Agent Certificate of Any Usage | 282 | Bug fix (from the M280 security audit, to confirm first): the server's connection to an agent debug API verifies the agent's certificate with any usage, so on clusters from before M280 a gate certificate named like a node could pass as that agent. |
 | M278 — A Moved Instance Keeps the Source's IP When Its Own IP Is Unknown | 278 | Bug fix (found in the M267 round-9 review, 2026-11-24): when an instance's IP could not be resolved, its state was published without an IP and the old value stayed, so after a move the target could show `running` with the source's IP and traffic went there. A serving state is now never published next to another node's IP. |

@@ -8,11 +8,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"maps"
 	"math/big"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -62,16 +65,26 @@ var ansibleLayoutNames = map[string]clusterPKILayout{"three_ca": threeCAClusterP
 // jinja2 and PyYAML (they come with Ansible).
 func runAnsibleRender(t *testing.T, mode string, templatePath string, layoutName string, nodeID string) string {
 	t.Helper()
+	return runAnsibleRenderWithVariables(t, mode, templatePath, layoutName, nodeID, nil)
+}
+
+// runAnsibleRenderWithVariables is runAnsibleRender with extra template
+// variables (e.g. a registered task result), which override the defaults.
+func runAnsibleRenderWithVariables(t *testing.T, mode string, templatePath string, layoutName string, nodeID string,
+	extraVariables map[string]any) string {
+	t.Helper()
 	pythonPath, lookError := exec.LookPath("python3")
 	if lookError != nil || exec.Command(pythonPath, "-I", "-c", "import jinja2, yaml").Run() != nil { //nolint:gosec // fixed interpreter probe
 		t.Skip("python3 with jinja2 and PyYAML (Ansible's dependencies) not installed")
 	}
-	templateVariables, _ := json.Marshal(map[string]any{
+	renderVariables := map[string]any{
 		"cca_pki_layout": layoutName, "ansible_host": "127.0.0.1", "inventory_hostname": nodeID,
 		"cluster_cidr": "10.100.0.0/16", "vip_cidr": "10.200.0.0/24", "etcd_initial_cluster": "ctrl=https://127.0.0.1:2380",
 		"groups":   map[string][]string{"controlplane": {"ctrl"}, "etcd": {"ctrl"}},
 		"hostvars": map[string]map[string]string{"ctrl": {"ansible_host": "127.0.0.1"}},
-	})
+	}
+	maps.Copy(renderVariables, extraVariables)
+	templateVariables, _ := json.Marshal(renderVariables)
 	renderCommand := exec.Command(pythonPath, "-I", "-c", ansibleTemplateRenderScript, mode, ansibleGroupVarsPath, templatePath) //nolint:gosec // repository templates
 	renderCommand.Stdin = strings.NewReader(string(templateVariables))
 	renderedOutput, renderError := renderCommand.CombinedOutput()
@@ -108,6 +121,17 @@ func serverConfigFromRenderedUnit(t *testing.T, renderedUnit string, pkiDirector
 func enrolledNodeRecorded(factStore store.StateStore, nodeID string) bool {
 	_, getError := factStore.Get(context.Background(), security.EnrolledNodePrefix+nodeID)
 	return getError == nil
+}
+
+// startServerIdentityAndEnrollment runs what cca server runs for its node
+// identity, in its order: the identity-file checks (before the store), then the
+// enrollment record. Returns the first error; cca server exits on it.
+func startServerIdentityAndEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config, parsedConfig serverCommandConfig) error {
+	verifiedNodeCertificate, identityError := checkServerIdentityFiles(parsedConfig)
+	if identityError != nil {
+		return identityError
+	}
+	return bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, verifiedNodeCertificate)
 }
 
 // TestControlPlaneNodeCertificateMustBelongToTheCluster (SA2-L1/CR2-L1, user
@@ -154,7 +178,7 @@ func TestControlPlaneNodeCertificateMustBelongToTheCluster(t *testing.T) {
 			serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 			factStore := store.NewMemoryStore()
 			t.Cleanup(func() { _ = factStore.Close() })
-			bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
+			bootstrapError := startServerIdentityAndEnrollment(factStore, serverTLSConfig, parsedConfig)
 			recorded := enrolledNodeRecorded(factStore, testCase.recordedNodeID)
 			if testCase.wantReason == "" {
 				if bootstrapError != nil || !recorded {
@@ -184,7 +208,7 @@ func TestThreeCAServerWithoutNodeCertFlagRecordsNoServerName(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
 	logOutput := captureDefaultLogger(t)
-	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
+	if bootstrapError := startServerIdentityAndEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
 		t.Errorf("without --control-plane-node-cert the server must start (warn only), got error %v", bootstrapError)
 	}
 	if enrolledNodeRecorded(factStore, security.ServerCertificateCommonName) {
@@ -202,17 +226,17 @@ type lockedLogBuffer struct {
 }
 
 // Write appends one log line under the lock.
-func (logBuffer *lockedLogBuffer) Write(logLine []byte) (int, error) {
-	logBuffer.bufferLock.Lock()
-	defer logBuffer.bufferLock.Unlock()
-	return logBuffer.logContent.Write(logLine)
+func (lockedLogBuffer *lockedLogBuffer) Write(logLine []byte) (int, error) {
+	lockedLogBuffer.bufferLock.Lock()
+	defer lockedLogBuffer.bufferLock.Unlock()
+	return lockedLogBuffer.logContent.Write(logLine)
 }
 
 // String returns everything logged so far.
-func (logBuffer *lockedLogBuffer) String() string {
-	logBuffer.bufferLock.Lock()
-	defer logBuffer.bufferLock.Unlock()
-	return logBuffer.logContent.String()
+func (lockedLogBuffer *lockedLogBuffer) String() string {
+	lockedLogBuffer.bufferLock.Lock()
+	defer lockedLogBuffer.bufferLock.Unlock()
+	return lockedLogBuffer.logContent.String()
 }
 
 // captureDefaultLogger points the default logger at a buffer for the test and
@@ -243,7 +267,7 @@ func TestHAControlPlaneUnitRecordsItsNode(t *testing.T) {
 	serverTLSConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, true)
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	bootstrapAdminGrants(factStore, bindServerPrincipal(serverTLSConfig, rbacAuthorizer))
-	if bootstrapError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
+	if bootstrapError := startServerIdentityAndEnrollment(factStore, serverTLSConfig, parsedConfig); bootstrapError != nil {
 		t.Fatal(bootstrapError)
 	}
 	clusterCA, caError := security.LoadCertificateAuthorityFromFiles(parsedConfig.tlsCACertPath, parsedConfig.tlsCAKeyPath)
@@ -323,9 +347,9 @@ func TestAnsibleUnitsFollowTheClusterPKILayout(t *testing.T) {
 	}
 }
 
-// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5): the etcd drop-in requires
-// and follows the peer-firewall unit, and the role never restarts that unit
-// (Requires= would restart etcd with it).
+// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5, SA3-L4): the etcd drop-in requires
+// and follows the peer-firewall unit and reloads its rules before every start;
+// the role never restarts that unit (Requires= would restart etcd with it).
 func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
 	const firewallUnit = "ccattler-etcd-peer-firewall.service"
 	etcdDropIn := renderAnsibleRoleTemplate(t, "etcd-cluster", "etcd-cluster.conf.j2", "three_ca", "ctrl")
@@ -336,6 +360,14 @@ func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
 		}
 	}
 	roleTasks := string(mustReadFile(t, filepath.Join(ansibleRolesDirectory, "etcd-cluster", "tasks", "main.yml")))
+	// SA3-L4: every etcd start reloads the rules the firewall unit loads.
+	_, firewallUnitExec, _ := strings.Cut(roleTasks, "      ExecStart=")
+	firewallUnitExec, _, _ = strings.Cut(firewallUnitExec, "\n")
+	_, serviceSection, _ := strings.Cut(etcdDropIn, "[Service]")
+	serviceSection, _, _ = strings.Cut(serviceSection, "ExecStart=")
+	if firewallUnitExec == "" || !slices.Contains(strings.Split(serviceSection, "\n"), "ExecStartPre="+firewallUnitExec) {
+		t.Errorf("etcd drop-in [Service] lacks ExecStartPre=%s before ExecStart:\n%s", firewallUnitExec, serviceSection)
+	}
 	_, firewallTask, _ := strings.Cut(roleTasks, "name: ccattler-etcd-peer-firewall\n")
 	firewallTask, _, _ = strings.Cut(firewallTask, "\n- name:")
 	if !strings.Contains(firewallTask, "state: started") || strings.Contains(firewallTask, "restarted") {
@@ -441,9 +473,9 @@ func TestLocalAdminCACandidatesMatchTheCLI(t *testing.T) {
 	}
 }
 
-// TestPKIFileRemoteExpressionFollowsTheLayout (CR2-L4): the expression
+// TestPKIFileRemoteExpressionFollowsTheLayout (CR2-L4, CR3-L3): the expression
 // cluster_test.sh puts in remote commands names the M280 file when
-// cluster-identity-ca.pem is installed, else the file from before M280.
+// cluster-identity-ca.pem is installed, else the older file; it probes as root.
 func TestPKIFileRemoteExpressionFollowsTheLayout(t *testing.T) {
 	for _, testCase := range []struct {
 		installedCAFile string // the cluster CA file present on the host
@@ -451,14 +483,28 @@ func TestPKIFileRemoteExpressionFollowsTheLayout(t *testing.T) {
 	}{{clusterIdentityCAFileName, etcdAccessCAFileName}, {legacyClusterCAFileName, legacyClusterCAFileName}} {
 		pkiDirectory := t.TempDir()
 		writeClusterPKITestFile(t, pkiDirectory, testCase.installedCAFile, []byte("CA"))
-		evaluated, runError := exec.Command("bash", "-c", //nolint:gosec // repository helper
+		// CR3-L3: a stub sudo logs its arguments and runs them, standing in for
+		// root on a host whose PKI directory is 0700 (cca join).
+		stubDirectory := t.TempDir()
+		sudoLogPath := filepath.Join(stubDirectory, "sudo.log")
+		writeClusterPKITestFile(t, stubDirectory, "sudo", []byte("#!/bin/sh\necho \"$*\" >> "+sudoLogPath+"\n[ \"$1\" = -n ] && shift\nexec \"$@\"\n"))
+		if chmodError := os.Chmod(filepath.Join(stubDirectory, "sudo"), 0o700); chmodError != nil { //nolint:gosec // test stub
+			t.Fatal(chmodError)
+		}
+		evaluateCommand := exec.Command("bash", "-c", //nolint:gosec // repository helper
 			`source ../../test/e2e/local_admin_access.sh && CLUSTER_PKI_DIRECTORY="$1" && eval "echo $(pki_file_remote_expression etcd-access-ca.pem ca.pem)"`,
-			"bash", pkiDirectory).CombinedOutput()
+			"bash", pkiDirectory)
+		evaluateCommand.Env = append(os.Environ(), "PATH="+stubDirectory+":"+os.Getenv("PATH"))
+		evaluated, runError := evaluateCommand.CombinedOutput()
 		if runError != nil {
 			t.Fatalf("%v: %s", runError, evaluated)
 		}
 		if got := strings.TrimSpace(string(evaluated)); got != filepath.Join(pkiDirectory, testCase.wantFile) {
 			t.Errorf("with %s installed the expression names %s, want %s", testCase.installedCAFile, got, testCase.wantFile)
+		}
+		wantSudoCall := "-n test -f " + filepath.Join(pkiDirectory, clusterIdentityCAFileName)
+		if sudoLog, _ := os.ReadFile(sudoLogPath); strings.TrimSpace(string(sudoLog)) != wantSudoCall { //nolint:gosec // test file
+			t.Errorf("the layout probe must run as root (sudo %s), sudo log: %q", wantSudoCall, sudoLog)
 		}
 	}
 }

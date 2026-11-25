@@ -40,6 +40,10 @@ const (
 // ccaBinaryPath holds the path to the compiled cca binary, built once in TestMain.
 var ccaBinaryPath string
 
+// ccaTestBinaryEnvironmentVariable passes ccaBinaryPath to tests in package
+// main, which cannot see this package's variables.
+const ccaTestBinaryEnvironmentVariable = "CCA_TEST_BINARY"
+
 // TestMain builds the cca binary to a temporary directory before running tests,
 // and removes the temp directory after all tests complete.
 func TestMain(testRunner *testing.M) {
@@ -59,6 +63,8 @@ func TestMain(testRunner *testing.M) {
 		os.Exit(1)
 	}
 
+	// Tests in package main run the same binary through this variable.
+	_ = os.Setenv(ccaTestBinaryEnvironmentVariable, ccaBinaryPath)
 	exitCode := testRunner.Run()
 	os.RemoveAll(temporaryDirectory)
 	os.Exit(exitCode)

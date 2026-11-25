@@ -249,24 +249,35 @@ gate_tls_check_no_key_leakage() {
 
 # gate_tls_client_probe prints "<http code> <curl exit>" for a request from
 # GATE_TLS_NODE to url, trusting the CA named by ca_expression, with the client
-# certificate flags given (evaluated on that node). The private key stays in
-# its root-only file there; only the two codes come back.
+# certificate and other curl flags given (evaluated on that node). The private
+# key stays in its root-only file there; only the two codes come back.
 gate_tls_client_probe() {
     local url="$1" ca_expression="$2" client_certificate_flags="$3"
     ssh_vm "$GATE_TLS_NODE" "sudo curl -s -o /dev/null -w '%{http_code}' --max-time ${GATE_TLS_HANDSHAKE_TIMEOUT} \
         --cacert $ca_expression $client_certificate_flags $url; echo \" \$?\"" 2>/dev/null | tr -d '\r' || true
 }
 
-# gate_tls_handshake_refused succeeds when a probe got no HTTP response and curl failed.
+# gate_tls_handshake_refused succeeds only when the server refused the client
+# certificate at the handshake: no HTTP response and curl exit 35 (TLS
+# handshake failed) or 56 (connection closed by the peer, TLS 1.3 alert after
+# the handshake). An unusable pair (58), an unreachable endpoint (7) or a
+# timeout (28) is not a refusal (SA3-L3).
 gate_tls_handshake_refused() {
-    [[ "$1" == "000 "* && "$1" != "000 0" ]]
+    [[ "$1" == "000 35" || "$1" == "000 56" ]]
+}
+
+# gate_tls_response_received succeeds when a probe got an HTTP response (curl exit 0).
+gate_tls_response_received() {
+    [[ "$1" != "000 "* && "$1" == *" 0" ]]
 }
 
 # gate_tls_check_gate_cert_not_client covers T19, check deploy-run:gate-cert-not-client
 # (M280 D5): tls-auto's real gate certificate and key, presented as a client
 # certificate, are refused at the handshake by etcd (2379) and the API (9770).
-# Positive controls: the node's etcd client certificate is accepted by etcd,
-# and the API answers /healthz without a client certificate.
+# Positive controls: curl loads the same gate pair (presented to the gate
+# listener :443, which does not ask for client certificates, SA3-L3), the node's
+# etcd client certificate is accepted by etcd, and the API answers /healthz
+# without a client certificate.
 gate_tls_check_gate_cert_not_client() {
     local gate_pair_flags="--cert ${GATE_TLS_CACHED_PAIR_DIR}/certificate.pem --key ${GATE_TLS_CACHED_PAIR_DIR}/private-key.pem"
     local etcd_ca cluster_ca node_etcd_flags probe_result
@@ -276,15 +287,19 @@ gate_tls_check_gate_cert_not_client() {
     node_etcd_flags+=" --key $(pki_file_remote_expression node-etcd-client-certificate-key.pem node-key.pem)"
     ssh_vm "$GATE_TLS_NODE" "sudo test -s ${GATE_TLS_CACHED_PAIR_DIR}/certificate.pem && sudo test -s ${GATE_TLS_CACHED_PAIR_DIR}/private-key.pem" \
         || fail "gate-tls T19: $GATE_TLS_NODE has no cached tls-auto pair in ${GATE_TLS_CACHED_PAIR_DIR}"
+    probe_result=$(gate_tls_client_probe "https://tls-auto.home.arpa:${GATE_TLS_PORT}/" "$GATE_TLS_CA" \
+        "$gate_pair_flags --resolve tls-auto.home.arpa:${GATE_TLS_PORT}:${GATE_TLS_NODE_IP}")
+    gate_tls_response_received "$probe_result" || fail "gate-tls T19: curl could not use the gate pair against the gate listener (positive control: $probe_result)"
     probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:2379/health" "$etcd_ca" "$node_etcd_flags")
     [[ "$probe_result" == "200 0" ]] || fail "gate-tls T19: etcd refused the node etcd client certificate (positive control: $probe_result)"
     probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:2379/health" "$etcd_ca" "$gate_pair_flags")
-    gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: etcd accepted the gate certificate as a client ($probe_result)"
+    gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: etcd did not refuse the gate certificate at the handshake ($probe_result)"
     probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:9770/healthz" "$cluster_ca" "")
     [[ "$probe_result" == "200 0" ]] || fail "gate-tls T19: API /healthz unreachable without a client certificate (positive control: $probe_result)"
     probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:9770/healthz" "$cluster_ca" "$gate_pair_flags")
-    gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: the API accepted the gate certificate as a client ($probe_result)"
-    log "  T19 PASS (deploy-run:gate-cert-not-client): etcd and the API refuse tls-auto's gate certificate as a client; node etcd client accepted"
+    gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: the API did not refuse the gate certificate at the handshake ($probe_result)"
+    log "  T19 PASS (deploy-run:gate-cert-not-client): etcd and the API refuse tls-auto's gate certificate at the handshake;" \
+        "the same pair loads against the gate listener; the node etcd client certificate is accepted"
 }
 
 # gate_tls_rotation_loop_finished reports whether the T5 background loop

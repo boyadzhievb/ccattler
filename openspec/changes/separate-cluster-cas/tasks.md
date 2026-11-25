@@ -371,6 +371,85 @@ Only the deploy run proves: T19 against the real etcd and API; the caddy-sync st
 detection on real hosts (fresh three-CA run; a pre-M280 cluster only through `--from-release`); the etcd drop-in's
 `Requires=` at boot.
 
+**Stop-time check (Codex, 2026-11-25), CONFIRMED by the main session: an invalid node certificate is detected only
+after startup side effects.** The 3g exit sits in `configureAndStartAPIServer` (command_server.go:711-714). By then
+`executeServerCommand` has already:
+- created the store and the keyring;
+- started the controllers with leader election (its line 41, before the API setup);
+- written the local token (`buildServerAuthenticatorAndBindings`);
+- written the admin grants (`bootstrapAdminGrants`).
+
+So a misconfigured server can act as leader briefly before it exits.
+- **Fix (rework 4, batched with the round-3 findings):** load and verify `--control-plane-node-cert` in the preflight
+  checks, before the store is created, and pass the verified identity to the enrollment record later. Add a test
+  that a bad certificate leaves the store untouched.
+
+### 3h. Review round 3 (2026-11-25, on bb6c741..af63794)
+
+Both verdicts approve with LOW findings only: security-audit (m280-security-audit-r3.txt) and code-reviewer
+(m280-code-review-r3.txt, Codex job review-mwwaacro-5fjzap).
+- **Every round-2 finding is confirmed closed:**
+  - real binary runs with etcd v3.5.36;
+  - 0 CN collisions over 50,589 node IDs;
+  - T19 run locally passes, and fails under a mutation that lets etcd trust the gate CA;
+  - round-2 mutations re-applied are caught.
+- **Under the full-rigor rule every real finding is fixed (rework 4).**
+
+| ID | Finding | Disposition |
+|---|---|---|
+| Stop-time (above) | The node certificate is verified after startup side effects | Fix: verify in preflight, before the store is created |
+| SA3-L1 | With the flag given, a failed enrollment-record write only warns and serves (first start), reopening the takeover | Fix: exit when the flag is given and the record cannot be written or confirmed |
+| SA3-L2 | `cca server` does not check CA kinds (e.g. the etcd access CA as `--gate-ca-cert`) | Fix: the same `Kind()` check on `--ca`, `--etcd-ca` and `--gate-ca-cert` (a pre-M280 CA without an OU stays accepted) |
+| SA3-L3 / CR3-L2 | T19 counts any `000 <non-zero>` as refused (a wrong key gives 58, a down endpoint gives 7) | Fix: accept only curl exit 35 or 56. Add controls: the same gate pair loads (presented to :443), and the API accepts a valid client certificate |
+| SA3-L4 | `Requires=` proves only that the firewall unit ran; a flushed table is not restored before etcd restarts | Fix: `ExecStartPre=nft -f …` in the etcd drop-in |
+| SA3 note / CR3-L3 | `pki_file_remote_expression` tests `-f` as the ssh user; a 0700 PKI dir from `cca join` picks the old names | Fix: `sudo test -f` |
+| CR3-L1 | Ansible layout: only the three unit templates are tested; mutations M49, M50, M53, M54 and M55 survive | Fix: an invariant test for literal PKI names in deploy/ansible outside group_vars, plus renders of the layout condition and the HA init command for both layouts |
+| CR3-L4 | design.md's failure table lacks "exit on an invalid `--control-plane-node-cert`" and no spec scenario covers it; the row "HA secondary given only `--ca/--ca-key` refuses" contradicts CR-L7/SA2-L3 | Fix: the table row and a spec scenario (with test); correct the row |
+| CR3 style | `bootstrapControlPlaneNodeEnrollment` doc comment is 6 lines (max 4) | Fix |
+| Codex | (high) the node certificate's OU is not checked | Rejected by the reviewer: in a three-CA cluster the cluster CA issues ClientAuth only to node identities and the reserved `ccattler-server`, which is refused; the OU never authorizes, by design (D1a) |
+| Known | M45 (the `os.Exit` line) survives: no binary-level `cca server` test | Accepted; recorded in 3g |
+
+### 3i. Rework round 4 (2026-11-25, lead-developer, on af63794; outputs in scratchpad rw4-*.txt)
+
+Red is a mutation on the fixed tree that restores the old behaviour (script `rw4-mutate.sh`, `rw4-mutations.txt`),
+or the reviewer's survivor now caught. Green is the same test on this tree.
+
+| ID | Red | Fix and green |
+|---|---|---|
+| Stop-time | M63 (the identity check moved back after the store, as on af63794): `TestInvalidNodeCertificateLeavesEtcdUntouched` "etcd held 0 keys before and 13 after the refused start" (`rw4-red-order.txt`); M56 (error ignored): `TestServerExitsOnInvalidNodeCertificateBeforeStartup` | `executeServerCommand` → `checkServerIdentityFiles` (new server_startup_identity.go) runs before the store is created and passes the verified certificate to `bootstrapControlPlaneNodeEnrollment`; `loadControlPlaneNodeCertificate` removed. The etcd test runs the binary as setup.sh does against a real etcd (v3.5.36); the binary test also closes M45. Green |
+| SA3-L1 | M57 (no read-back), M58 (record error only warns): `TestControlPlaneNodeRecordMustBeConfirmed` | With the flag, `recordControlPlaneNodeEnrollment` writes and reads back the record; a failure or a missing record exits. Without the flag (old cluster) it still only warns (same test). Green |
+| SA3-L2 | M59 (kind check off), M60 (no-OU refused): `TestServerCAKindChecks` | `checkServerCAKinds`: `--ca`, `--etcd-ca`, `--gate-ca-cert` must not name another kind; no OU (before M280, external etcd CA) accepted; unreadable file refused. `security.CertificateAuthorityKindOf` (certificate only; `Kind()` delegates). Green |
+| SA3-L3 / CR3-L2 | Live T19 (reviewer setup, `rw4live/t19.sh` with an `openssl s_server` gate listener on :443): bad key now fails at the :443 control ("000 58"); with that control removed, the predicate alone fails it ("etcd did not refuse … (000 58)"); eku-both fails (`rw4-t19-live.txt`) | `gate_tls_handshake_refused` accepts only `000 35`/`000 56`; control: the same gate pair against the gate listener must get a response. Normal mode: T19 PASS. **Not done: the API positive control with a valid client certificate** (see below) |
+| SA3-L4 | M61 (ExecStartPre removed): `TestEtcdStartsOnlyAfterThePeerFirewall` | etcd drop-in `ExecStartPre=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft`; the test requires the line to equal the firewall unit's ExecStart. Green |
+| CR3-L3 | M62 (probe without sudo): `TestPKIFileRemoteExpressionFollowsTheLayout` | `sudo -n test -f` (never prompts); the test runs a stub sudo that logs its call. Green |
+| CR3-L1 | M49 → `TestAnsiblePKILayoutDetection`; M50 → `TestAnsibleHASecondaryInitFollowsTheLayout`; M53, M54, M55 → `TestAnsibleNamesPKIFilesOnlyThroughGroupVars` (all survived on af63794) | Invariant: no non-comment line outside group_vars names a PKI file of either layout. Renders (jinja2, from the task YAML): the layout condition with the stat results of its own probe list (4 host states), the HA secondary `cca init` flags for both layouts. Green |
+| CR3-L4 | `openspec validate --strict` | design.md failure table: exit on an invalid `--control-plane-node-cert`, CA-kind exit, corrected HA-secondary row (recorded as a main-session change for CR3-L4). Spec: requirements "cca server records only a verified control-plane node" and "cca server checks the kind of each CA file", scenarios naming their tests. Valid |
+| CR3 style | — | Doc comment 4 lines; `lockedLogBuffer` receiver renamed |
+
+**Needs a decision (API positive control, SA3-L3):** the only cluster-CA client certificate on a gate node is the
+node identity (`node-identity-for-api.pem`, `node.pem` on old clusters). Presenting it to `/healthz` fails
+`TestAutomationNeverUsesCertificateAsAdminClient` (CR-H1/CR2-L2: no automation names it as an API client). The control
+is left out until the user chooses: exempt this read-only `/healthz` probe from the invariant, or another certificate.
+
+Checks: gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also
+`--build-tags etcd_integration` on cmd/cca and store) (`rw4-checks.txt`); `go test -count=1 ./...` exit 0, 20
+packages ok (`rw4-full-test.txt`); `-race` on security and cmd/cca ok, controllers FAIL once:
+`TestDeterministicPlanVerification/rollout`, `progress_at`/`started_at` 16:04:03Z vs 16:04:04Z (wall clock crossed a
+second between iterations; controllers untouched by this diff). **Classified as a test bug**, recorded, not rerun
+(`rw4-race.txt`). etcd_integration (ETCD_BIN v3.5.36; plain etcd on 127.0.0.1:2379 for store): store and cmd/cca ok,
+400 PASS (`rw4-etcd-integration.txt`). shellcheck: local_admin_access.sh 0, gate_tls_checks.sh 1 (pre-existing
+SC2034). `ansible-playbook --syntax-check`: baremetal, ha, demo, site, test-deploy, rotate-root-key ok.
+
+**Main session on rework 4 (2026-11-25):**
+- **SA3-L3's API positive control is rejected as redundant.** The only cluster-identity client certificate on a gate
+  node is the node identity. Naming it in automation would weaken the CR-H1 invariant
+  (`TestAutomationNeverUsesCertificateAsAdminClient`, a user decision). The deploy run already proves that the API
+  accepts a valid cluster-identity client certificate: every agent connects with `node-identity-for-api.pem`, and the
+  node-registration checks pass. T19 keeps the exit 35/56 rule and the :443 gate-pair control.
+- **`TestDeterministicPlanVerification/rollout` failed once under -race:** a test bug. The rollout case leaves
+  `RolloutController.Now` on `time.Now` (controllers/rollout.go:58); only the failure controller's clock is frozen.
+  Not caused by M280, not rerun; it becomes milestone M285.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

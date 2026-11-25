@@ -7,12 +7,16 @@
 # follow the cluster's PKI layout (cca_pki, group_vars).
 # etcd starts only after the peer port firewall loaded, and not when it failed
 # (M280 SA2-L5): Before= in the firewall unit orders, it does not require.
+# ExecStartPre reloads the rules at every etcd start (SA3-L4): Requires= proves
+# only that the unit ran once, not that the table is still loaded. nft -f
+# replaces the table atomically, so a reload is idempotent.
 [Unit]
 Requires=ccattler-etcd-peer-firewall.service
 After=ccattler-etcd-peer-firewall.service
 
 [Service]
 UnsetEnvironment=DAEMON_ARGS ETCD_NAME ETCD_DATA_DIR ETCD_LISTEN_CLIENT_URLS ETCD_ADVERTISE_CLIENT_URLS ETCD_CERT_FILE ETCD_KEY_FILE ETCD_TRUSTED_CA_FILE ETCD_CLIENT_CERT_AUTH
+ExecStartPre=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
 ExecStart=
 ExecStart=/usr/bin/etcd \
   --name {{ inventory_hostname }} \
