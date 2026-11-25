@@ -6,6 +6,9 @@
       - ansible_distribution_major_version | int >= 22 or ansible_distribution == "Debian"
     fail_msg: "CCattler requires Ubuntu 22.04+ or Debian 12+ (found {{ ansible_distribution }} {{ ansible_distribution_version }}). Python 3.9+ and OpenSSL 3.0+ are needed."
 
+- name: Detect the cluster PKI layout
+  import_tasks: pki_layout.yml
+
 - name: Build CCattler binary for target architecture
   command: >-
     go build

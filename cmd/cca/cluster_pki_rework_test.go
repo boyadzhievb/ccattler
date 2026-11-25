@@ -278,12 +278,14 @@ func TestServerWarnsOnEverySingleCACase(t *testing.T) {
 // M280, an HA secondary given only --ca/--ca-key reuses the single CA and writes
 // the old layout (ca.pem, node.pem, etcd.pem), and its setup.sh uses those files.
 func TestInitSingleCASecondaryWritesOldLayout(t *testing.T) {
-	singleCA, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
-	singleCAKeyPEM, _ := singleCA.CAPrivateKeyPEM()
-	firstDirectory := t.TempDir()
+	// A CA as cca init wrote it before M280 (no kind in its OU): an M280 CA is refused here (SA2-L3).
+	singleCAPath, singleCAKeyPath := writeLegacySingleCAFiles(t)
+	singleCA, loadError := security.LoadCertificateAuthorityFromFiles(singleCAPath, singleCAKeyPath)
+	if loadError != nil {
+		t.Fatal(loadError)
+	}
 	parsedConfig, parseError := parseInitCommandArgs([]string{"--node-id", "ctrl-2", "--advertise-address", "127.0.0.1",
-		"--ca", writeClusterPKITestFile(t, firstDirectory, "ca.pem", singleCA.CACertificatePEM()),
-		"--ca-key", writeClusterPKITestFile(t, firstDirectory, "ca-key.pem", singleCAKeyPEM), "-o", t.TempDir()})
+		"--ca", singleCAPath, "--ca-key", singleCAKeyPath, "-o", t.TempDir()})
 	if parseError != nil {
 		t.Fatalf("cca init --ca/--ca-key on a single-CA cluster: %v", parseError)
 	}

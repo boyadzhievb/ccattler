@@ -49,7 +49,7 @@ No runtime flow in `design/runtime-invariant-flows.md` covers PKI. This change a
   self-signed and valid 10 years like today's CA, with keys at 0600. setup.sh installs them in `/etc/ccattler/pki`.
 - **The etcd access CA** signs `etcd-serving-certificate.pem` (ServerAuth, SANs as today) and two client
   certificates (ClientAuth): `cca-server-etcd-client-certificate.pem` (CN `etcd-client-cca-server`) and
-  `node-etcd-client-certificate.pem` (CN `etcd-client-<node>`).
+  `node-etcd-client-certificate.pem` (CN `etcd-client-node-<node>`).
 - **HA secondaries:** `cca init --ca/--ca-key --etcd-access-ca/--etcd-access-ca-key --gate-https-ca/--gate-https-ca-key`
   reuses all three CAs of the first node, all six flags or none. A secondary reusing only the cluster CA would mint
   CAs its peers do not trust.
@@ -74,12 +74,17 @@ command_init.go:457), the same file as the local agent's identity.
 | `gate-https-ca.pem` | (new) | self | CCattler / gate HTTPS CA / CCattler gate HTTPS CA | CA |
 | `api-server-identity-certificate.pem` | `node.pem` (as `cca server --cert`) | cluster identity CA | CCattler / API server identity / `ccattler-server` | server + client (client for the agent debug API) |
 | `node-identity-for-api.pem` | `node.pem` (as agent `--cert`) | cluster identity CA | CCattler / node identity for API / `<node-id>` | client |
-| `etcd-serving-certificate.pem` | `etcd.pem` | etcd access CA | CCattler / etcd serving certificate / `etcd-<node-id>` | server + client (etcd's self-connection, etcd issue 9785; decision 2026-11-25) |
+| `etcd-serving-certificate.pem` | `etcd.pem` | etcd access CA | CCattler / etcd serving certificate / `etcd-server-<node-id>` | server + client (etcd's self-connection, etcd issue 9785; decision 2026-11-25) |
 | `etcd-peer-certificate.pem` | `etcd.pem` (as HA `--peer-cert-file`) | etcd access CA | CCattler / etcd peer certificate / `etcd-peer-<node-id>` | server + client (HA peers; decision 2026-11-25) |
 | `cca-server-etcd-client-certificate.pem` | `node.pem` (as server `--etcd-cert`) | etcd access CA | CCattler / cca-server etcd client / `etcd-client-cca-server` | client |
-| `node-etcd-client-certificate.pem` | `node.pem` (as agent `--etcd-cert`) | etcd access CA | CCattler / node etcd client / `etcd-client-<node-id>` | client |
+| `node-etcd-client-certificate.pem` | `node.pem` (as agent `--etcd-cert`) | etcd access CA | CCattler / node etcd client / `etcd-client-node-<node-id>` | client |
 | rotating server certificate (memory) | — | cluster identity CA | CCattler / API server identity / `ccattler-server` | server + client |
 | gate certificates (store) | — | gate HTTPS CA | CCattler / gate HTTPS / `<route host>` | server |
+
+- **CN column changed during apply** (main session decision, 2026-11-25, finding SA2-L4): the etcd CNs were
+  `etcd-<node-id>` (serving) and `etcd-client-<node-id>` (node client), which overlap (node `client-cca-server` got the
+  server's etcd client CN). They are now the disjoint prefixes `etcd-server-<node-id>`, `etcd-peer-<node-id>`,
+  `etcd-client-node-<node-id>` and `etcd-client-cca-server`. Clusters set up before M280 keep their certificates.
 
 - **Per-node identities:** each node has its own etcd client certificate and key (`cca join` issues the node's); none
   is shared between nodes or between the server and an agent.
@@ -135,7 +140,7 @@ of a renewal. The controller's change budget is unchanged.
 ### D4. etcd client certificates at enrollment
 - **Enrollment:** `EnrollmentResponse` gains `EtcdCertificatePEM`, `EtcdPrivateKeyPEM` and `EtcdCAPEM`. The server
   signs a second CSR, or generates the key server-side, as today's node key flow does: D4 follows today's flow, with
-  the etcd CA key, `UsageClient`, and CN `etcd-client-<node>`.
+  the etcd CA key, `UsageClient`, and CN `etcd-client-node-<node>`.
 - **The server needs the etcd access CA key** to sign: new flags `--etcd-access-ca-key` (with `--etcd-ca`), set by
   setup.sh on control-plane hosts.
 - **cca join:** writes `node-identity-for-api.pem`, `node-etcd-client-certificate.pem` and `etcd-access-ca.pem`, with

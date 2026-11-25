@@ -1967,7 +1967,7 @@ cca server: --gate-ca-cert/--gate-ca-key → gate issuer (else the cluster CA, o
             --etcd-access-ca-key → enrollment signs node etcd client CSRs
             etcd CA = cluster CA, or no gate CA → WARN at every start (keeps running)
 cca join → two keys, two CSRs → POST /api/enroll
-  → node identity (cluster identity CA) + etcd-client-<node> (etcd access CA), or only the identity (old server)
+  → node identity (cluster identity CA) + etcd-client-node-<node> (etcd access CA), or only the identity (old server)
 RouteTLSController → gate certificate ServerAuth only; re-issue when it carries ClientAuth or another CA signed it
 ```
 

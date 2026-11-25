@@ -32,9 +32,14 @@
     root_key_path: /etc/ccattler/secret-root.key
     first_control_plane_host: "{{ groups['controlplane'][0] }}"
     etcd_client_flags: >-
-      --endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/etcd-access-ca.pem
-      --cert /etc/ccattler/pki/node-etcd-client-certificate.pem --key /etc/ccattler/pki/node-etcd-client-certificate-key.pem
+      --endpoints=https://127.0.0.1:2379 --cacert {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }}
+      --cert {{ cca_cert_dir }}/{{ cca_pki.node_etcd_cert }} --key {{ cca_cert_dir }}/{{ cca_pki.node_etcd_key }}
   tasks:
+    - name: Detect the cluster PKI layout (M280 names or a cluster set up before M280)
+      include_role:
+        name: common
+        tasks_from: pki_layout.yml
+
     - name: Refuse clusters whose root key is a cloud key (AWS KMS, GCP Cloud KMS)
       command: systemctl cat cca-server
       register: server_unit

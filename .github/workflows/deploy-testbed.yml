@@ -179,6 +179,8 @@ jobs:
             echo "| Workloads | ${WORKLOAD} |"
             echo "| Skipped check groups | ${SKIP_CHECKS:-none} |"
             echo "| Adversarial replay | $([[ "$RUN_ADVERSARIAL" == "true" ]] && echo "${ADVERSARIAL_CASES:-all cases}" || echo "not run") |"
+            # M280: caddy-sync is disabled until M281; both checks log SKIP and never count as passed.
+            echo "| Deferred to M281 (SKIP) | caddy-sync and Caddy on the testbed host; external route path (Caddyfile assertion) |"
             echo ""
             if [[ "$RUN_KIND" == "full" ]]; then
               echo "This is a **full run** and it passed: it can close a milestone."

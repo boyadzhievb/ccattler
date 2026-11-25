@@ -33,7 +33,7 @@ func TestMTLSPrincipalIgnoresSubjectUnit(t *testing.T) {
 
 // TestEnrollmentIssuesEtcdClientCertificate: with an etcd access CA, enrollment
 // signs the node's etcd CSR as an etcd client (ClientAuth only, CN
-// etcd-client-<node>) next to its API identity from the cluster CA (D4).
+// etcd-client-node-<node>) next to its API identity from the cluster CA (D4).
 func TestEnrollmentIssuesEtcdClientCertificate(t *testing.T) {
 	enrollmentService, _ := newTestEnrollmentService(t)
 	etcdAccessCA, caError := NewCertificateAuthority(EtcdAccessCertificateAuthority, 24*time.Hour)
@@ -61,8 +61,8 @@ func TestEnrollmentIssuesEtcdClientCertificate(t *testing.T) {
 	if parseError != nil {
 		t.Fatal(parseError)
 	}
-	if etcdCertificate.Subject.CommonName != "etcd-client-worker-1" {
-		t.Errorf("etcd client CN = %q, want etcd-client-worker-1", etcdCertificate.Subject.CommonName)
+	if etcdCertificate.Subject.CommonName != "etcd-client-node-worker-1" {
+		t.Errorf("etcd client CN = %q, want etcd-client-node-worker-1", etcdCertificate.Subject.CommonName)
 	}
 	if !slices.Equal(etcdCertificate.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}) {
 		t.Errorf("etcd client ExtKeyUsage = %v, want [ClientAuth]", etcdCertificate.ExtKeyUsage)

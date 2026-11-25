@@ -12,17 +12,19 @@ ExecStart=/usr/local/bin/cca server \
   --listen {{ ansible_host }}:9770 \
   --node-id {{ inventory_hostname }} \
   --tls \
-  --cert {{ cca_cert_dir }}/api-server-identity-certificate.pem \
-  --key {{ cca_cert_dir }}/api-server-identity-certificate-key.pem \
-  --ca {{ cca_cert_dir }}/cluster-identity-ca.pem \
-  --ca-key {{ cca_cert_dir }}/cluster-identity-ca-key.pem \
-  --gate-ca-cert {{ cca_cert_dir }}/gate-https-ca.pem \
-  --gate-ca-key {{ cca_cert_dir }}/gate-https-ca-key.pem \
-  --etcd-cert {{ cca_cert_dir }}/cca-server-etcd-client-certificate.pem \
-  --etcd-key {{ cca_cert_dir }}/cca-server-etcd-client-certificate-key.pem \
-  --etcd-ca {{ cca_cert_dir }}/etcd-access-ca.pem \
-  --etcd-access-ca-key {{ cca_cert_dir }}/etcd-access-ca-key.pem \
-  --control-plane-node-cert {{ cca_cert_dir }}/node-identity-for-api.pem \
+  --cert {{ cca_cert_dir }}/{{ cca_pki.server_cert }} \
+  --key {{ cca_cert_dir }}/{{ cca_pki.server_key }} \
+  --ca {{ cca_cert_dir }}/{{ cca_pki.cluster_ca }} \
+  --ca-key {{ cca_cert_dir }}/{{ cca_pki.cluster_ca_key }} \
+{% if cca_pki_layout == 'three_ca' %}
+  --gate-ca-cert {{ cca_cert_dir }}/{{ cca_pki.gate_ca }} \
+  --gate-ca-key {{ cca_cert_dir }}/{{ cca_pki.gate_ca_key }} \
+  --etcd-cert {{ cca_cert_dir }}/{{ cca_pki.server_etcd_cert }} \
+  --etcd-key {{ cca_cert_dir }}/{{ cca_pki.server_etcd_key }} \
+  --etcd-ca {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }} \
+  --etcd-access-ca-key {{ cca_cert_dir }}/{{ cca_pki.etcd_ca_key }} \
+  --control-plane-node-cert {{ cca_cert_dir }}/{{ cca_pki.node_cert }} \
+{% endif %}
   --dns --dns-listen {{ ansible_host }}:15353 \
   --cluster-cidr {{ cluster_cidr }} \
   --vip-cidr {{ vip_cidr }}

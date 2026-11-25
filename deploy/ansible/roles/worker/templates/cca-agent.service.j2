@@ -14,12 +14,12 @@ ExecStart=/usr/local/bin/cca agent \
   --debug-listen {{ ansible_host }}:9771 \
   --secret-api-listen {{ ansible_host }}:9772 \
   --api-server {{ hostvars[groups['controlplane'][0]].ansible_host }}:9770 \
-  --cert {{ cca_cert_dir }}/node-identity-for-api.pem \
-  --key {{ cca_cert_dir }}/node-identity-for-api-key.pem \
-  --ca {{ cca_cert_dir }}/cluster-identity-ca.pem \
-  --etcd-cert {{ cca_cert_dir }}/node-etcd-client-certificate.pem \
-  --etcd-key {{ cca_cert_dir }}/node-etcd-client-certificate-key.pem \
-  --etcd-ca {{ cca_cert_dir }}/etcd-access-ca.pem \
+  --cert {{ cca_cert_dir }}/{{ cca_pki.node_cert }} \
+  --key {{ cca_cert_dir }}/{{ cca_pki.node_key }} \
+  --ca {{ cca_cert_dir }}/{{ cca_pki.cluster_ca }} \
+  --etcd-cert {{ cca_cert_dir }}/{{ cca_pki.node_etcd_cert }} \
+  --etcd-key {{ cca_cert_dir }}/{{ cca_pki.node_etcd_key }} \
+  --etcd-ca {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }} \
   --network-mode {{ network_mode | default('local') }} \
   --dataplane {{ dataplane_backend | default('auto') }} \
   --dns-upstream {{ hostvars[groups['controlplane'][0]].ansible_host }}:15353{% if storage_backend is defined %} \

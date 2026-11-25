@@ -61,6 +61,7 @@
     src: etcd-peer-firewall.nft.j2
     dest: /etc/ccattler/etcd-peer-firewall.nft
     mode: "0644"
+  register: etcd_peer_firewall_rules
 
 - name: Install the unit that loads the etcd peer port firewall at boot
   copy:
@@ -80,12 +81,18 @@
       [Install]
       WantedBy=multi-user.target
 
+# started, never restarted: etcd Requires= this unit (SA2-L5, zz-cluster.conf),
+# so restarting it would restart etcd on every member at once.
 - name: Load the etcd peer port firewall now and at boot
   systemd:
     name: ccattler-etcd-peer-firewall
-    state: restarted
+    state: started
     enabled: true
     daemon_reload: true
+
+- name: Reload changed etcd peer port firewall rules (atomic table replace)
+  command: /usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
+  when: etcd_peer_firewall_rules.changed
 
 - name: Reload systemd and start etcd cluster
   systemd:
@@ -98,9 +105,9 @@
   shell: >
     ETCDCTL_API=3 etcdctl
     --endpoints https://{{ ansible_host }}:2379
-    --cacert {{ cca_cert_dir }}/etcd-access-ca.pem
-    --cert {{ cca_cert_dir }}/node-etcd-client-certificate.pem
-    --key {{ cca_cert_dir }}/node-etcd-client-certificate-key.pem
+    --cacert {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }}
+    --cert {{ cca_cert_dir }}/{{ cca_pki.node_etcd_cert }}
+    --key {{ cca_cert_dir }}/{{ cca_pki.node_etcd_key }}
     endpoint health
   retries: 15
   delay: 3
@@ -112,9 +119,9 @@
   shell: >
     ETCDCTL_API=3 etcdctl
     --endpoints https://{{ ansible_host }}:2379
-    --cacert {{ cca_cert_dir }}/etcd-access-ca.pem
-    --cert {{ cca_cert_dir }}/node-etcd-client-certificate.pem
-    --key {{ cca_cert_dir }}/node-etcd-client-certificate-key.pem
+    --cacert {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }}
+    --cert {{ cca_cert_dir }}/{{ cca_pki.node_etcd_cert }}
+    --key {{ cca_cert_dir }}/{{ cca_pki.node_etcd_key }}
     member list -w table
   register: etcd_members
   changed_when: false

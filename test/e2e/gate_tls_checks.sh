@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# gate_tls_checks.sh — gate TLS end-to-end checks: M170 (T1–T15) and
-# M176 gate-key sealing and delivery (T16–T18).
+# gate_tls_checks.sh — gate TLS end-to-end checks: M170 (T1–T15),
+# M176 gate-key sealing and delivery (T16–T18) and M280 gate certificates are no clients (T19).
 #
 # Sourced by cluster_test.sh after the gate-tls workload converges. Uses its
 # helpers (log, fail, ssh_vm, scp_to_vm) and variables (CTRL_NODE, VM_NAMES,
@@ -13,7 +13,9 @@
 # cluster), else the first agent node (bare metal: control plane only, no
 # gate listener). Plan and test IDs: design/milestones/m170-gate-tls-e2e.md.
 
-GATE_TLS_CA="/etc/ccattler/pki/gate-https-ca.pem"  # gate HTTPS CA that signs auto gate certs (M280)
+# Gate HTTPS CA that signs auto gate certs (M280; ca.pem on a cluster from
+# before M280); a shell expression evaluated on the control node.
+GATE_TLS_CA="$(pki_file_remote_expression gate-https-ca.pem ca.pem)"
 GATE_TLS_PORT=443                              # agent --proxy-tls-listen port
 GATE_HTTP_PORT=8080                            # agent --proxy-listen port (Ansible proxy_port)
 GATE_TLS_ISSUE_TIMEOUT=90                      # seconds for RouteTLSController to issue certs
@@ -26,6 +28,8 @@ GATE_TLS_APPLIED_CCA="/tmp/gate-tls.cca"       # where cluster_test.sh copied th
 GATE_TLS_NODE=""                               # agent node whose gate listener single-node checks target
 GATE_TLS_NODE_IP=""                            # its IP (set by gate_tls_select_node)
 GATE_TLS_AGENT_NODES=()                        # nodes running cca-agent, i.e. serving gates (T2)
+GATE_TLS_CACHED_PAIR_DIR="/run/ccattler/gate-keys/tls-auto" # agent's root-only tmpfs copy of tls-auto's pair (T19)
+GATE_TLS_HANDSHAKE_TIMEOUT=5                   # seconds per T19 handshake probe
 
 # gate_tls_select_node fills GATE_TLS_AGENT_NODES and picks GATE_TLS_NODE,
 # preferring the control node so the deploy cluster keeps its old target.
@@ -243,6 +247,46 @@ gate_tls_check_no_key_leakage() {
     log "  T15 PASS: no PEM material in get/describe output or agent logs"
 }
 
+# gate_tls_client_probe prints "<http code> <curl exit>" for a request from
+# GATE_TLS_NODE to url, trusting the CA named by ca_expression, with the client
+# certificate flags given (evaluated on that node). The private key stays in
+# its root-only file there; only the two codes come back.
+gate_tls_client_probe() {
+    local url="$1" ca_expression="$2" client_certificate_flags="$3"
+    ssh_vm "$GATE_TLS_NODE" "sudo curl -s -o /dev/null -w '%{http_code}' --max-time ${GATE_TLS_HANDSHAKE_TIMEOUT} \
+        --cacert $ca_expression $client_certificate_flags $url; echo \" \$?\"" 2>/dev/null | tr -d '\r' || true
+}
+
+# gate_tls_handshake_refused succeeds when a probe got no HTTP response and curl failed.
+gate_tls_handshake_refused() {
+    [[ "$1" == "000 "* && "$1" != "000 0" ]]
+}
+
+# gate_tls_check_gate_cert_not_client covers T19, check deploy-run:gate-cert-not-client
+# (M280 D5): tls-auto's real gate certificate and key, presented as a client
+# certificate, are refused at the handshake by etcd (2379) and the API (9770).
+# Positive controls: the node's etcd client certificate is accepted by etcd,
+# and the API answers /healthz without a client certificate.
+gate_tls_check_gate_cert_not_client() {
+    local gate_pair_flags="--cert ${GATE_TLS_CACHED_PAIR_DIR}/certificate.pem --key ${GATE_TLS_CACHED_PAIR_DIR}/private-key.pem"
+    local etcd_ca cluster_ca node_etcd_flags probe_result
+    etcd_ca=$(pki_file_remote_expression etcd-access-ca.pem ca.pem)
+    cluster_ca=$(pki_file_remote_expression cluster-identity-ca.pem ca.pem)
+    node_etcd_flags="--cert $(pki_file_remote_expression node-etcd-client-certificate.pem node.pem)"
+    node_etcd_flags+=" --key $(pki_file_remote_expression node-etcd-client-certificate-key.pem node-key.pem)"
+    ssh_vm "$GATE_TLS_NODE" "sudo test -s ${GATE_TLS_CACHED_PAIR_DIR}/certificate.pem && sudo test -s ${GATE_TLS_CACHED_PAIR_DIR}/private-key.pem" \
+        || fail "gate-tls T19: $GATE_TLS_NODE has no cached tls-auto pair in ${GATE_TLS_CACHED_PAIR_DIR}"
+    probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:2379/health" "$etcd_ca" "$node_etcd_flags")
+    [[ "$probe_result" == "200 0" ]] || fail "gate-tls T19: etcd refused the node etcd client certificate (positive control: $probe_result)"
+    probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:2379/health" "$etcd_ca" "$gate_pair_flags")
+    gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: etcd accepted the gate certificate as a client ($probe_result)"
+    probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:9770/healthz" "$cluster_ca" "")
+    [[ "$probe_result" == "200 0" ]] || fail "gate-tls T19: API /healthz unreachable without a client certificate (positive control: $probe_result)"
+    probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:9770/healthz" "$cluster_ca" "$gate_pair_flags")
+    gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: the API accepted the gate certificate as a client ($probe_result)"
+    log "  T19 PASS (deploy-run:gate-cert-not-client): etcd and the API refuse tls-auto's gate certificate as a client; node etcd client accepted"
+}
+
 # gate_tls_rotation_loop_finished reports whether the T5 background loop
 # has logged all of its requests.
 gate_tls_rotation_loop_finished() {
@@ -437,7 +481,7 @@ gate_tls_check_removal() {
     log "  T14 PASS: removing tls stops HTTPS, plain HTTP serves without redirect (original re-applied)"
 }
 
-# run_gate_tls_checks runs T1–T18, read-only checks first, disruptive ones last.
+# run_gate_tls_checks runs T1–T19, read-only checks first, disruptive ones last.
 run_gate_tls_checks() {
     log "Validating gate TLS (M170, node :${GATE_TLS_PORT} listener)..."
     gate_tls_select_node
@@ -454,10 +498,11 @@ run_gate_tls_checks() {
     gate_tls_check_redirect
     gate_tls_check_rejections
     gate_tls_check_no_key_leakage
+    gate_tls_check_gate_cert_not_client
     gate_tls_check_rotation
     gate_tls_check_restart_stability
     gate_tls_check_cache_without_api
     gate_tls_check_backend_failure
     gate_tls_check_removal
-    log "Gate TLS checks PASSED (T1–T18)"
+    log "Gate TLS checks PASSED (T1–T19)"
 }

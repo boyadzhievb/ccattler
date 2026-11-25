@@ -2,7 +2,7 @@
 # local_admin_access.sh — admin access to the cluster API for the e2e and
 # deploy scripts (M280 CR-H1, user decision option c). Sourced, not run.
 #
-# No certificate is an admin credential. Admin calls run `sudo cca …` on a
+# No automation uses a certificate as an admin credential. Admin calls run `sudo cca …` on a
 # control-plane host, which authenticates with the root-only local token that
 # cca server writes at every start (LocalTokenAuthenticator, user:local-admin).
 # Where no cca command returns what a check needs (the raw /api/status JSON,
@@ -17,6 +17,17 @@ LOCAL_ADMIN_TOKEN_FILE="${LOCAL_ADMIN_TOKEN_FILE:-/etc/ccattler/local-token}" # 
 # CA candidates in the CLI's order (installedClusterCACandidatePaths): M280
 # names first, then the old clusters' ca.pem. Space-separated paths.
 LOCAL_ADMIN_CA_CANDIDATES="${LOCAL_ADMIN_CA_CANDIDATES:-/etc/ccattler/cluster-identity-ca.pem /etc/ccattler/pki/cluster-identity-ca.pem /etc/ccattler/ca.pem /etc/ccattler/pki/ca.pem}"
+CLUSTER_PKI_DIRECTORY="/etc/ccattler/pki" # where setup.sh and cca join install the cluster's PKI
+
+# pki_file_remote_expression prints a shell expression for a cluster host that
+# names m280_file_name when cluster-identity-ca.pem is installed, else
+# single_ca_file_name (a cluster set up before M280, CR2-L4). Evaluated there.
+pki_file_remote_expression() {
+    local m280_file_name="$1" single_ca_file_name="$2"
+    # shellcheck disable=SC2016 # $( ) runs on the remote host, not here
+    printf '$(if [ -f %s/cluster-identity-ca.pem ]; then echo %s/%s; else echo %s/%s; fi)' "$CLUSTER_PKI_DIRECTORY" \
+        "$CLUSTER_PKI_DIRECTORY" "$m280_file_name" "$CLUSTER_PKI_DIRECTORY" "$single_ca_file_name"
+}
 
 # local_admin_curl_remote_command prints a command for a control-plane host:
 # sudo curl with the host's local admin token (read there, sent on stdin with

@@ -347,7 +347,7 @@ EnrollmentService.EnrollNode(ctx, request)                     [:201]
 ├── signNodeEtcdClientCSR(request)                             [:372, M280 D4; nil without etcd CA or EtcdCSRPEM]
 │   ├── no EtcdCSRPEM with an etcd CA → ErrEtcdClientCSRRequired (handleEnroll adds the server's version, CR-L6)
 │   ├── parseEnrollmentCSR(EtcdCSRPEM); refuse the node identity's public key (own key)
-│   └── etcdAccessCA.SignCSR({CSR, TTL, CN="etcd-client-<node>", OU="node etcd client"})  [ClientAuth only]
+│   └── etcdAccessCA.SignCSR({CSR, TTL, CN="etcd-client-node-<node>", OU="node etcd client"})  [ClientAuth only]
 ├── commitEnrollment(ctx, tokenKey, tokenRev, ..., enrolledRev) [:271]
 │   └── factStore.Transaction(
 │         compare tokenKey@tokenRev, enrollment/node/<nodeID>@enrolledRev,
@@ -357,7 +357,7 @@ EnrollmentService.EnrollNode(ctx, request)                     [:201]
 └── return EnrollmentResponse{CertPEM, CACertPEM, Principal, EtcdCertificatePEM?, EtcdCACertPEM?}
 
 cca join (cmd/cca/command_misc.go executeJoinCommand)
-├── generateNodeKeypairAndCSR(nodeID) and (etcd-client-<node>)  [two keys; both CSRs in POST /api/enroll]
+├── generateNodeKeypairAndCSR(nodeID) and (etcd-client-node-<node>)  [two keys; both CSRs in POST /api/enroll]
 └── writeEnrollmentCredentials (cmd/cca/join_credentials.go)
     ├── etcd cert in response → node-identity-for-api.pem, cluster-identity-ca.pem,
     │   node-etcd-client-certificate.pem, etcd-access-ca.pem (+ keys, description lines)

@@ -3,14 +3,58 @@ cni_plugins_version: "1.9.1"
 go_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
 cca_cert_dir: /etc/ccattler/pki
-# The CAs cca init creates (M280 D1a) and their keys; HA secondaries reuse all of them.
-cca_cluster_ca_files:
-  - cluster-identity-ca.pem
-  - cluster-identity-ca-key.pem
-  - etcd-access-ca.pem
-  - etcd-access-ca-key.pem
-  - gate-https-ca.pem
-  - gate-https-ca-key.pem
+# PKI file names per cluster layout (M280 D1a, CR2-L4). common/tasks/pki_layout.yml
+# sets cca_pki_layout from the first control-plane host: single_ca when only the
+# old ca.pem is there (a cluster set up before M280), three_ca otherwise.
+# ca_files: the CAs and keys an HA secondary reuses from the first node.
+cca_pki_layouts:
+  three_ca:
+    cluster_ca: cluster-identity-ca.pem
+    cluster_ca_key: cluster-identity-ca-key.pem
+    server_cert: api-server-identity-certificate.pem
+    server_key: api-server-identity-certificate-key.pem
+    node_cert: node-identity-for-api.pem
+    node_key: node-identity-for-api-key.pem
+    etcd_ca: etcd-access-ca.pem
+    etcd_ca_key: etcd-access-ca-key.pem
+    gate_ca: gate-https-ca.pem
+    gate_ca_key: gate-https-ca-key.pem
+    etcd_serving_cert: etcd-serving-certificate.pem
+    etcd_serving_key: etcd-serving-certificate-key.pem
+    etcd_peer_cert: etcd-peer-certificate.pem
+    etcd_peer_key: etcd-peer-certificate-key.pem
+    server_etcd_cert: cca-server-etcd-client-certificate.pem
+    server_etcd_key: cca-server-etcd-client-certificate-key.pem
+    node_etcd_cert: node-etcd-client-certificate.pem
+    node_etcd_key: node-etcd-client-certificate-key.pem
+    ca_files:
+      - cluster-identity-ca.pem
+      - cluster-identity-ca-key.pem
+      - etcd-access-ca.pem
+      - etcd-access-ca-key.pem
+      - gate-https-ca.pem
+      - gate-https-ca-key.pem
+  single_ca:
+    cluster_ca: ca.pem
+    cluster_ca_key: ca-key.pem
+    server_cert: node.pem
+    server_key: node-key.pem
+    node_cert: node.pem
+    node_key: node-key.pem
+    etcd_ca: ca.pem
+    etcd_serving_cert: etcd.pem
+    etcd_serving_key: etcd-key.pem
+    etcd_peer_cert: etcd.pem
+    etcd_peer_key: etcd-key.pem
+    server_etcd_cert: node.pem
+    server_etcd_key: node-key.pem
+    node_etcd_cert: node.pem
+    node_etcd_key: node-key.pem
+    ca_files:
+      - ca.pem
+      - ca-key.pem
+cca_pki_layout: three_ca
+cca_pki: "{{ cca_pki_layouts[cca_pki_layout] }}"
 
 # Network CIDRs — randomized on every deployment to prove nothing is hardcoded.
 # cluster_cidr: overlay network for container IPs (each node gets a /24 subnet).

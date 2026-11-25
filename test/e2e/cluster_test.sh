@@ -283,7 +283,11 @@ ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
 # Worker nodes always run an agent (the control-plane node does not in every env).
 WORKER_NODES_WITH_AGENT=("$WORKER1_NODE" "$WORKER2_NODE")
 ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
-ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/etcd-access-ca.pem --cert /etc/ccattler/pki/node-etcd-client-certificate.pem --key /etc/ccattler/pki/node-etcd-client-certificate-key.pem"
+# etcdctl flags for commands run on the control node; the file names follow its
+# PKI layout (M280 names, or ca.pem and node.pem on a cluster from before M280).
+ETCD_TLS_FLAGS="--cacert $(pki_file_remote_expression etcd-access-ca.pem ca.pem)"
+ETCD_TLS_FLAGS+=" --cert $(pki_file_remote_expression node-etcd-client-certificate.pem node.pem)"
+ETCD_TLS_FLAGS+=" --key $(pki_file_remote_expression node-etcd-client-certificate-key.pem node-key.pem)"
 
 # VM lifecycle tools (VM environments only — bare-metal skips all VM lifecycle).
 if [[ "$BAREMETAL" != "true" ]]; then
@@ -637,7 +641,7 @@ CCA_API="https://${CTRL_IP}:9770"
 
 # control_plane_cca runs `sudo cca <arguments>` on the control node against
 # CCA_API, its own replica; the CLI authenticates with the local admin token
-# (M280 CR-H1: no certificate is an admin credential).
+# (M280 CR-H1: no automation uses a certificate as an admin credential).
 control_plane_cca() {
     ssh_vm "$CTRL_NODE" "$(local_admin_cca_remote_command "$CCA_API" "$@")"
 }
@@ -882,6 +886,13 @@ fi
 # gate_tls_checks.sh (direct connections to each agent node's :443).
 if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     log "SKIP (deferred to M281): caddy-sync and Caddy are not installed on the testbed host"
+    # A caddy-sync an earlier run installed would keep polling the API with the
+    # old cluster's node certificate (CR2-L3); stop it. Caddy itself is left alone.
+    if systemctl list-unit-files caddy-sync.service --no-legend 2>/dev/null | grep -q caddy-sync; then
+        sudo systemctl disable --now caddy-sync.service \
+            || fail "could not stop and disable the caddy-sync an earlier run installed"
+        log "Stopped and disabled the caddy-sync.service an earlier run installed (M281 replaces it)"
+    fi
 fi
 
 log "$(skipped_check_groups_report)"

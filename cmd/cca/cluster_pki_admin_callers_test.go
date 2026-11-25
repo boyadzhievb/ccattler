@@ -16,27 +16,43 @@ import (
 // cluster: the e2e and deploy scripts and the Ansible roles and playbooks.
 var automationRootDirectories = []string{"../../test/e2e", "../../deploy/ansible"}
 
-// nodeIdentityAllowedLineMarkers are the only uses of the node identity
-// certificate in automation: the agent's own --cert (its unit), the server's
-// --control-plane-node-cert and Ansible's creates: guards.
-var nodeIdentityAllowedLineMarkers = []string{"creates:", "--control-plane-node-cert"}
+// apiClientCredentialNames are the API client certificates and keys automation
+// must not present as an admin client (SA2-L2, CR2-L2): the node identity, the
+// API server's own certificate (cluster-admin by design), the old node.pem, and
+// the cca_pki variables that name them.
+var apiClientCredentialNames = []string{
+	nodeIdentityForAPIFileName, privateKeyFileName(nodeIdentityForAPIFileName),
+	apiServerIdentityCertificateFileName, privateKeyFileName(apiServerIdentityCertificateFileName),
+	legacyNodeCertificateFileName, privateKeyFileName(legacyNodeCertificateFileName),
+	"cca_pki.node_cert", "cca_pki.node_key", "cca_pki.server_cert", "cca_pki.server_key",
+}
 
-// nodeIdentityAgentUnitFileName is the agent unit, where the certificate is the
-// agent's own identity to the API.
-const nodeIdentityAgentUnitFileName = "cca-agent.service.j2"
+// credentialAllowedLineMarkers mark lines that name a credential without using
+// it as an API client: Ansible's creates: guards, and an etcd client file
+// chosen by layout (node.pem is the etcd client on clusters from before M280).
+var credentialAllowedLineMarkers = []string{"creates:", "node-etcd-client-certificate"}
 
-// TestAutomationNeverUsesNodeIdentityAsAdminClient (M280 CR-H1): on new
-// clusters node-identity-for-api.pem has no admin grant, so no script or
-// playbook may present it as an API client; they use sudo cca with the local token.
-func TestAutomationNeverUsesNodeIdentityAsAdminClient(t *testing.T) {
+// credentialAllowedFileNames are the files that name the credentials on purpose:
+// the agent and server units present them as their own identity, and group_vars
+// holds the layout table.
+var credentialAllowedFileNames = map[string]bool{"cca-agent.service.j2": true, "cca-server.service.j2": true, "all.yml": true}
+
+// TestAutomationNeverUsesCertificateAsAdminClient (M280 CR-H1, SA2-L2,
+// CR2-L2): no script or playbook presents the node identity, the API server's
+// certificate or the old node.pem as an API client; they use sudo cca with
+// the local token. Comment lines are skipped.
+func TestAutomationNeverUsesCertificateAsAdminClient(t *testing.T) {
 	for _, rootDirectory := range automationRootDirectories {
 		walkError := filepath.WalkDir(rootDirectory, func(filePath string, entry fs.DirEntry, walkError error) error {
-			if walkError != nil || entry.IsDir() || filepath.Base(filePath) == nodeIdentityAgentUnitFileName {
+			if walkError != nil || entry.IsDir() || credentialAllowedFileNames[filepath.Base(filePath)] {
 				return walkError
 			}
 			for lineIndex, lineText := range strings.Split(string(mustReadFile(t, filePath)), "\n") {
-				if strings.Contains(lineText, nodeIdentityForAPIFileName) && !lineHasAnyMarker(lineText, nodeIdentityAllowedLineMarkers) {
-					t.Errorf("%s:%d uses the node identity certificate as a client: %s", filePath, lineIndex+1, strings.TrimSpace(lineText))
+				if strings.HasPrefix(strings.TrimSpace(lineText), "#") || lineHasAnyMarker(lineText, credentialAllowedLineMarkers) {
+					continue
+				}
+				if lineHasAnyMarker(lineText, apiClientCredentialNames) {
+					t.Errorf("%s:%d names an API client credential: %s", filePath, lineIndex+1, strings.TrimSpace(lineText))
 				}
 			}
 			return nil

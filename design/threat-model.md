@@ -71,7 +71,7 @@ have three CAs where etcd trusts only the etcd access CA ([graphs/PKI_GRAPH.md](
 certificate chains to the etcd access CA; without etcd authentication and roles, every accepted etcd client
 certificate, the server's or any node's, has full etcd access. A compromised node, gate nodes included, therefore
 keeps reading and writing the whole store through its own node etcd client certificate. The per-node CommonNames
-(`etcd-client-<node>`, `etcd-client-cca-server`) are distinct identities, not separately authorized ones. M181 (Store
+(`etcd-client-node-<node>`, `etcd-client-cca-server`) are distinct identities, not separately authorized ones. M181 (Store
 Access Isolation) closes this with etcd roles per identity. Old single-CA clusters additionally keep node certificates
 from the cluster CA as etcd clients until they are re-initialized.
 

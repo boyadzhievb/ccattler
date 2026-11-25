@@ -519,17 +519,29 @@ func parseStaticServerLeafCertificate(serverTLSConfig *tls.Config) *x509.Certifi
 
 // bootstrapControlPlaneNodeEnrollment records this host's node as enrolled
 // (create-only), so its agent gets secrets and no unbound token can enroll as it
-// (Flow 27). The node comes from --control-plane-node-cert, else (clusters from
-// before M280) from the server certificate's CN.
+// (Flow 27). The node comes from --control-plane-node-cert, verified against
+// --ca, else (clusters from before M280) from the server certificate's CN; the
+// server's own CN ccattler-server is never recorded (skipped with a warning).
 func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config, parsedConfig serverCommandConfig) {
 	nodeCertificate := loadControlPlaneNodeCertificate(parsedConfig.controlPlaneNodeCertificatePath)
-	if nodeCertificate == nil {
+	if nodeCertificate != nil {
+		if verifyError := verifyControlPlaneNodeCertificate(nodeCertificate, parsedConfig.tlsCACertPath); verifyError != nil {
+			logging.Default().Warn("control-plane node not recorded as enrolled: --control-plane-node-cert is not a valid node identity of this cluster",
+				"path", parsedConfig.controlPlaneNodeCertificatePath, "error", verifyError.Error())
+			return
+		}
+	} else {
 		nodeCertificate = serverLeafCertificateForEnrollment(serverTLSConfig)
 	}
 	if nodeCertificate == nil || nodeCertificate.Subject.CommonName == "" {
 		return
 	}
 	nodeID := nodeCertificate.Subject.CommonName
+	if nodeID == security.ServerCertificateCommonName {
+		logging.Default().Warn("control-plane node not recorded as enrolled: the server certificate names the API server, not a node; " +
+			"start cca server with --control-plane-node-cert node-identity-for-api.pem (as setup.sh does)")
+		return
+	}
 	if enrollError := security.EnsureControlPlaneNodeEnrolled(context.Background(), factStore, nodeID, nodeCertificate.NotAfter); enrollError != nil {
 		logging.Default().Warn("control-plane node not recorded as enrolled", "node", nodeID, "error", enrollError.Error())
 	}
@@ -552,6 +564,28 @@ func loadControlPlaneNodeCertificate(certificatePath string) *x509.Certificate {
 		os.Exit(1)
 	}
 	return nodeCertificate
+}
+
+// verifyControlPlaneNodeCertificate checks that the node identity chains to the
+// cluster identity CA (--ca), is valid now, is a client certificate and names a
+// valid, unreserved node ID.
+func verifyControlPlaneNodeCertificate(nodeCertificate *x509.Certificate, clusterCAPath string) error {
+	if clusterCAPath == "" {
+		return errors.New("--ca is required to verify it")
+	}
+	clusterCAPEM, readError := os.ReadFile(clusterCAPath) //nolint:gosec // operator-given path
+	if readError != nil {
+		return readError
+	}
+	clusterCAPool := x509.NewCertPool()
+	if !clusterCAPool.AppendCertsFromPEM(clusterCAPEM) {
+		return fmt.Errorf("%s holds no CA certificate", clusterCAPath)
+	}
+	if _, verifyError := nodeCertificate.Verify(x509.VerifyOptions{Roots: clusterCAPool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); verifyError != nil {
+		return verifyError
+	}
+	return security.ValidateNodeIdentity(nodeCertificate.Subject.CommonName)
 }
 
 // serverLeafCertificateForEnrollment returns the static server certificate, or

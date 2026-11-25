@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 )
@@ -49,6 +50,27 @@ const (
 	GateHTTPSCertificateAuthority CertificateAuthorityKind = "gate HTTPS"
 )
 
+// certificateAuthorityKinds lists every kind cca init creates, for Kind.
+var certificateAuthorityKinds = []CertificateAuthorityKind{ClusterIdentityCertificateAuthority,
+	EtcdAccessCertificateAuthority, GateHTTPSCertificateAuthority}
+
+// subjectUnit returns the Subject OU a CA of this kind carries: "<kind> CA".
+func (kind CertificateAuthorityKind) subjectUnit() string {
+	return string(kind) + " CA"
+}
+
+// Kind returns the kind named by the CA certificate's Subject OU, and false for
+// a CA whose OU names none (a CA from before M280). It checks what a CA file
+// is, never what it may sign (SA2-L3).
+func (certificateAuthority *CertificateAuthority) Kind() (CertificateAuthorityKind, bool) {
+	for _, kind := range certificateAuthorityKinds {
+		if slices.Contains(certificateAuthority.caCertificate.Subject.OrganizationalUnit, kind.subjectUnit()) {
+			return kind, true
+		}
+	}
+	return "", false
+}
+
 // NewCertificateAuthority generates a self-signed root CA of the given kind,
 // valid for the given duration. Its Subject is O=CCattler, OU="<kind> CA",
 // CN="CCattler <kind> CA".
@@ -67,7 +89,7 @@ func NewCertificateAuthority(kind CertificateAuthorityKind, validityDuration tim
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			Organization:       []string{subjectOrganization},
-			OrganizationalUnit: []string{string(kind) + " CA"},
+			OrganizationalUnit: []string{kind.subjectUnit()},
 			CommonName:         "CCattler " + string(kind) + " CA",
 		},
 		NotBefore:             time.Now().Add(certificateNotBeforeClockSkew),

@@ -466,8 +466,14 @@ sudo cca status        # on the control-plane host
 ### 3. Use the CLI without sudo
 
 `sudo cca …` works on the control-plane host because root can read the local token `/etc/ccattler/local-token`,
-which `cca server` writes at every start; the CLI sends it as `user:local-admin`, with full rights. No certificate is
-an admin credential: the node's certificates in `/etc/ccattler/pki` identify the machine to the API and etcd only.
+which `cca server` writes at every start; the CLI sends it as `user:local-admin`, with full rights. Nothing in the
+setup uses a certificate as an admin credential: the node's certificates in `/etc/ccattler/pki` identify the machine
+to the API and to etcd. The one exception is the API server's own certificate, `api-server-identity-certificate.pem`,
+which has full rights by design; like the local token, it is readable only by root on control-plane hosts.
+
+Until milestone M181, every etcd client certificate the cluster issues (each node's and the server's) has full access
+to the store: etcd checks which CA signed a certificate, not what its holder may read or write.
+
 Don't use the local token for daily work. Give yourself a user account instead (replace `USERNAME`):
 
 ```bash
@@ -481,9 +487,11 @@ The token is valid for the `--ttl` you chose. Create a new one when it expires.
 
 > **Note:** for now a user token does not survive a restart of `cca server`, and with several control-plane hosts
 > it works only on the one that created it. After a restart or an upgrade, run the `export` line again. This is
-> fixed by milestone M283; until then, scripts on the control-plane host use `sudo cca`. `export` sets it only for the
-current shell: in a new terminal or after logging in again, `cca status` fails with `client certificate required`
-until you run the `export` line again. To keep it across logins, put the `export` line in `~/.bashrc`.
+> fixed by milestone M283; until then, scripts on the control-plane host use `sudo cca`.
+
+`export` sets it only for the current shell: in a new terminal or after logging in again, `cca status` fails with
+`client certificate required` until you run the `export` line again. To keep it across logins, put the `export` line
+in `~/.bashrc`.
 
 ### 4. Upgrade
 

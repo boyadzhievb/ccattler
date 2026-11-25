@@ -100,7 +100,7 @@
       pause:
         seconds: 60
 
-    # sudo cca with the local token (M280: no certificate is an admin credential).
+    # sudo cca with the local token (M280: no automation uses a certificate as an admin credential).
     - name: Verify Airflow instances are running
       command: /usr/local/bin/cca get instances -o json
       environment:

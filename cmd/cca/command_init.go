@@ -383,6 +383,22 @@ func resolveInitPKILayout(parsedConfig initCommandConfig) clusterPKILayout {
 	return threeCAClusterPKILayout
 }
 
+// checkLoadedCAKind checks a CA given to cca init by its Subject OU: on the
+// single-CA path it must be a CA from before M280 (no kind), else exactly
+// wantKind. Stops e.g. etcd-access-ca.pem passed as --ca (SA2-L3).
+func checkLoadedCAKind(loadedCA *security.CertificateAuthority, wantKind security.CertificateAuthorityKind, singleCALayout bool) error {
+	loadedKind, hasKind := loadedCA.Kind()
+	switch {
+	case singleCALayout && hasKind:
+		return fmt.Errorf("it is the %s CA of a three-CA cluster (M280); its HA secondaries need --ca, --etcd-access-ca and --gate-https-ca with their keys", loadedKind)
+	case !singleCALayout && !hasKind:
+		return fmt.Errorf("it is not a %s CA (a single-CA cluster from before M280 passes --ca and --ca-key alone)", wantKind)
+	case !singleCALayout && loadedKind != wantKind:
+		return fmt.Errorf("it is the %s CA, not the %s CA", loadedKind, wantKind)
+	}
+	return nil
+}
+
 // initCAFlagPaths holds the certificate and key paths of one CA given to cca init (HA secondaries).
 type initCAFlagPaths struct {
 	certificatePath string // existing CA certificate
@@ -391,7 +407,8 @@ type initCAFlagPaths struct {
 
 // resolveInitCertificateAuthorities loads the three CAs on an HA secondary
 // (--ca, --etcd-access-ca and --gate-https-ca with their keys) or creates them;
-// a single-CA layout uses the --ca for all three roles. Exits on an error.
+// a single-CA layout uses the --ca for all three roles. Each loaded CA must be
+// of its kind (SA2-L3). Exits on an error.
 func resolveInitCertificateAuthorities(parsedConfig initCommandConfig, layout clusterPKILayout) initCertificateAuthorities {
 	resolveOne := func(kind security.CertificateAuthorityKind, flagPaths initCAFlagPaths) *security.CertificateAuthority {
 		if flagPaths.certificatePath == "" {
@@ -405,6 +422,10 @@ func resolveInitCertificateAuthorities(parsedConfig initCommandConfig, layout cl
 		loadedCA, loadError := security.LoadCertificateAuthorityFromFiles(flagPaths.certificatePath, flagPaths.privateKeyPath)
 		if loadError != nil {
 			fmt.Fprintf(os.Stderr, "error loading the %s CA from %s: %v\n", kind, flagPaths.certificatePath, loadError)
+			os.Exit(1)
+		}
+		if kindError := checkLoadedCAKind(loadedCA, kind, layout.isSingleCA()); kindError != nil {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", flagPaths.certificatePath, kindError)
 			os.Exit(1)
 		}
 		fmt.Printf("Loaded existing %s CA from %s (HA mode)\n", kind, flagPaths.certificatePath)

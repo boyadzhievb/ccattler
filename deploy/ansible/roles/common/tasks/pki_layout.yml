@@ -1,0 +1,20 @@
+---
+# Detect the cluster's PKI layout on the first control-plane host (M280 CR2-L4):
+# a cluster set up before M280 has only ca.pem, node.pem and etcd.pem; a new or
+# fresh cluster uses the M280 names. Sets cca_pki_layout, so cca_pki (group_vars)
+# names the files every role and template uses.
+- name: Look for the cluster CA files on the first control-plane host
+  stat:
+    path: "{{ cca_cert_dir }}/{{ item }}"
+  loop:
+    - "{{ cca_pki_layouts.three_ca.cluster_ca }}"
+    - "{{ cca_pki_layouts.single_ca.cluster_ca }}"
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
+  register: cca_pki_layout_probe
+
+- name: Use the cluster's PKI layout
+  set_fact:
+    cca_pki_layout: >-
+      {{ 'single_ca' if (not cca_pki_layout_probe.results[0].stat.exists
+         and cca_pki_layout_probe.results[1].stat.exists) else 'three_ca' }}

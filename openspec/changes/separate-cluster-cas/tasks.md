@@ -280,6 +280,58 @@ never depended on caddy-sync.
   (vmherd quoting, curl `-H @-` on the images), the Ansible status tasks and the worker registration wait, the HA tests'
   per-replica reads, and the two `SKIP (deferred to M281)` lines in the job log.
 
+### 3e. Review round 2 (2026-11-25, on 81a186d..bb6c741)
+
+Both verdicts approve with LOW findings only: security-audit (m280-security-audit-r2.txt) and code-reviewer
+(m280-code-review-r2.txt, Codex job review-mww8bsg7-u0n3b4). Every round-1 finding is confirmed closed: the takeover
+was reproduced and is now refused, and the round-1 mutations were re-applied and caught. Under the user's full-rigor
+rule, every real finding is fixed.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| SA2-L1 / CR2-L1 | `--control-plane-node-cert` trusts any certificate (foreign CA, expired, reserved CN); without the flag, a three-CA server records `ccattler-server`; no test covers the HA unit's flag | Fix: verify the chain against `--ca`, check validity, `ValidateNodeIdentity`; never record `ServerCertificateCommonName` (skip and warn); template test for the HA unit |
+| SA2-L2 | The docs say "no certificate is an admin credential", but the API server's identity certificate is cluster-admin by design; the guide omits the residual etcd trust | Fix the wording: no automation uses a certificate as an admin credential; the server's own certificate is root-only on control-plane hosts. Add the M181 note to the guide. The invariant test also covers the server certificate |
+| CR2-L2 | The invariant test matches only M280 file names; old `node.pem` used as an admin client passes | Fix: it also matches the old names |
+| SA2-L3 | The single-CA layout (and the six-flag path) accept a CA of the wrong kind, e.g. `etcd-access-ca.pem` as `--ca` | Fix: check each CA's kind by its Subject OU; refuse an M280-kind CA on the single-CA path |
+| SA2-L4 | etcd CommonName prefixes collide (node `client-cca-server` → serving CN `etcd-client-cca-server`) | Fix: non-overlapping prefixes `etcd-server-<node>`, `etcd-peer-<node>`, `etcd-client-node-<node>`, `etcd-client-cca-server`. Changes the D1a CN column; recorded in design.md as a change during apply (main session, 2026-11-25) |
+| SA2-L5 | etcd starts even if the peer-firewall unit fails at boot | Fix: an etcd.service drop-in with `Requires=` and `After=` on the firewall unit. `--peer-cert-allowed-hostname` rejected: it takes one hostname, so it cannot express several peers |
+| CR2-L3 | A caddy-sync installed by earlier runs keeps polling on the testbed host | Fix: Step 4.5 stops and disables an existing caddy-sync (logged). Caddy itself is left alone |
+| CR2-L4 | Old Ansible-built clusters: the playbooks render M280 file names, so re-running them on a pre-M280 cluster breaks its units; `--clear-workloads` against an old cluster uses the M280 etcd files | Fix: roles and cluster_test.sh detect the layout (`cluster-identity-ca.pem` present or not) and use the matching names; test for both layouts |
+| CR2 suggestions | The CA candidate list duplicated in shell and Go; the guide note swallowed the next sentence; the job summary does not list the deferred SKIPs | Fix all three (a test ties the shell list to the Go list) |
+| Open (3.2) | `deploy-run:gate-cert-not-client` has no script, so the full run would not execute it | Fix: a deploy check presents a real gate certificate and key to etcd (2379) and to the API (9770) and asserts that both handshakes are refused, in the default check set |
+| Codex | (high) vmherd quoting; (medium) the unauthenticated `/healthz` wait | Rejected by the reviewer with evidence: the parse simulation plus vmherd's single-command OpenSSH exec; `/healthz` is public by design (api/server.go:306) and is followed by an authenticated task |
+
+### 3f. Rework round 3 (2026-11-25, lead-developer, on bb6c741; outputs in scratchpad rw3-*.txt)
+
+Red = the new or updated tests copied onto bb6c741 (`rw3-red-cmd.txt`, `rw3-red-sec-api.txt`); where a test passes
+there by design, a mutation on the fixed tree shows it bites (`rw3-mutations.txt`, script `rw3-mutate.sh`).
+
+| ID | Red | Fix and green |
+|---|---|---|
+| SA2-L1 / CR2-L1 | `TestControlPlaneNodeCertificateMustBelongToTheCluster`: foreign-CA `victim`, expired `expiredx`, reserved `cca-server`, the server certificate (`ccattler-server`) all "recorded = true"; `TestThreeCAServerWithoutNodeCertFlagRecordsNoServerName`: "recorded ccattler-server"; `TestHAControlPlaneUnitRecordsItsNode` (renders the HA unit): mutation M26 (flag removed) caught | `verifyControlPlaneNodeCertificate`: chain to `--ca`, valid now, ClientAuth, `ValidateNodeIdentity`; on failure, and when the fallback CN is `ccattler-server`, nothing is recorded and the server warns (skip and warn, as decided; it keeps serving). `EnsureControlPlaneNodeEnrolled` uses `ValidateNodeIdentity`. Mutations M36 (no chain check) and M42 (every reserved-name check removed) caught; M35/M37 (one of the two reserved-name layers removed) survive because the other layer still refuses, by design. Green |
+| SA2-L2 | wording | Guide step 3, PKI_GRAPH and the script comments: no automation uses a certificate as an admin credential; the API server's own certificate is cluster-admin by design and root-only on control-plane hosts. Guide: until M181 every etcd client certificate has full store access |
+| CR2-L2 | `TestAutomationNeverUsesCertificateAsAdminClient` passes on bb6c741 (no such use there); mutations M30 (`--cert …/node.pem` in health_check.sh) and M32 (`api-server-identity-certificate.pem`) caught | The invariant (renamed) also matches `api-server-identity-certificate.pem`, `node.pem`, their keys and the `cca_pki.node_*`/`server_*` variables; only the agent and server units, group_vars' table, `creates:` guards, comments and etcd-client layout lines may name them. Green |
+| SA2-L3 | `TestInitRefusesEtcdAccessCAAsSingleCA` (binary): "exit 0, want the CA-kind refusal"; `TestCheckLoadedCAKind` does not build on bb6c741 | `CertificateAuthority.Kind` (Subject OU, ca.go constants); `checkLoadedCAKind`: the single-CA path refuses an M280 CA, the six-flag path requires each flag's own kind. `TestInitSingleCASecondaryWritesOldLayout` now uses a CA as cca init wrote it before M280 (O=CCattler, no OU); its assertions are unchanged. Mutation M34 (check unwired) caught. Green |
+| SA2-L4 | `TestEtcdCommonNamesAreDisjoint`: five collisions (e.g. `etcd-client-cca-server` = serving CN of node `client-cca-server`); `TestInitWritesThreeCAs`, `TestEnrollmentIssuesEtcdClientCertificate`, `TestEnrollReturnsEtcdClientCertificate` with the new CNs fail | `etcd-server-<node>`, `etcd-peer-<node>`, `etcd-client-node-<node>`, `etcd-client-cca-server` (`etcdServingCommonNamePrefix`, `NodeEtcdClientCommonNamePrefix`, `ccaServerEtcdClientCommonName`). design.md D1a: CN column and a line recording the change during apply (main session, 2026-11-25, SA2-L4); spec scenario CNs, security-model, threat-model, Flow, PKI_GRAPH, AUTHN_GRAPH. Old clusters keep their certificates. `openspec validate separate-cluster-cas --strict`: valid. Green |
+| SA2-L5 | `TestEtcdStartsOnlyAfterThePeerFirewall`: no `[Unit]` in the rendered drop-in | zz-cluster.conf has `Requires=` and `After=ccattler-etcd-peer-firewall.service`. The role now only starts that unit and reloads changed rules with `nft -f` (atomic table replace): with `Requires=`, restarting it would restart etcd on every member at once. Mutations M38 (restarted) and M39 (no Requires) caught. Green |
+| CR2-L3 | — (shell, deploy run) | Step 4.5 stops and disables a caddy-sync.service an earlier run installed (`systemctl disable --now`, logged, fails the run if it cannot); Caddy is left alone |
+| CR2-L4 | `TestAnsibleUnitsFollowTheClusterPKILayout`, `TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA` (now rendered), `TestPKIFileRemoteExpressionFollowsTheLayout`: fail on bb6c741 (no `cca_pki`, no helper) | group_vars `cca_pki_layouts` (three_ca, single_ca) and `cca_pki`; `common/tasks/pki_layout.yml` sets `single_ca` when the first control-plane host has `ca.pem` but no `cluster-identity-ca.pem` (also included by rotate-root-key.yml). Templates, `creates:` guards, the HA secondary's `cca init` flags and etcdctl tasks use it. The test renders the server, agent and etcd units with jinja2 (trim_blocks, as Ansible) for both layouts: every file named exists in that layout, group_vars matches cca init's layouts field by field, three-CA-only flags appear only for three_ca; mutation M40 (a literal M280 name in the agent unit) caught. cluster_test.sh's etcdctl flags and gate_tls_checks.sh's gate CA use `pki_file_remote_expression` (evaluated on the host). `ansible-playbook --syntax-check`: baremetal, ha, demo, site, test-deploy, rotate-root-key ok. Green |
+| CR2 suggestions | `TestLocalAdminCACandidatesMatchTheCLI` passes on bb6c741 (lists equal); mutation M33 (order swapped) caught | The test ties `LOCAL_ADMIN_CA_CANDIDATES` to `installedClusterCACandidatePaths`. The guide note ends at its own paragraph. The job summary has a "Deferred to M281 (SKIP)" row naming both skips |
+| Open (3.2) | — (deploy run) | T19 `gate_tls_check_gate_cert_not_client` (gate-tls group, default set; TESTING.md): on the gate node, curl presents tls-auto's pair from the agent's root-only cache to etcd `:2379/health` and the API `:9770/healthz`. Both must refuse the handshake (HTTP 000, curl exit ≠ 0). Positive controls: the node etcd client certificate gets `200 0` from etcd, `/healthz` without a client certificate gets `200 0`. The key never leaves the node and only the two codes are returned. Remote command parsed with `sh -n` (stubbed ssh_vm) |
+
+Checks: gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also
+`--build-tags etcd_integration` on cmd/cca and store); `-race` on security, controllers, cmd/cca exit 0; etcd_integration
+(ETCD_BIN v3.5.36, plain etcd on 127.0.0.1:2379 for store): 25 PASS, exit 0 (`rw3-etcd-integration.txt`); shellcheck:
+local_admin_access.sh 0, gate_tls_checks.sh 1 (pre-existing SC2034), cluster_test.sh no warning on a changed line.
+`go test -count=1 ./...` exit 1: one failure of `TestKeyringConcurrentBootstrapAgrees` (security, "keyring is
+incomplete", `rw3-test.txt`). This diff does not touch the keyring. The test passed 30/30 alone on bb6c741 and on this
+tree, and 3/3 in full package runs. **Classified as a test bug (flaky under full-suite load)**, recorded here; not
+rerun until green; it needs its own fix.
+
+Only the deploy run proves: T19 against the real etcd and API; the caddy-sync stop on the testbed host; layout
+detection on real hosts (fresh three-CA run; a pre-M280 cluster only through `--from-release`); the etcd drop-in's
+`Requires=` at boot.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

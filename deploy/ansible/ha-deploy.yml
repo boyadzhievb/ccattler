@@ -68,7 +68,7 @@
     - name: Check cca-server health on each node
       shell: >
         curl -sf
-        --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
+        --cacert {{ cca_cert_dir }}/{{ cca_pki.cluster_ca }}
         https://{{ ansible_host }}:9770/healthz
       retries: 10
       delay: 3
@@ -99,7 +99,7 @@
 
     - name: Wait for CCattler server to be ready
       shell: >
-        curl -sf --cacert {{ cca_cert_dir }}/cluster-identity-ca.pem
+        curl -sf --cacert {{ cca_cert_dir }}/{{ cca_pki.cluster_ca }}
         https://{{ ansible_host }}:9770/healthz
       retries: 15
       delay: 2
@@ -113,8 +113,8 @@
       pause:
         seconds: 30
 
-    # sudo cca with this replica's local token (M280: no certificate is an
-    # admin credential); pinned to this host, the token is per replica.
+    # sudo cca with this replica's local token (M280: no automation uses a
+    # certificate as an admin credential); pinned to this host, the token is per replica.
     - name: Show cluster status
       command: /usr/local/bin/cca get instances -o json
       environment:

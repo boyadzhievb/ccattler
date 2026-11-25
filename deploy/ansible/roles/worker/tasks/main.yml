@@ -37,7 +37,7 @@
     {{ join_token_value }}
     --node-id {{ node_id | default(inventory_hostname) }}
   args:
-    creates: /etc/ccattler/pki/node-identity-for-api.pem
+    creates: "{{ cca_cert_dir }}/{{ cca_pki.node_cert }}"
 
 - name: Remove stale cca0 interface from previous deployment
   shell: |
@@ -89,8 +89,8 @@
     state: started
     daemon_reload: true
 
-# sudo cca on the control-plane host with its local token (M280: no
-# certificate is an admin credential), pinned to that host's replica.
+# sudo cca on the control-plane host with its local token (M280: no automation
+# uses a certificate as an admin credential), pinned to that host's replica.
 - name: Wait for agent to register via API
   shell: >
     /usr/local/bin/cca get nodes -o json

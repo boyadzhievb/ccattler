@@ -36,7 +36,8 @@ const EnrolledNodePrefix = "enrollment/node/"
 const ServerCertificateCommonName = "ccattler-server"
 
 // CCAServerEtcdClientName is the name in cca server's etcd client CommonName,
-// etcd-client-cca-server; reserved as a node ID so no node gets that CN (SA-M2).
+// etcd-client-cca-server; reserved as a node ID (SA-M2). Node etcd CNs start
+// with etcd-client-node- (SA2-L4), so no node gets that CN either way.
 const CCAServerEtcdClientName = "cca-server"
 
 // reservedNodeIDs are node IDs that enrollment and cca init never issue: the
@@ -207,7 +208,7 @@ type EnrollmentResponse struct {
 	CACertPEM      []byte // PEM-encoded CA certificate for peer verification
 	Principal      string // assigned security principal
 	// EtcdCertificatePEM is the node's etcd client certificate (etcd access CA,
-	// ClientAuth only, CN etcd-client-<node>); empty without an etcd access CA.
+	// ClientAuth only, CN etcd-client-node-<node>); empty without an etcd access CA.
 	EtcdCertificatePEM []byte
 	EtcdCACertPEM      []byte // the etcd access CA etcd serves under; empty with EtcdCertificatePEM
 }
@@ -380,9 +381,11 @@ func (enrollmentService *EnrollmentService) signNodeCSR(request EnrollmentReques
 }
 
 // NodeEtcdClientCommonNamePrefix starts the CommonName of a node's etcd client
-// certificate, etcd-client-<node>. A distinct identity, not a separately
+// certificate, etcd-client-node-<node>. The etcd CN prefixes are disjoint
+// (etcd-server-, etcd-peer-, etcd-client-node-, etcd-client-cca-server; SA2-L4),
+// so no node ID yields another identity's CN. A distinct identity, not a separately
 // authorized one: until M181 every accepted etcd client certificate has full etcd access.
-const NodeEtcdClientCommonNamePrefix = "etcd-client-"
+const NodeEtcdClientCommonNamePrefix = "etcd-client-node-"
 
 // ErrEtcdClientCSRRequired refuses an enrollment without an etcd CSR on a server
 // with the etcd access CA: a cca join from before M280, whose node etcd would refuse (CR-L6).
@@ -390,7 +393,7 @@ var ErrEtcdClientCSRRequired = errors.New("enrollment rejected: this server issu
 	"and this cca join sent no etcd CSR (cca join before M280)")
 
 // signNodeEtcdClientCSR signs the node's etcd CSR with the etcd access CA as a
-// ClientAuth-only certificate with CN etcd-client-<node> and no SANs (M280 D4).
+// ClientAuth-only certificate with CN etcd-client-node-<node> and no SANs (M280 D4, SA2-L4).
 // Returns nil without an etcd access CA; ErrEtcdClientCSRRequired without an etcd CSR.
 func (enrollmentService *EnrollmentService) signNodeEtcdClientCSR(request EnrollmentRequest) ([]byte, error) {
 	if enrollmentService.etcdClientCertificateAuthority == nil {
@@ -514,9 +517,9 @@ func computeCAFingerprint(caCertificatePEM []byte) string {
 // EnsureControlPlaneNodeEnrolled records the control-plane node whose
 // certificate cca init issued directly (it never runs cca join), so an agent
 // on that node passes the enrolled-node check of secret delivery (Flow 27).
-// Create-only: an existing record is kept; invalid node IDs are refused.
+// Create-only: an existing record is kept; invalid or reserved node IDs are refused.
 func EnsureControlPlaneNodeEnrolled(ctx context.Context, factStore store.StateStore, nodeID string, certExpiry time.Time) error {
-	if validationError := types.ValidateNodeID(nodeID); validationError != nil {
+	if validationError := ValidateNodeIdentity(nodeID); validationError != nil {
 		return validationError
 	}
 	enrolledJSON, marshalError := json.Marshal(EnrolledNode{

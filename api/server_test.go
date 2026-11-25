@@ -1806,7 +1806,7 @@ func TestEnrollReturnsEtcdClientCertificate(t *testing.T) {
 		t.Fatalf("no etcd client certificate or wrong etcd CA in the response: %+v", enrollResponse)
 	}
 	etcdCertificate, parseError := x509.ParseCertificate(etcdBlock.Bytes)
-	if parseError != nil || etcdCertificate.Subject.CommonName != "etcd-client-worker-1" || !etcdAccessCA.IsIssuerOf(etcdCertificate) {
+	if parseError != nil || etcdCertificate.Subject.CommonName != "etcd-client-node-worker-1" || !etcdAccessCA.IsIssuerOf(etcdCertificate) {
 		t.Fatalf("etcd client certificate: %v, CN %q", parseError, etcdCertificate.Subject.CommonName)
 	}
 }

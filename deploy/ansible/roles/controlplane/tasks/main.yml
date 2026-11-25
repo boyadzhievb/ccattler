@@ -16,7 +16,7 @@
 - name: Run setup script
   command: /tmp/cca-init/setup.sh
   args:
-    creates: /etc/ccattler/pki/cluster-identity-ca.pem
+    creates: "{{ cca_cert_dir }}/{{ cca_pki.cluster_ca }}"
 
 # setup.sh copies the keys into place; the copies cca init left would outlive
 # a root key rotation (M178 review). setup.sh stays as the creates: guard.

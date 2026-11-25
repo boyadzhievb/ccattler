@@ -103,7 +103,7 @@ VM state: `test/e2e/vm-deploy/.vmherd/`. Health check: `./test/e2e/health_check.
 | `node-failure` | stops the agent on worker-1, VIP must keep serving | 44 s |
 | `multiport` | whoami-multiport per-port VIP rules and cross-node traffic | 3 s |
 | `warmzero` | scale to zero and cold start (warmzero workload) | — (not in the default workloads) |
-| `gate-tls` | gate TLS T1–T18 | 1 min 20 s |
+| `gate-tls` | gate TLS T1–T19 (T19 = `deploy-run:gate-cert-not-client`, M280: a gate certificate is refused as a client by etcd and the API) | 1 min 20 s |
 
 Each run logs `skipped check groups: …` before Step 5 and again in the final status (`none` for a full run). An unknown group name stops the run before anything is deployed. `--extended` (sticky sessions, DNS churn) is separate and unchanged.
 

@@ -226,13 +226,13 @@ var initLeafExpectations = []initLeafExpectation{
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}},
 	{"node-identity-for-api.pem", "cluster-identity-ca.pem", clusterPKITestNodeID, "node identity for API",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}},
-	{"etcd-serving-certificate.pem", "etcd-access-ca.pem", "etcd-" + clusterPKITestNodeID, "etcd serving certificate",
+	{"etcd-serving-certificate.pem", "etcd-access-ca.pem", "etcd-server-" + clusterPKITestNodeID, "etcd serving certificate",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}},
 	{"etcd-peer-certificate.pem", "etcd-access-ca.pem", "etcd-peer-" + clusterPKITestNodeID, "etcd peer certificate",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}},
 	{"cca-server-etcd-client-certificate.pem", "etcd-access-ca.pem", "etcd-client-cca-server", "cca-server etcd client",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}},
-	{"node-etcd-client-certificate.pem", "etcd-access-ca.pem", "etcd-client-" + clusterPKITestNodeID, "node etcd client",
+	{"node-etcd-client-certificate.pem", "etcd-access-ca.pem", "etcd-client-node-" + clusterPKITestNodeID, "node etcd client",
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}},
 }
 
@@ -464,14 +464,12 @@ func TestAPIRefusesNonClusterCACertificates(t *testing.T) {
 // TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA: the HA etcd template serves
 // the etcd serving certificate, authenticates peers with the etcd peer
 // certificate, and trusts only the etcd access CA for clients and peers (1a).
+// Rendered for a three-CA cluster: the file names come from cca_pki (CR2-L4).
 func TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA(t *testing.T) {
 	const templatePath = "deploy/ansible/roles/etcd-cluster/templates/etcd-cluster.conf.j2"
-	templateContent, readError := os.ReadFile(filepath.Join("..", "..", templatePath)) //nolint:gosec // G304: fixed repository path
-	if readError != nil {
-		t.Fatal(readError)
-	}
+	templateContent := renderAnsibleRoleTemplate(t, "etcd-cluster", "etcd-cluster.conf.j2", "three_ca", "ctrl")
 	templateFlags := map[string]string{}
-	for _, templateLine := range strings.Split(string(templateContent), "\n") {
+	for _, templateLine := range strings.Split(templateContent, "\n") {
 		lineFields := strings.Fields(strings.TrimSuffix(strings.TrimSpace(templateLine), "\\"))
 		if len(lineFields) >= 2 && strings.HasPrefix(lineFields[0], "--") {
 			templateFlags[lineFields[0]] = strings.Join(lineFields[1:], " ")
@@ -482,12 +480,12 @@ func TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA(t *testing.T) {
 		"--cert-file": etcdServingCertificateFileName, "--key-file": privateKeyFileName(etcdServingCertificateFileName),
 		"--peer-cert-file": etcdPeerCertificateFileName, "--peer-key-file": privateKeyFileName(etcdPeerCertificateFileName),
 	} {
-		if wantValue := "{{ cca_cert_dir }}/" + wantFile; templateFlags[flagName] != wantValue {
+		if wantValue := ansiblePKIDirectory + "/" + wantFile; templateFlags[flagName] != wantValue {
 			t.Errorf("%s: %s = %q, want %q", templatePath, flagName, templateFlags[flagName], wantValue)
 		}
 	}
 	for _, requiredFlag := range []string{"--client-cert-auth", "--peer-client-cert-auth"} {
-		if !strings.Contains(string(templateContent), requiredFlag) {
+		if !strings.Contains(templateContent, requiredFlag) {
 			t.Errorf("%s lacks %s", templatePath, requiredFlag)
 		}
 	}

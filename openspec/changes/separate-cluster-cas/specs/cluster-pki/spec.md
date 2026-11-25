@@ -41,10 +41,10 @@ certificate and its clients, and the gate CA for gate serving certificates. Each
 - **WHEN** it finishes
 - **THEN** DIR holds the CAs `cluster-identity-ca.pem`, `etcd-access-ca.pem` and `gate-https-ca.pem`, each with
   its `-key.pem` at 0600, and these leaf certificates, each with its own key:
-  - `etcd-serving-certificate.pem` (CN `etcd-ctrl`) and `etcd-peer-certificate.pem` (CN `etcd-peer-ctrl`) from
+  - `etcd-serving-certificate.pem` (CN `etcd-server-ctrl`) and `etcd-peer-certificate.pem` (CN `etcd-peer-ctrl`) from
     the etcd access CA (ServerAuth and ClientAuth);
   - `cca-server-etcd-client-certificate.pem` (CN `etcd-client-cca-server`) and `node-etcd-client-certificate.pem`
-    (CN `etcd-client-ctrl`) from the etcd access CA (ClientAuth only);
+    (CN `etcd-client-node-ctrl`) from the etcd access CA (ClientAuth only);
   - `api-server-identity-certificate.pem` (CN `ccattler-server`, ServerAuth and ClientAuth) and
     `node-identity-for-api.pem` (CN `ctrl`, ClientAuth only) from the cluster identity CA.
 
@@ -70,7 +70,7 @@ etcd.
 - **GIVEN** a cluster with an etcd CA and a valid join token
 - **WHEN** `cca join` enrolls a worker
 - **THEN** the response carries the node identity for the API (cluster identity CA) and the node's own etcd client
-  certificate (etcd access CA, ClientAuth only, CommonName `etcd-client-<node>`). `cca join` writes
+  certificate (etcd access CA, ClientAuth only, CommonName `etcd-client-node-<node>`). `cca join` writes
   `node-identity-for-api.pem`, `node-etcd-client-certificate.pem` and `etcd-access-ca.pem` with their keys, and the
   agent's etcd connection uses the etcd client certificate. No two nodes share an etcd client certificate or key
 - Test: `TestEnrollmentIssuesEtcdClientCertificate`, `TestJoinWritesEtcdClientCertificate`

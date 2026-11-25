@@ -3,7 +3,14 @@
 # after cca init's tls.conf, which also resets ExecStart and sets ETCD_*
 # variables; etcd refuses a variable shadowed by a flag, so they are unset.
 # Clients and peers are trusted only from the etcd access CA (M280); peers
-# present etcd-peer-certificate.pem (ServerAuth and ClientAuth).
+# present etcd-peer-certificate.pem (ServerAuth and ClientAuth). File names
+# follow the cluster's PKI layout (cca_pki, group_vars).
+# etcd starts only after the peer port firewall loaded, and not when it failed
+# (M280 SA2-L5): Before= in the firewall unit orders, it does not require.
+[Unit]
+Requires=ccattler-etcd-peer-firewall.service
+After=ccattler-etcd-peer-firewall.service
+
 [Service]
 UnsetEnvironment=DAEMON_ARGS ETCD_NAME ETCD_DATA_DIR ETCD_LISTEN_CLIENT_URLS ETCD_ADVERTISE_CLIENT_URLS ETCD_CERT_FILE ETCD_KEY_FILE ETCD_TRUSTED_CA_FILE ETCD_CLIENT_CERT_AUTH
 ExecStart=
@@ -18,10 +25,10 @@ ExecStart=/usr/bin/etcd \
   --initial-cluster-token {{ etcd_cluster_token | default('ccattler-etcd') }} \
   --initial-cluster-state new \
   --client-cert-auth \
-  --trusted-ca-file {{ cca_cert_dir }}/etcd-access-ca.pem \
-  --cert-file {{ cca_cert_dir }}/etcd-serving-certificate.pem \
-  --key-file {{ cca_cert_dir }}/etcd-serving-certificate-key.pem \
+  --trusted-ca-file {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }} \
+  --cert-file {{ cca_cert_dir }}/{{ cca_pki.etcd_serving_cert }} \
+  --key-file {{ cca_cert_dir }}/{{ cca_pki.etcd_serving_key }} \
   --peer-client-cert-auth \
-  --peer-trusted-ca-file {{ cca_cert_dir }}/etcd-access-ca.pem \
-  --peer-cert-file {{ cca_cert_dir }}/etcd-peer-certificate.pem \
-  --peer-key-file {{ cca_cert_dir }}/etcd-peer-certificate-key.pem
+  --peer-trusted-ca-file {{ cca_cert_dir }}/{{ cca_pki.etcd_ca }} \
+  --peer-cert-file {{ cca_cert_dir }}/{{ cca_pki.etcd_peer_cert }} \
+  --peer-key-file {{ cca_cert_dir }}/{{ cca_pki.etcd_peer_key }}

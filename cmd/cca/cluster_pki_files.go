@@ -50,7 +50,7 @@ const (
 // ccaServerEtcdClientCommonName is the CommonName of cca server's etcd client
 // certificate. A distinct identity, not a separately authorized one: until
 // M181 (store access isolation, etcd roles) every accepted etcd client certificate has full etcd access.
-const ccaServerEtcdClientCommonName = security.NodeEtcdClientCommonNamePrefix + security.CCAServerEtcdClientName
+const ccaServerEtcdClientCommonName = "etcd-client-" + security.CCAServerEtcdClientName
 
 // privateKeyFileName returns the key file of a certificate or CA file:
 // the same name with -key.pem.
@@ -77,8 +77,9 @@ const (
 
 // CommonName prefixes of etcd's own certificates; the node etcd client prefix is security.NodeEtcdClientCommonNamePrefix.
 const (
-	// etcdServingCommonNamePrefix starts the CN of etcd's serving certificate, etcd-<node>.
-	etcdServingCommonNamePrefix = "etcd-"
+	// etcdServingCommonNamePrefix starts the CN of etcd's serving certificate, etcd-server-<node>
+	// (etcd-<node> during apply; disjoint prefixes since SA2-L4).
+	etcdServingCommonNamePrefix = "etcd-server-"
 	// etcdPeerCommonNamePrefix starts the CN of etcd's peer certificate, etcd-peer-<node>.
 	etcdPeerCommonNamePrefix = "etcd-peer-"
 )

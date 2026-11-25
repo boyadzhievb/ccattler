@@ -25,10 +25,10 @@ line, which `pem.Decode` and `openssl` skip. Keys are the same name with `-key.p
 | gate HTTPS CA | self | gate HTTPS CA / CCattler gate HTTPS CA | CA | 10 y | `gate-https-ca.pem` | server `--gate-ca-cert`/`--gate-ca-key`; clients of TLS gates |
 | API server identity | cluster identity CA (cca init) | API server identity / `ccattler-server` | ServerAuth + ClientAuth | 1 y, none | `api-server-identity-certificate.pem` | `cca server --cert` (API listener; client of agent debug APIs) |
 | node identity for API | cluster identity CA (cca init, or `SignCSR` at enrollment) | node identity for API / node ID | ClientAuth | 1 y, re-join | `node-identity-for-api.pem` | agent `--cert` |
-| etcd serving | etcd access CA (cca init) | etcd serving certificate / `etcd-<node>` | ServerAuth + ClientAuth (etcd dials its own client port with it, etcd issue 9785; kubeadm model) | 1 y, none | `etcd-serving-certificate.pem` | etcd `ETCD_CERT_FILE`; HA `--cert-file` |
+| etcd serving | etcd access CA (cca init) | etcd serving certificate / `etcd-server-<node>` | ServerAuth + ClientAuth (etcd dials its own client port with it, etcd issue 9785; kubeadm model) | 1 y, none | `etcd-serving-certificate.pem` | etcd `ETCD_CERT_FILE`; HA `--cert-file` |
 | etcd peer | etcd access CA (cca init) | etcd peer certificate / `etcd-peer-<node>` | ServerAuth + ClientAuth (HA peers authenticate each other) | 1 y, none | `etcd-peer-certificate.pem` | HA `--peer-cert-file` (etcd-cluster.conf.j2) |
 | cca-server etcd client | etcd access CA (cca init) | cca-server etcd client / `etcd-client-cca-server` | ClientAuth | 1 y, none | `cca-server-etcd-client-certificate.pem` | `cca server --etcd-cert` |
-| node etcd client | etcd access CA (cca init, or `signNodeEtcdClientCSR` at enrollment, security/enrollment.go:372) | node etcd client / `etcd-client-<node>` | ClientAuth | 1 y, re-join | `node-etcd-client-certificate.pem` | agent `--etcd-cert`; CLI etcd default |
+| node etcd client | etcd access CA (cca init, or `signNodeEtcdClientCSR` at enrollment, security/enrollment.go:372) | node etcd client / `etcd-client-node-<node>` | ClientAuth | 1 y, re-join | `node-etcd-client-certificate.pem` | agent `--etcd-cert`; CLI etcd default |
 | server (rotating, `--tls` without files) | auto cluster CA, `CertificateRotator` | API server identity / `ccattler-server` | ServerAuth + ClientAuth | 24 h, 70% | memory | API listener |
 | gate (auto TLS) | gate HTTPS CA, else the cluster CA (old clusters), `issueSealedGateCertificate` (controllers/route_tls.go:166) | gate HTTPS / route host | **ServerAuth only** (both kinds of cluster) | 90 d, renewed 30 d before expiry; re-issued at once when it carries ClientAuth or another issuer signed it (:199) | `derived/route/{name}/tls/cert`, sealed key `secrets/route/{name}/tls/key` | agent gate proxy |
 
@@ -57,23 +57,35 @@ becomes an etcd user only once etcd authentication and roles are enabled (M181, 
   serving and peer certificates, which carry ClientAuth (they live only on etcd hosts);
 - a compromised node, gate nodes included, keeps reading and writing the whole store with its own node etcd client
   certificate. M280 closes the gate-certificate path, not that one;
-- `etcd-client-cca-server` and `etcd-client-<node>` are distinct identities that M181 can authorize differently;
+- `etcd-client-cca-server` and `etcd-client-node-<node>` are distinct identities that M181 can authorize differently;
   they are not separately authorized today.
 
 **Old clusters after the upgrade:** Gate certificates issued before the upgrade still carry ClientAuth and stay valid until they expire, up to 90 days (gateCertificateTTL): nothing revokes them, and their keys are already on every gate node. Until then they authenticate to the API as `node:<gate host>` and to etcd as a root client. The remedy is to re-initialize the cluster with `cca init` (user decision: no migration); otherwise wait out the 90 days, and meanwhile audit gate hosts named like `ccattler-server` or a node ID.
 
 **Identities around the server (review round 1):** the server records its own node as enrolled from
 `--control-plane-node-cert` (`node-identity-for-api.pem`; old clusters: the server certificate's CN), so no unbound join
-token can enroll as a control-plane node. `ccattler-server` and `cca-server` are reserved node IDs (enrollment and
-`cca init`), so no node gets the server's API principal or its etcd client CN `etcd-client-cca-server`. No certificate
-is an admin credential: `node:<node>` has node-agent rights only; root on a control-plane host uses the local token.
-The e2e, HA and deploy scripts do the same (`sudo cca`, or `local_admin_curl_remote_command` in
-test/e2e/local_admin_access.sh for raw API reads, token on curl's stdin); `TestAutomationNeverUsesNodeIdentityAsAdminClient`
-keeps every other use of `node-identity-for-api.pem` out of test/e2e and deploy/ansible.
+token can enroll as a control-plane node. `verifyControlPlaneNodeCertificate` (command_server.go) requires that file to
+chain to `--ca`, be valid now, be a client certificate and name an unreserved node ID; otherwise, and when the fallback
+CN is `ccattler-server` (a three-CA server without the flag), nothing is recorded and the server warns (round 2,
+SA2-L1). `ccattler-server` and `cca-server` are reserved node IDs (enrollment, `cca init` and
+`EnsureControlPlaneNodeEnrolled`), so no node gets the server's API principal. The etcd CNs have disjoint prefixes
+(`etcd-server-`, `etcd-peer-`, `etcd-client-node-`, and `etcd-client-cca-server`; SA2-L4), so no node ID yields another
+identity's etcd CN.
+
+No automation uses a certificate as an admin credential: `node:<node>` has node-agent rights only, and root on a
+control-plane host uses the local token. The API server's own certificate (`api-server-identity-certificate.pem`,
+`node:ccattler-server`) is cluster-admin by design and root-only on control-plane hosts. The e2e, HA and deploy scripts
+use `sudo cca`, or `local_admin_curl_remote_command` in test/e2e/local_admin_access.sh for raw API reads (token on curl's
+stdin). `TestAutomationNeverUsesCertificateAsAdminClient` keeps the node identity, the server certificate and the old
+`node.pem` out of test/e2e and deploy/ansible, except in the units that present them as their own identity.
 
 **Single-CA clusters adding an HA secondary (CR-L7):** `cca init --ca/--ca-key` alone reuses the single CA and writes the
 older layout (`ca.pem`, `node.pem` server+client, `etcd.pem` server+client); its setup.sh uses those files and passes no
-gate or etcd access CA flags (`singleCAClusterPKILayout`, cmd/cca/cluster_pki_files.go).
+gate or etcd access CA flags (`singleCAClusterPKILayout`, cmd/cca/cluster_pki_files.go). `checkLoadedCAKind`
+(command_init.go) reads each given CA's kind from its Subject OU (`CertificateAuthority.Kind`, security/ca.go): the
+single-CA path refuses an M280 CA, and the six-flag path requires each flag's own kind (SA2-L3). The Ansible roles name
+files through `cca_pki` (group_vars), whose layout `common/tasks/pki_layout.yml` detects on the first control-plane
+host (CR2-L4).
 
 ## 4. Lifecycle entry points
 

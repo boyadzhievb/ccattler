@@ -50,7 +50,7 @@ PKI" ([runtime-invariant-flows.md](runtime-invariant-flows.md)).
   stored ones with ClientAuth are re-issued. The Subject OU and the file's description line are descriptive only;
   the API principal comes from the CommonName (`node:<CN>`).
 - **Each process has its own etcd client certificate.** `cca join` sends a second CSR and receives
-  `etcd-client-<node>`; the server uses `etcd-client-cca-server`.
+  `etcd-client-node-<node>`; the server uses `etcd-client-cca-server`.
 - **Residual trust until M181 (user decision 2026-11-25).** etcd has no authentication or roles yet, so every
   accepted etcd client certificate, the server's or any node's, has full etcd access, and a compromised node, gate
   nodes included, keeps store access through its own node etcd client certificate. The new CommonNames are distinct
