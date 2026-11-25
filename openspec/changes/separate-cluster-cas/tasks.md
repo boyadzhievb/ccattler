@@ -213,6 +213,19 @@ controllers and cmd/cca exit 0; `etcd_integration` (ETCD_BIN v3.5.36, store test
   throwaway namespace), then `nft list ruleset`.
 - **The result:** exactly one table with one 2380 rule (scratchpad `peer-fw-idempotency.txt`).
 
+**CR-H1 revised (user decision 2026-11-25, option c).** Rework round 1 found that user JWTs are signed by a key each
+`cca server` generates at start (command_server.go:658-663). Such tokens die at every restart and work only on the
+replica that minted them; that is now milestone M283. Therefore:
+- **M280's automation uses `sudo cca` with the local admin token on the control-plane host.**
+  - It authenticates through `LocalTokenAuthenticator`, not the JWT signing key, so it is independent of M283.
+  - It replaces every caller that used node.pem as an admin client.
+  - It must keep working through the certificate change and prove that the gate-certificate hole is closed.
+- **Deferred to M283, and not claimed here:** the `e2e-admin`/`CCA_TOKEN` checks (JWT validity across restarts, HA
+  replicas and key rotation). M280 does not replace the user-token test with the local-token test, and it claims no
+  JWT continuity.
+- **The guide:** step 3's user token must not be presented as surviving server restarts until M283 ships. Add a note
+  there.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:
