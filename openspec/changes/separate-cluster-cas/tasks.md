@@ -327,6 +327,21 @@ local_admin_access.sh 0, gate_tls_checks.sh 1 (pre-existing SC2034), cluster_tes
 incomplete", `rw3-test.txt`). This diff does not touch the keyring. The test passed 30/30 alone on bb6c741 and on this
 tree, and 3/3 in full package runs. **Classified as a test bug (flaky under full-suite load)**, recorded here; not
 rerun until green; it needs its own fix.
+**Reclassified (main session, 2026-11-25): likely a product race, now milestone M284** (user decision: "3
+milestone").
+- **The race:** `NewKeyringEnvelopeCodec` reads `keyring/active`, then separately scans `keyring/`
+  (security/keyring.go:124-128).
+- **How it fails:** if another replica commits its bootstrap transaction between the two reads, the scan finds a
+  complete keyring and the code still reports "keyring is incomplete".
+- **Not caused by M280,** which does not touch the keyring.
+
+**User decisions on rework 3 (2026-11-25):**
+- **(1) "exits":** a `--control-plane-node-cert` that is given but fails verification (foreign CA, expired,
+  not ClientAuth, reserved or invalid CN) makes `cca server` exit with the reason. This is fail-closed: a skipped
+  record would leave the node ID open to an unbound token. When the flag is absent, the server only warns, since a
+  control plane without an agent has no node to record. Rework 3's skip-and-warn on a bad flag is replaced (3g).
+- **(2) "fresh":** layout detection is confirmed as implemented: the old names only when `ca.pem` exists and
+  `cluster-identity-ca.pem` does not; a fresh host gets the new layout.
 
 Only the deploy run proves: T19 against the real etcd and API; the caddy-sync stop on the testbed host; layout
 detection on real hosts (fresh three-CA run; a pre-M280 cluster only through `--from-release`); the etcd drop-in's

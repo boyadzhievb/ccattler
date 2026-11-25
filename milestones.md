@@ -552,6 +552,23 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 284 — Concurrent First Start Can Refuse a Complete Keyring (M284, bug, to reproduce first)
+
+Found as `TestKeyringConcurrentBootstrapAgrees` failing once under full-suite load during M280 rework 3 (2026-11-25;
+already noted as flaky before). It passes alone (30/30). Milestone by user decision ("3 milestone").
+- **Likely cause:** a check-then-act race. `NewKeyringEnvelopeCodec` reads `keyring/active` (absent), then
+  separately scans `keyring/` (security/keyring.go:124-128). If another replica commits its bootstrap transaction
+  between the two reads, the scan finds that complete keyring and returns "keyring is incomplete … restore the
+  keyring from an etcd backup". The replica then refuses to start.
+- **Real-world effect:** two control-plane replicas starting for the first time at the same moment. One can fail
+  with a misleading "restore from backup" error.
+- **First:** reproduce deterministically, e.g. with a store hook that commits the other replica's bootstrap between
+  the Get and the Scan.
+- **Then fix:** after a lost race, re-read `keyring/active` before declaring the keyring incomplete, or retry the
+  whole load once. Never weaken the real refusal: keys present but `active` missing must still refuse.
+- **Note for M283:** its signing-key bootstrap uses the same create-only pattern and must not copy this race. "A
+  losing replica loads the winner's key" must re-read after the lost transaction.
+
 ### Phase 283 — API Tokens Survive Restarts and Work on Every Replica (M283, security bug)
 
 Found during the M280 rework (CR-H1), 2026-11-25; confirmed in the code by the main session and by the user's review
@@ -1654,6 +1671,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M267 — Rebalancing Moves Instances Onto Nodes They Don't Fit | 267 | Bug fix (found in a full deploy run, 2026-11-23): the scheduler's rebalancing chose a target node by instance count alone, so it moved instances onto nodes without room for their CPU or memory; placement then put the replacement back, in an endless loop. A rebalance move now needs the same fit as a placement, a moved instance is never left looking running on its old node, and every agent write of an instance's facts is guarded by its placement and proven by a fault-injection test that fails every write in turn. Also in this release: M275, `types/keys.go` split into one file per subject (no behaviour change). |
 | M280 — Every Cluster-CA Certificate Is an etcd Root Client | 280 | Security fix (found in the M279 security audit, 2026-11-24): gate certificates were issued by the cluster CA with client authentication, and etcd trusted every certificate from that CA, so a gate key was enough to read and write the whole fact store. Serving certificates no longer authenticate clients, and etcd accepts only its own client identities. |
 | M283 — API Tokens Survive Restarts and Work on Every Replica | 283 | Security bug fix (found in the M280 rework, 2026-11-25): the API token signing key was created in memory at every server start, so every `cca user token` token died at a restart and worked only on the HA replica that minted it. The key now lives sealed in the keyring in etcd and is shared by every replica; it fails closed when lost; keys rotate by key ID, and tokens have a maximum lifetime. Tokens issued before this release must be re-created once. |
+| M284 — Concurrent First Start Can Refuse a Complete Keyring | 284 | Bug fix (found in M280 rework 3, 2026-11-25, to reproduce first): when two control-plane replicas start for the first time at once, one can read the keyring between the other's bootstrap and its own check, and refuse to start with a misleading "restore from backup" error. |
 | M281 — The Testbed Load Balancer Forwards to Gates | 281 | Testbed: HAProxy replaces Caddy on the testbed host and forwards TCP 80/443 unchanged to the gate nodes, as a cloud network load balancer would (user decision 2026-11-25), instead of reading routes, backends and overlay subnets from the API with a token. No API credential to renew and no internal network map outside the cluster. |
 | M282 — The Debug Proxy Accepts an Agent Certificate of Any Usage | 282 | Bug fix (from the M280 security audit, to confirm first): the server's connection to an agent debug API verifies the agent's certificate with any usage, so on clusters from before M280 a gate certificate named like a node could pass as that agent. |
 | M278 — A Moved Instance Keeps the Source's IP When Its Own IP Is Unknown | 278 | Bug fix (found in the M267 round-9 review, 2026-11-24): when an instance's IP could not be resolved, its state was published without an IP and the old value stayed, so after a move the target could show `running` with the source's IP and traffic went there. A serving state is now never published next to another node's IP. |
