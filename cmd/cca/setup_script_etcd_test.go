@@ -141,7 +141,7 @@ const (
 // and no etcd.service, the etcd step creates the etcd user and writes a full unit
 // with the explicit Debian-layout data directory.
 func TestSetupScriptWritesEtcdUnitWhenNoneExists(t *testing.T) {
-	stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress),
+	stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress, threeCAClusterPKILayout),
 		setupScriptStepOptions{etcdInRootLocations: []string{"/usr/local/bin/etcd"}})
 	if stepRun.exitError != nil {
 		t.Fatalf("etcd step failed: %v\n%s", stepRun.exitError, stepRun.output)
@@ -180,7 +180,7 @@ func TestSetupScriptWritesEtcdUnitWhenNoneExists(t *testing.T) {
 // TestSetupScriptKeepsDistributionEtcdUnit: when etcd.service exists, the etcd step
 // writes only the TLS drop-in, which never sets the data directory or member name.
 func TestSetupScriptKeepsDistributionEtcdUnit(t *testing.T) {
-	stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress),
+	stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress, threeCAClusterPKILayout),
 		setupScriptStepOptions{etcdOnPath: true, etcdUnitExists: true})
 	if stepRun.exitError != nil {
 		t.Fatalf("etcd step failed: %v\n%s", stepRun.exitError, stepRun.output)
@@ -223,7 +223,7 @@ func TestSetupScriptFindsEtcdInUsrLocalBin(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress), testCase.options)
+			stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress, threeCAClusterPKILayout), testCase.options)
 			if stepRun.exitError != nil {
 				t.Fatalf("etcd step failed: %v\n%s", stepRun.exitError, stepRun.output)
 			}
@@ -241,7 +241,7 @@ func TestSetupScriptFindsEtcdInUsrLocalBin(t *testing.T) {
 // TestSetupScriptEtcdMissingHintNamesRealSources: without etcd, the etcd step exits
 // non-zero and names etcd-server for Debian/Ubuntu and the release binary for RHEL.
 func TestSetupScriptEtcdMissingHintNamesRealSources(t *testing.T) {
-	stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress), setupScriptStepOptions{})
+	stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress, threeCAClusterPKILayout), setupScriptStepOptions{})
 	if stepRun.exitError == nil {
 		t.Errorf("etcd step exited 0 without etcd; output:\n%s", stepRun.output)
 	}
@@ -387,7 +387,7 @@ func TestInitParsesEtcdClientCIDRs(t *testing.T) {
 // to adduser --system, and without both it stops with a message.
 func TestSetupScriptEtcdUserWithoutUseradd(t *testing.T) {
 	t.Run("adduser fallback", func(t *testing.T) {
-		stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress),
+		stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress, threeCAClusterPKILayout),
 			setupScriptStepOptions{etcdInRootLocations: []string{"/usr/local/bin/etcd"}, omitFakeTools: []string{"useradd"}})
 		if stepRun.exitError != nil {
 			t.Fatalf("etcd step failed: %v\n%s", stepRun.exitError, stepRun.output)
@@ -403,7 +403,7 @@ func TestSetupScriptEtcdUserWithoutUseradd(t *testing.T) {
 		}
 	})
 	t.Run("neither", func(t *testing.T) {
-		stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress),
+		stepRun := runSetupScriptStep(t, buildSetupScriptEtcdStep(setupScriptTestAdvertiseAddress, threeCAClusterPKILayout),
 			setupScriptStepOptions{etcdInRootLocations: []string{"/usr/local/bin/etcd"}, omitFakeTools: []string{"useradd", "adduser"}})
 		if stepRun.exitError == nil || !strings.Contains(stepRun.output, "etcd user") {
 			t.Errorf("want a non-zero exit naming the etcd user; err=%v output:\n%s", stepRun.exitError, stepRun.output)
@@ -470,7 +470,7 @@ func TestSetupScriptEtcdRulesNeverCoverEveryAddress(t *testing.T) {
 			if parseError != nil {
 				return // refused: no setup.sh is written
 			}
-			setupScript := buildSetupScript("192.0.2.10", "ctrl", "/tmp/cca-init", "", "", parsedConfig.etcdClientNetworks)
+			setupScript := buildSetupScript("192.0.2.10", "ctrl", "/tmp/cca-init", "", "", parsedConfig.etcdClientNetworks, threeCAClusterPKILayout)
 			for _, rulePattern := range setupScriptEtcdRulePatterns {
 				var rulePrefixes []netip.Prefix
 				for _, ruleMatch := range rulePattern.FindAllStringSubmatch(setupScript, -1) {

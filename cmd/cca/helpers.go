@@ -83,9 +83,16 @@ func statusAPIBaseURL() string {
 }
 
 // buildTLSTransportFromCACert returns an http.RoundTripper that trusts the
-// CCattler CA certificate. Returns http.DefaultTransport if no CA cert is found.
+// installed cluster identity CA (M280 names first, then ca.pem), or
+// http.DefaultTransport when none is found. The CLI sends no client certificate.
 func buildTLSTransportFromCACert() http.RoundTripper {
-	for _, candidatePath := range installedClusterCACandidatePaths {
+	return buildTLSTransportFromCACertCandidates(installedClusterCACandidatePaths)
+}
+
+// buildTLSTransportFromCACertCandidates trusts the first readable CA file of
+// candidatePaths; http.DefaultTransport when none holds a certificate.
+func buildTLSTransportFromCACertCandidates(candidatePaths []string) http.RoundTripper {
+	for _, candidatePath := range candidatePaths {
 		caCertPEM, readError := os.ReadFile(candidatePath) //nolint:gosec // reading known CA cert path
 		if readError != nil {
 			continue

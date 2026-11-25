@@ -54,6 +54,39 @@
     dest: /etc/systemd/system/etcd.service.d/zz-cluster.conf
     mode: "0644"
 
+# Only the etcd members reach the peer port (M280 SA-L1): a worker's etcd client
+# certificate comes from the same CA etcd trusts for peers.
+- name: Install the etcd peer port firewall rules
+  template:
+    src: etcd-peer-firewall.nft.j2
+    dest: /etc/ccattler/etcd-peer-firewall.nft
+    mode: "0644"
+
+- name: Install the unit that loads the etcd peer port firewall at boot
+  copy:
+    dest: /etc/systemd/system/ccattler-etcd-peer-firewall.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=CCattler: only etcd members reach the etcd peer port 2380
+      Before=etcd.service
+      After=network-pre.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Load the etcd peer port firewall now and at boot
+  systemd:
+    name: ccattler-etcd-peer-firewall
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
 - name: Reload systemd and start etcd cluster
   systemd:
     name: etcd

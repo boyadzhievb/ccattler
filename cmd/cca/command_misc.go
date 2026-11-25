@@ -180,7 +180,7 @@ type joinCommandConfig struct {
 	joinToken     string
 	nodeID        string
 	caCertPath    string // optional: verify server cert against this CA (overrides token fingerprint)
-	dataDirectory string // where to write cert/key/ca (default "/etc/ccattler/pki")
+	dataDirectory string // where to write cert/key/ca (default clusterPKIDirectory)
 }
 
 // parseJoinCommandArgs parses "join <server-url> <token>" and its flags, which
@@ -188,7 +188,7 @@ type joinCommandConfig struct {
 // file), a flag without its value and a third argument are errors (M227).
 func parseJoinCommandArgs(args []string) (joinCommandConfig, error) {
 	parsedConfig := joinCommandConfig{
-		dataDirectory: "/etc/ccattler/pki",
+		dataDirectory: clusterPKIDirectory,
 	}
 
 	flagSet := newDaemonFlagSet("join")
@@ -237,17 +237,8 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		ipStrings[ipIndex] = ipAddr.String()
 	}
 
-	localNodePrivateKey, enrollmentCSRPEM := generateNodeKeypairAndCSR(parsedConfig.nodeID, localIPAddresses)
-	// Its own key for etcd (M280 D4); a server without an etcd access CA ignores the CSR.
-	localEtcdPrivateKey, etcdCSRPEM := generateNodeKeypairAndCSR(security.NodeEtcdClientCommonNamePrefix+parsedConfig.nodeID, nil)
-
-	enrollmentRequestPayload, _ := json.Marshal(map[string]interface{}{
-		"token":        rawToken,
-		"node_id":      parsedConfig.nodeID,
-		"ip_addresses": ipStrings,
-		"csr_pem":      string(enrollmentCSRPEM),
-		"etcd_csr_pem": string(etcdCSRPEM),
-	})
+	enrollmentRequestPayload, localNodePrivateKey, localEtcdPrivateKey := buildJoinEnrollmentRequest(rawToken,
+		parsedConfig.nodeID, localIPAddresses, ipStrings)
 
 	enrollmentResponse := sendEnrollmentRequest(enrollmentHTTPClient, parsedConfig.serverAddress, enrollmentRequestPayload)
 
@@ -268,6 +259,23 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	fmt.Println()
 	fmt.Println("Start the agent with:")
 	fmt.Printf("  %s\n", buildJoinedAgentStartCommand(parsedConfig.nodeID, credentialPaths))
+}
+
+// buildJoinEnrollmentRequest generates the node identity key and, separately,
+// the etcd client key (M280 D4) and returns the POST /api/enroll body with both
+// CSRs; a server without an etcd access CA ignores the etcd CSR.
+func buildJoinEnrollmentRequest(rawToken string, nodeID string, localIPAddresses []net.IP,
+	ipStrings []string) ([]byte, *ecdsa.PrivateKey, *ecdsa.PrivateKey) {
+	localNodePrivateKey, enrollmentCSRPEM := generateNodeKeypairAndCSR(nodeID, localIPAddresses)
+	localEtcdPrivateKey, etcdCSRPEM := generateNodeKeypairAndCSR(security.NodeEtcdClientCommonNamePrefix+nodeID, nil)
+	enrollmentRequestPayload, _ := json.Marshal(map[string]interface{}{
+		"token":        rawToken,
+		"node_id":      nodeID,
+		"ip_addresses": ipStrings,
+		"csr_pem":      string(enrollmentCSRPEM),
+		"etcd_csr_pem": string(etcdCSRPEM),
+	})
+	return enrollmentRequestPayload, localNodePrivateKey, localEtcdPrivateKey
 }
 
 // splitCompositeToken splits a composite "<hex-token>.<ca-fingerprint>" into

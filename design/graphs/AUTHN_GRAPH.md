@@ -331,20 +331,21 @@ EnrollmentService.GenerateJoinToken(ctx, nodeID, tokenTTL)     [:96]
 EnrollmentService.SetEtcdClientCertificateAuthority(etcdCA)    [:112, cca server with --etcd-access-ca-key]
 
 EnrollmentService.EnrollNode(ctx, request)                     [:201]
-├── types.ValidateNodeID(request.NodeID)                       [lowercase DNS name]
+├── ValidateNodeIdentity(request.NodeID)                       [lowercase DNS name; reserved ccattler-server, cca-server]
 ├── hashTokenValue(request.Token) → tokenKey
 ├── validateJoinToken(ctx, tokenKey, request)                  [:216]
 │   ├── factStore.Get(tokenKey) → unmarshal JoinToken, revision
 │   ├── check not expired (delete if expired)
 │   └── check nodeID matches (if token is node-specific)
 ├── checkNodeIdentityAvailable(ctx, nodeID, tokenBound)        [:245]
-│   ├── reservedNodeIDs["ccattler-server"] → reject
+│   ├── reservedNodeIDs[ccattler-server | cca-server] → reject
 │   ├── factStore.Scan("auth/grant/node/<nodeID>/") non-empty → reject
 │   └── factStore.Get("enrollment/node/<nodeID>") exists && !tokenBound → reject
 ├── signNodeCSR(request)                                       [:340]
 │   ├── parseEnrollmentCSR(CSRPEM)                             [:397]
 │   └── clusterCA.SignCSR({CSR, TTL, CN=nodeID, OU="node identity for API", DNSNames, IPs})
 ├── signNodeEtcdClientCSR(request)                             [:372, M280 D4; nil without etcd CA or EtcdCSRPEM]
+│   ├── no EtcdCSRPEM with an etcd CA → ErrEtcdClientCSRRequired (handleEnroll adds the server's version, CR-L6)
 │   ├── parseEnrollmentCSR(EtcdCSRPEM); refuse the node identity's public key (own key)
 │   └── etcdAccessCA.SignCSR({CSR, TTL, CN="etcd-client-<node>", OU="node etcd client"})  [ClientAuth only]
 ├── commitEnrollment(ctx, tokenKey, tokenRev, ..., enrolledRev) [:271]

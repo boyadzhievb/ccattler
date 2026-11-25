@@ -1973,6 +1973,8 @@ RouteTLSController → gate certificate ServerAuth only; re-issue when it carrie
 
 - **What enforces the boundary:** ExtKeyUsage and which CA each listener trusts (PKI_GRAPH §2), plus the CommonName
   checks (reserved `ccattler-server` at enrollment). The OU and the description lines never authorize.
+- **Old clusters, up to 90 days:** gate certificates issued before the upgrade keep ClientAuth until they expire
+  (re-issue replaces the stored copy, revokes nothing); the remedy is re-initializing with `cca init`.
 - **Old clusters** keep their files; the CLI, the agent and `cca join` try the M280 names first, then `ca.pem` and
   `node.pem`. Only the gate fix applies to them.
 - **Residual trust until M181:** every accepted etcd client certificate has full etcd access; a compromised node keeps

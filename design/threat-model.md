@@ -62,8 +62,10 @@ User CLI ──→ API Server ──→ etcd (fact store)
 **M280 (every cluster-CA certificate was an etcd root client):** before M280 one CA signed node, server, etcd and
 gate certificates, all with ClientAuth, and etcd trusted it. A gate certificate, whose key every gate node holds and
 whose host a `workload.create` user chooses, was an etcd root client and, for host `ccattler-server`, the
-cluster-admin server principal at the API. Fixed: gate certificates are ServerAuth only everywhere, and new clusters
+cluster-admin server principal at the API. Fixed for new certificates: gate certificates are ServerAuth only everywhere, and new clusters
 have three CAs where etcd trusts only the etcd access CA ([graphs/PKI_GRAPH.md](graphs/PKI_GRAPH.md)).
+
+**Residual risk on old clusters, up to 90 days after the upgrade:** Gate certificates issued before the upgrade still carry ClientAuth and stay valid until they expire, up to 90 days (gateCertificateTTL): nothing revokes them, and their keys are already on every gate node. Until then they authenticate to the API as `node:<gate host>` and to etcd as a root client. The remedy is to re-initialize the cluster with `cca init` (user decision: no migration); otherwise wait out the 90 days, and meanwhile audit gate hosts named like `ccattler-server` or a node ID.
 
 **Residual risk until M181 (accepted, user decision 2026-11-25):** etcd's client-certificate check only proves the
 certificate chains to the etcd access CA; without etcd authentication and roles, every accepted etcd client

@@ -1810,3 +1810,36 @@ func TestEnrollReturnsEtcdClientCertificate(t *testing.T) {
 		t.Fatalf("etcd client certificate: %v, CN %q", parseError, etcdCertificate.Subject.CommonName)
 	}
 }
+
+// TestEnrollWithoutEtcdCSRNamesServerVersion (CR-L6): an old cca join (no
+// etcd_csr_pem) against a server with the etcd access CA is refused with an
+// error that names the server's version to upgrade to.
+func TestEnrollWithoutEtcdCSRNamesServerVersion(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
+	apiServer.buildVersion = "v9.9.9-test"
+	clusterCA, _ := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, time.Hour)
+	etcdAccessCA, _ := security.NewCertificateAuthority(security.EtcdAccessCertificateAuthority, time.Hour)
+	enrollmentService := security.NewEnrollmentService(factStore, clusterCA, nil, time.Hour)
+	enrollmentService.SetEtcdClientCertificateAuthority(etcdAccessCA)
+	apiServer.SetEnrollmentService(enrollmentService)
+	joinToken, _ := enrollmentService.GenerateJoinToken(context.Background(), "", 15*time.Minute)
+	address, startError := apiServer.Start(":0")
+	if startError != nil {
+		t.Fatal(startError)
+	}
+	defer apiServer.Close()
+	requestBody := fmt.Sprintf(`{"token":%q,"node_id":"worker-1","csr_pem":%q}`, joinToken.Token, generateTestCSRPEM(t, "worker-1"))
+	httpResponse, postError := http.Post("http://"+address+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	if postError != nil {
+		t.Fatal(postError)
+	}
+	defer httpResponse.Body.Close()
+	var enrollResponse enrollmentResponseBody
+	_ = json.NewDecoder(httpResponse.Body).Decode(&enrollResponse)
+	if httpResponse.StatusCode == http.StatusOK || !strings.Contains(enrollResponse.Error, "v9.9.9-test") {
+		t.Fatalf("old cca join: HTTP %d, error %q; want a refusal naming v9.9.9-test", httpResponse.StatusCode, enrollResponse.Error)
+	}
+}

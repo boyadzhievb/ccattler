@@ -42,7 +42,7 @@ look for the new names first and fall back to these (`installedEtcdClientFileSet
 |---|---|---|---|
 | API (`--cert`/`--ca`) | cluster identity CA | `loadServerTLSConfig` `ClientCAs` (cmd/cca/command_server.go) | `node:<CN>` (security/authn_mtls.go); OU ignored |
 | etcd (clients) | etcd access CA (new); cluster CA (old) | setup.sh `ETCD_TRUSTED_CA_FILE` (`buildSetupScriptEtcdStep`); HA `--trusted-ca-file` | none: no etcd RBAC, see §3 |
-| etcd (HA peers) | etcd access CA | `--peer-trusted-ca-file`, `--peer-client-cert-auth` (etcd-cluster.conf.j2) | — |
+| etcd (HA peers) | etcd access CA | `--peer-trusted-ca-file`, `--peer-client-cert-auth` (etcd-cluster.conf.j2); 2380/tcp open only to the etcd members (`etcd-peer-firewall.nft.j2`, SA-L1), because every node's etcd client certificate comes from the same CA | — |
 | agent debug API | cluster identity CA | `SetMutualTLS`, agent/debug_api.go | `node:<CN>` holding cluster-admin |
 | gate proxy | none (serving only) | network/gate_proxy.go | — |
 
@@ -59,6 +59,18 @@ becomes an etcd user only once etcd authentication and roles are enabled (M181, 
   certificate. M280 closes the gate-certificate path, not that one;
 - `etcd-client-cca-server` and `etcd-client-<node>` are distinct identities that M181 can authorize differently;
   they are not separately authorized today.
+
+**Old clusters after the upgrade:** Gate certificates issued before the upgrade still carry ClientAuth and stay valid until they expire, up to 90 days (gateCertificateTTL): nothing revokes them, and their keys are already on every gate node. Until then they authenticate to the API as `node:<gate host>` and to etcd as a root client. The remedy is to re-initialize the cluster with `cca init` (user decision: no migration); otherwise wait out the 90 days, and meanwhile audit gate hosts named like `ccattler-server` or a node ID.
+
+**Identities around the server (review round 1):** the server records its own node as enrolled from
+`--control-plane-node-cert` (`node-identity-for-api.pem`; old clusters: the server certificate's CN), so no unbound join
+token can enroll as a control-plane node. `ccattler-server` and `cca-server` are reserved node IDs (enrollment and
+`cca init`), so no node gets the server's API principal or its etcd client CN `etcd-client-cca-server`. No certificate
+is an admin credential: `node:<node>` has node-agent rights only; root on a control-plane host uses the local token.
+
+**Single-CA clusters adding an HA secondary (CR-L7):** `cca init --ca/--ca-key` alone reuses the single CA and writes the
+older layout (`ca.pem`, `node.pem` server+client, `etcd.pem` server+client); its setup.sh uses those files and passes no
+gate or etcd access CA flags (`singleCAClusterPKILayout`, cmd/cca/cluster_pki_files.go).
 
 ## 4. Lifecycle entry points
 

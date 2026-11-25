@@ -354,8 +354,10 @@ func setupScriptUnitText(t *testing.T, setupScript string, unitPath string) stri
 // TestInitRefusesPartialExistingCAFlags: an HA secondary given only some of the
 // six existing-CA flags is refused, so it never mints CAs its peers do not trust (D1).
 func TestInitRefusesPartialExistingCAFlags(t *testing.T) {
+	// --ca/--ca-key alone is a single-CA cluster's secondary (CR-L7, TestInitSingleCASecondaryWritesOldLayout).
 	for _, partialFlags := range [][]string{
-		{"--ca", "/pki/ca.pem", "--ca-key", "/pki/ca-key.pem"},
+		{"--ca", "/pki/ca.pem"},
+		{"--ca", "/pki/ca.pem", "--ca-key", "/pki/ca-key.pem", "--gate-https-ca", "/pki/g.pem", "--gate-https-ca-key", "/pki/g-key.pem"},
 		{"--etcd-access-ca", "/pki/e.pem", "--etcd-access-ca-key", "/pki/e-key.pem"},
 		{"--ca", "/pki/ca.pem", "--ca-key", "/pki/ca-key.pem", "--etcd-access-ca", "/pki/e.pem",
 			"--etcd-access-ca-key", "/pki/e-key.pem", "--gate-https-ca", "/pki/g.pem"},
@@ -371,7 +373,7 @@ func TestInitRefusesPartialExistingCAFlags(t *testing.T) {
 // and gives cca server and cca agent each their own etcd client certificate
 // and the API identities of D1a.
 func TestSetupScriptUsesEtcdCA(t *testing.T) {
-	setupScript := buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24", nil)
+	setupScript := buildSetupScript("192.0.2.10", "node-1", "/tmp/cca-init", "10.100.0.0/16", "10.200.0.0/24", nil, threeCAClusterPKILayout)
 	for _, wantLine := range []string{
 		`Environment="ETCD_TRUSTED_CA_FILE=/etc/ccattler/pki/etcd-access-ca.pem"`,
 		`Environment="ETCD_CERT_FILE=/etc/ccattler/pki/etcd-serving-certificate.pem"`,
@@ -489,4 +491,14 @@ func TestAnsibleEtcdClusterTemplateUsesEtcdAccessCA(t *testing.T) {
 			t.Errorf("%s lacks %s", templatePath, requiredFlag)
 		}
 	}
+}
+
+// mustReadFile reads a file or fails the test.
+func mustReadFile(t *testing.T, filePath string) []byte {
+	t.Helper()
+	fileContent, readError := os.ReadFile(filePath) //nolint:gosec // test file path
+	if readError != nil {
+		t.Fatal(readError)
+	}
+	return fileContent
 }

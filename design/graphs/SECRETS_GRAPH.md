@@ -209,8 +209,10 @@ Key rotation re-wraps DEKs through the keyring rotation controller (Flow 30, abo
 Wired by `configureSecretStoreAndDelivery` (cmd/cca/command_server.go): `AuthorizedStore`
 with service principal `service:secret-delivery` (role `secret-delivery`, read-only).
 `bootstrapControlPlaneNodeEnrollment` → `security.EnsureControlPlaneNodeEnrolled` writes
-`enrollment/node/{server cert CN}` create-only at startup: the control-plane node got its
-certificate from `cca init`, never ran `cca join`, and its agent shares that certificate.
+`enrollment/node/{node}` create-only at startup: the control-plane node got its certificate from
+`cca init` and never ran `cca join`. The node is the CN of `--control-plane-node-cert`
+(`node-identity-for-api.pem`, set by setup.sh and the HA unit, M280 SA-H1), else, on clusters from
+before M280, the CN of the server certificate (`node.pem`, shared with the agent).
 
 ```
 Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}

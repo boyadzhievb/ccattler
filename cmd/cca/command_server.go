@@ -85,6 +85,9 @@ type serverCommandConfig struct {
 	gateCACertPath string
 	// gateCAKeyPath is the gate HTTPS CA private key; set together with gateCACertPath.
 	gateCAKeyPath string
+	// controlPlaneNodeCertificatePath is this host's node identity (node-identity-for-api.pem);
+	// the server records that node as enrolled (M280 SA-H1). Empty: the server certificate's CN, as before.
+	controlPlaneNodeCertificatePath string
 	// etcdAccessCAKeyPath is the private key of the etcd access CA (--etcd-ca); with it,
 	// enrollment issues each node its own etcd client certificate (M280 D4).
 	etcdAccessCAKeyPath string
@@ -179,6 +182,8 @@ func registerServerListenerFlags(flagSet *flag.FlagSet, parsedConfig *serverComm
 	flagSet.StringVar(&parsedConfig.tlsCAKeyPath, "ca-key", "", "PEM CA private key; enables node enrollment (cca join)")
 	flagSet.StringVar(&parsedConfig.gateCACertPath, "gate-ca-cert", "", "PEM gate HTTPS CA certificate that signs gate certificates")
 	flagSet.StringVar(&parsedConfig.gateCAKeyPath, "gate-ca-key", "", "PEM gate HTTPS CA private key (with --gate-ca-cert)")
+	flagSet.StringVar(&parsedConfig.controlPlaneNodeCertificatePath, "control-plane-node-cert", "",
+		"PEM node identity of this host's agent; the server records that node as enrolled")
 	flagSet.StringVar(&parsedConfig.etcdAccessCAKeyPath, "etcd-access-ca-key", "",
 		"PEM private key of the etcd access CA (--etcd-ca); enrollment then issues etcd client certificates")
 	flagSet.BoolVar(&parsedConfig.dnsEnabled, "dns", false, "start the built-in DNS server")
@@ -375,8 +380,8 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewKeyringMigrationController(keyringCodec),
 		controllers.NewKeyringRotationController(keyringCodec, parsedConfig.keyringRetireGrace))
 
-	if gateCertificateIssuer := resolveGateCertificateIssuer(parsedConfig, clusterCertificateAuthority); gateCertificateIssuer != nil {
-		controllerList = append(controllerList, controllers.NewRouteTLSController(gateCertificateIssuer, keyringCodec))
+	if routeTLSController := buildRouteTLSController(parsedConfig, clusterCertificateAuthority, keyringCodec); routeTLSController != nil {
+		controllerList = append(controllerList, routeTLSController)
 	}
 
 	metricsCollector := controllers.NewMetricsCollector()
@@ -512,24 +517,53 @@ func parseStaticServerLeafCertificate(serverTLSConfig *tls.Config) *x509.Certifi
 	return serverLeafCert
 }
 
-// bootstrapControlPlaneNodeEnrollment records this control-plane node as
-// enrolled (create-only). cca init issued its certificate without cca join, and
-// an agent on this node shares it; without the record secret delivery refuses
-// that agent as "not enrolled" (Flow 27).
-func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config) {
+// bootstrapControlPlaneNodeEnrollment records this host's node as enrolled
+// (create-only), so its agent gets secrets and no unbound token can enroll as it
+// (Flow 27). The node comes from --control-plane-node-cert, else (clusters from
+// before M280) from the server certificate's CN.
+func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config, parsedConfig serverCommandConfig) {
+	nodeCertificate := loadControlPlaneNodeCertificate(parsedConfig.controlPlaneNodeCertificatePath)
+	if nodeCertificate == nil {
+		nodeCertificate = serverLeafCertificateForEnrollment(serverTLSConfig)
+	}
+	if nodeCertificate == nil || nodeCertificate.Subject.CommonName == "" {
+		return
+	}
+	nodeID := nodeCertificate.Subject.CommonName
+	if enrollError := security.EnsureControlPlaneNodeEnrolled(context.Background(), factStore, nodeID, nodeCertificate.NotAfter); enrollError != nil {
+		logging.Default().Warn("control-plane node not recorded as enrolled", "node", nodeID, "error", enrollError.Error())
+	}
+}
+
+// loadControlPlaneNodeCertificate parses the node identity named by
+// --control-plane-node-cert; nil without the flag. Exits when the file does not
+// hold a certificate: a server that cannot record its node must not start.
+func loadControlPlaneNodeCertificate(certificatePath string) *x509.Certificate {
+	if certificatePath == "" {
+		return nil
+	}
+	certificatePEM, readError := os.ReadFile(certificatePath) //nolint:gosec // operator-given path
+	nodeCertificate, parseError := parseFirstPEMCertificate(certificatePEM)
+	if readError != nil {
+		parseError = readError
+	}
+	if parseError != nil {
+		fmt.Fprintf(os.Stderr, "error reading --control-plane-node-cert %s: %v\n", certificatePath, parseError)
+		os.Exit(1)
+	}
+	return nodeCertificate
+}
+
+// serverLeafCertificateForEnrollment returns the static server certificate, or
+// the current rotating one, whose CN named the control-plane node before M280.
+func serverLeafCertificateForEnrollment(serverTLSConfig *tls.Config) *x509.Certificate {
 	serverLeafCert := parseStaticServerLeafCertificate(serverTLSConfig)
 	if serverLeafCert == nil && serverTLSConfig != nil && serverTLSConfig.GetCertificate != nil {
 		if rotatingCertificate, getError := serverTLSConfig.GetCertificate(&tls.ClientHelloInfo{}); getError == nil && rotatingCertificate != nil && len(rotatingCertificate.Certificate) > 0 {
 			serverLeafCert, _ = x509.ParseCertificate(rotatingCertificate.Certificate[0])
 		}
 	}
-	if serverLeafCert == nil || serverLeafCert.Subject.CommonName == "" {
-		return
-	}
-	nodeID := serverLeafCert.Subject.CommonName
-	if enrollError := security.EnsureControlPlaneNodeEnrolled(context.Background(), factStore, nodeID, serverLeafCert.NotAfter); enrollError != nil {
-		logging.Default().Warn("control-plane node not recorded as enrolled", "node", nodeID, "error", enrollError.Error())
-	}
+	return serverLeafCert
 }
 
 // appendBearerTokenAuthenticators adds the JWT and webhook authenticators in
@@ -639,7 +673,7 @@ func configureAndStartAPIServer(
 	}
 
 	bootstrapAdminGrants(factStore, serverPrincipal)
-	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig)
+	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, parsedConfig)
 	startAPIAuthorizationSync(ctx, factStore, apiAuthorizer)
 
 	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
@@ -668,11 +702,7 @@ func configureAndStartAPIServer(
 	}
 
 	if clusterCertificateAuthority != nil {
-		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultNodeCertificateTTL)
-		if etcdAccessCA := loadEtcdAccessCertificateAuthority(parsedConfig); etcdAccessCA != nil {
-			enrollmentService.SetEtcdClientCertificateAuthority(etcdAccessCA)
-		}
-		statusAPIServer.SetEnrollmentService(enrollmentService)
+		statusAPIServer.SetEnrollmentService(buildEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, parsedConfig))
 		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
 	}
 
@@ -936,6 +966,9 @@ func preflightCheckExplicitCertPaths(parsedConfig serverCommandConfig) {
 		preflightRequireReadableFile(parsedConfig.tlsCAKeyPath, "CA private key (--ca-key)")
 		preflightRequireSecureKeyPermissions(parsedConfig.tlsCAKeyPath, "CA private key")
 	}
+	if parsedConfig.controlPlaneNodeCertificatePath != "" {
+		preflightRequireReadableFile(parsedConfig.controlPlaneNodeCertificatePath, "control-plane node identity (--control-plane-node-cert)")
+	}
 	if parsedConfig.etcdAccessCAKeyPath != "" {
 		preflightRequireReadableFile(parsedConfig.etcdAccessCAKeyPath, "etcd access CA private key (--etcd-access-ca-key)")
 		preflightRequireSecureKeyPermissions(parsedConfig.etcdAccessCAKeyPath, "etcd access CA private key")
@@ -1020,9 +1053,8 @@ func preflightCheckDefaultPKIExists(parsedConfig serverCommandConfig) {
 	}
 	// Auto-TLS mode generates certs on the fly, so only warn when the
 	// canonical PKI path has partial state that might confuse the operator.
-	const defaultPKIDirectory = "/etc/ccattler/pki"
-	if _, statError := os.Stat(defaultPKIDirectory); statError != nil {
-		fmt.Fprintf(os.Stderr, "notice: %s does not exist — auto-generating CA and certificates\n", defaultPKIDirectory)
+	if _, statError := os.Stat(clusterPKIDirectory); statError != nil {
+		fmt.Fprintf(os.Stderr, "notice: %s does not exist — auto-generating CA and certificates\n", clusterPKIDirectory)
 		fmt.Fprintf(os.Stderr, "  For production, run 'cca init' first to generate persistent PKI.\n")
 	}
 }

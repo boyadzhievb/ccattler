@@ -215,13 +215,3 @@ func TestGateCertificateIsRefusedByEtcd(t *testing.T) {
 		}
 	}
 }
-
-// mustReadFile reads a file or fails the test.
-func mustReadFile(t *testing.T, filePath string) []byte {
-	t.Helper()
-	fileContent, readError := os.ReadFile(filePath) //nolint:gosec // test file path
-	if readError != nil {
-		t.Fatal(readError)
-	}
-	return fileContent
-}

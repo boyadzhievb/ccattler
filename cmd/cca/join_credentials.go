@@ -82,12 +82,10 @@ func planJoinedCredentialFiles(dataDirectory string, enrollmentResponse enrollme
 	return []joinedCredentialFile{
 			{nodeIdentityForAPIFileName, enrollmentResponse.CertificatePEM, nodeIdentityDescription},
 			{privateKeyFileName(nodeIdentityForAPIFileName), nodePrivateKeyPEM, "private key of " + nodeIdentityForAPIFileName},
-			{clusterIdentityCAFileName, enrollmentResponse.CACertPEM,
-				"cluster identity CA: signs the API server and node identities; the API trusts only it"},
+			{clusterIdentityCAFileName, enrollmentResponse.CACertPEM, clusterIdentityCADescription},
 			{nodeEtcdClientCertificateFileName, enrollmentResponse.EtcdCertificatePEM, etcdClientDescription},
 			{privateKeyFileName(nodeEtcdClientCertificateFileName), etcdPrivateKeyPEM, "private key of " + nodeEtcdClientCertificateFileName},
-			{etcdAccessCAFileName, enrollmentResponse.EtcdCACertPEM,
-				"etcd access CA: signs etcd's serving certificate and the etcd client certificates; etcd trusts only it"},
+			{etcdAccessCAFileName, enrollmentResponse.EtcdCACertPEM, etcdAccessCADescription},
 		}, joinedCredentialPaths{
 			nodeCertificatePath: inDataDirectory(nodeIdentityForAPIFileName),
 			nodeKeyPath:         inDataDirectory(privateKeyFileName(nodeIdentityForAPIFileName)),

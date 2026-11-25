@@ -22,6 +22,7 @@ ExecStart=/usr/local/bin/cca server \
   --etcd-key {{ cca_cert_dir }}/cca-server-etcd-client-certificate-key.pem \
   --etcd-ca {{ cca_cert_dir }}/etcd-access-ca.pem \
   --etcd-access-ca-key {{ cca_cert_dir }}/etcd-access-ca-key.pem \
+  --control-plane-node-cert {{ cca_cert_dir }}/node-identity-for-api.pem \
   --dns --dns-listen {{ ansible_host }}:15353 \
   --cluster-cidr {{ cluster_cidr }} \
   --vip-cidr {{ vip_cidr }}

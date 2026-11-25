@@ -117,6 +117,10 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 		}
 	}
 
+	if nodeIDError := security.ValidateNodeIdentity(parsedConfig.nodeID); nodeIDError != nil {
+		return parsedConfig, fmt.Errorf("--node-id: %w", nodeIDError)
+	}
+
 	if parsedConfig.advertiseAddress == "" {
 		detectedAddresses := detectLocalIPAddresses()
 		if len(detectedAddresses) > 0 {
@@ -129,9 +133,12 @@ func parseInitCommandArgs(args []string) (initCommandConfig, error) {
 	return parsedConfig, nil
 }
 
-// checkInitExistingCAFlags requires the existing-CA flags of an HA secondary
-// all together or none: a secondary that reused only the cluster identity CA
-// would create its own etcd access and gate HTTPS CAs, which its peers do not trust.
+// singleCAFlagCount is the number of existing-CA flags of a single-CA cluster's secondary: --ca and --ca-key.
+const singleCAFlagCount = 2
+
+// checkInitExistingCAFlags requires an HA secondary's existing-CA flags all six
+// or none, or --ca/--ca-key alone for a cluster from before M280 (one CA, CR-L7):
+// a three-CA secondary reusing only one CA would mint CAs its peers do not trust.
 func checkInitExistingCAFlags(parsedConfig initCommandConfig) error {
 	existingCAFlags := []string{parsedConfig.existingCAPath, parsedConfig.existingCAKeyPath,
 		parsedConfig.existingEtcdAccessCAPath, parsedConfig.existingEtcdAccessCAKeyPath,
@@ -142,9 +149,12 @@ func checkInitExistingCAFlags(parsedConfig initCommandConfig) error {
 			emptyCount++
 		}
 	}
-	if emptyCount != 0 && emptyCount != len(existingCAFlags) {
+	singleCAPairOnly := parsedConfig.existingCAPath != "" && parsedConfig.existingCAKeyPath != "" &&
+		emptyCount == len(existingCAFlags)-singleCAFlagCount
+	if emptyCount != 0 && emptyCount != len(existingCAFlags) && !singleCAPairOnly {
 		return errors.New("--ca, --ca-key, --etcd-access-ca, --etcd-access-ca-key, --gate-https-ca and " +
-			"--gate-https-ca-key go together: an HA secondary reuses all three CAs of the first node")
+			"--gate-https-ca-key go together: an HA secondary reuses all three CAs of the first node " +
+			"(a cluster from before M280, with one CA: --ca and --ca-key alone)")
 	}
 	return nil
 }
@@ -244,8 +254,8 @@ func etcdClientNetworkWarnings(networks []*net.IPNet) []string {
 			reasons = append(reasons, "is not private or loopback")
 		}
 		if len(reasons) > 0 {
-			warnings = append(warnings, fmt.Sprintf("WARNING: --etcd-client-cidr %s %s; every certificate the cluster CA "+
-				"issues can use etcd from there until M280 is fixed. Name only the cluster's own networks.",
+			warnings = append(warnings, fmt.Sprintf("WARNING: --etcd-client-cidr %s %s; until etcd roles exist (M181), "+
+				"every etcd client certificate has full etcd access from there. Name only the cluster's own networks.",
 				network, strings.Join(reasons, " and ")))
 		}
 	}
@@ -278,11 +288,12 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 	}
 	fmt.Printf("Generating PKI for node %s (advertise: %s)...\n", parsedConfig.nodeID, parsedConfig.advertiseAddress)
 
-	clusterCAs := resolveInitCertificateAuthorities(parsedConfig)
-	for _, caFile := range clusterCAs.files() {
+	pkiLayout := resolveInitPKILayout(parsedConfig)
+	clusterCAs := resolveInitCertificateAuthorities(parsedConfig, pkiLayout)
+	for _, caFile := range clusterCAs.files(pkiLayout) {
 		writeInitCertificateAuthorityFiles(outputDirectory, caFile)
 	}
-	for _, leafFile := range buildInitLeafCertificates(parsedConfig, clusterCAs) {
+	for _, leafFile := range buildInitLeafCertificates(parsedConfig, clusterCAs, pkiLayout) {
 		writeInitLeafCertificateFiles(outputDirectory, leafFile)
 	}
 	isSecondaryReplica := parsedConfig.existingCAPath != "" && parsedConfig.existingCAKeyPath != ""
@@ -291,10 +302,10 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 	}
 
 	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory,
-		parsedConfig.clusterCIDR, parsedConfig.vipCIDR, parsedConfig.etcdClientNetworks)
+		parsedConfig.clusterCIDR, parsedConfig.vipCIDR, parsedConfig.etcdClientNetworks, pkiLayout)
 	writeInitFile(outputDirectory, "setup.sh", []byte(setupScript), 0755)
 
-	printInitSummary(outputDirectory)
+	printInitSummary(outputDirectory, pkiLayout)
 }
 
 // resolveInitOutputDirectory returns the output path for generated PKI. Uses a
@@ -350,16 +361,26 @@ type initCertificateAuthorities struct {
 	gateHTTPS       *security.CertificateAuthority // gate serving certificates; clients of TLS gates trust it
 }
 
-// files returns the three CAs with their file names and descriptions, in write order.
-func (clusterCAs initCertificateAuthorities) files() []initCertificateAuthorityFile {
-	return []initCertificateAuthorityFile{
-		{clusterIdentityCAFileName, clusterCAs.clusterIdentity,
-			"cluster identity CA: signs the API server and node identities; the API trusts only it"},
-		{etcdAccessCAFileName, clusterCAs.etcdAccess,
-			"etcd access CA: signs etcd's serving certificate and the etcd client certificates; etcd trusts only it"},
-		{gateHTTPSCAFileName, clusterCAs.gateHTTPS,
-			"gate HTTPS CA: signs gate serving certificates; clients of TLS gates trust it, the API and etcd do not"},
+// files returns the CAs to write with their file names and descriptions, in
+// write order: the three of D1, or the single ca.pem of an older cluster.
+func (clusterCAs initCertificateAuthorities) files(layout clusterPKILayout) []initCertificateAuthorityFile {
+	if layout.isSingleCA() {
+		return []initCertificateAuthorityFile{{layout.clusterCAFileName, clusterCAs.clusterIdentity, singleCADescription}}
 	}
+	return []initCertificateAuthorityFile{
+		{clusterIdentityCAFileName, clusterCAs.clusterIdentity, clusterIdentityCADescription},
+		{etcdAccessCAFileName, clusterCAs.etcdAccess, etcdAccessCADescription},
+		{gateHTTPSCAFileName, clusterCAs.gateHTTPS, gateHTTPSCADescription},
+	}
+}
+
+// resolveInitPKILayout returns the single-CA layout for an HA secondary given
+// --ca/--ca-key alone (a cluster from before M280, CR-L7), else the three-CA one.
+func resolveInitPKILayout(parsedConfig initCommandConfig) clusterPKILayout {
+	if parsedConfig.existingCAPath != "" && parsedConfig.existingEtcdAccessCAPath == "" {
+		return singleCAClusterPKILayout
+	}
+	return threeCAClusterPKILayout
 }
 
 // initCAFlagPaths holds the certificate and key paths of one CA given to cca init (HA secondaries).
@@ -369,9 +390,9 @@ type initCAFlagPaths struct {
 }
 
 // resolveInitCertificateAuthorities loads the three CAs on an HA secondary
-// (--ca, --etcd-access-ca and --gate-https-ca with their keys) or creates
-// them for a new cluster. Exits with the failing path on an error.
-func resolveInitCertificateAuthorities(parsedConfig initCommandConfig) initCertificateAuthorities {
+// (--ca, --etcd-access-ca and --gate-https-ca with their keys) or creates them;
+// a single-CA layout uses the --ca for all three roles. Exits on an error.
+func resolveInitCertificateAuthorities(parsedConfig initCommandConfig, layout clusterPKILayout) initCertificateAuthorities {
 	resolveOne := func(kind security.CertificateAuthorityKind, flagPaths initCAFlagPaths) *security.CertificateAuthority {
 		if flagPaths.certificatePath == "" {
 			createdCA, createError := security.NewCertificateAuthority(kind, parsedConfig.caValidity)
@@ -388,6 +409,11 @@ func resolveInitCertificateAuthorities(parsedConfig initCommandConfig) initCerti
 		}
 		fmt.Printf("Loaded existing %s CA from %s (HA mode)\n", kind, flagPaths.certificatePath)
 		return loadedCA
+	}
+	if layout.isSingleCA() {
+		singleCA := resolveOne(security.ClusterIdentityCertificateAuthority,
+			initCAFlagPaths{parsedConfig.existingCAPath, parsedConfig.existingCAKeyPath})
+		return initCertificateAuthorities{clusterIdentity: singleCA, etcdAccess: singleCA, gateHTTPS: singleCA}
 	}
 	return initCertificateAuthorities{
 		clusterIdentity: resolveOne(security.ClusterIdentityCertificateAuthority,
@@ -407,10 +433,11 @@ type initLeafCertificate struct {
 	description string                           // the D1a comment line, without "# CCattler "
 }
 
-// buildInitLeafCertificates lists the six leaf certificates of a control-plane
-// node (D1a table): two identities from the cluster identity CA, four etcd
-// certificates from the etcd access CA, each with its own key and usage.
-func buildInitLeafCertificates(parsedConfig initCommandConfig, clusterCAs initCertificateAuthorities) []initLeafCertificate {
+// buildInitLeafCertificates lists the leaf certificates of a control-plane node:
+// the six of the D1a table, each with its own key and usage, or for a single-CA
+// secondary (CR-L7) the older node.pem and etcd.pem, both server and client.
+func buildInitLeafCertificates(parsedConfig initCommandConfig, clusterCAs initCertificateAuthorities,
+	layout clusterPKILayout) []initLeafCertificate {
 	nodeIPAddresses, nodeDNSNames := buildCertificateSANs(parsedConfig)
 	nodeID, validity := parsedConfig.nodeID, parsedConfig.certValidity
 	leafRequest := func(commonName string, subjectUnit security.CertificateSubjectUnit, usage security.CertificateUsage,
@@ -420,6 +447,17 @@ func buildInitLeafCertificates(parsedConfig initCommandConfig, clusterCAs initCe
 			request.DNSNames, request.IPAddresses = nodeDNSNames, nodeIPAddresses
 		}
 		return request
+	}
+	if layout.isSingleCA() {
+		return []initLeafCertificate{
+			{legacyNodeCertificateFileName, clusterCAs.clusterIdentity,
+				leafRequest(nodeID, security.SubjectUnitNodeIdentityForAPI, security.UsageServerAndClient, true),
+				fmt.Sprintf("node certificate of node %s, signed by %s, used by cca server and cca agent for the API and etcd",
+					nodeID, legacyClusterCAFileName)},
+			{legacyEtcdCertificateFileName, clusterCAs.clusterIdentity,
+				leafRequest(etcdServingCommonNamePrefix+nodeID, security.SubjectUnitEtcdServing, security.UsageServerAndClient, true),
+				fmt.Sprintf("etcd serving and peer certificate of node %s, signed by %s", nodeID, legacyClusterCAFileName)},
+		}
 	}
 	return []initLeafCertificate{
 		{apiServerIdentityCertificateFileName, clusterCAs.clusterIdentity,
@@ -432,10 +470,10 @@ func buildInitLeafCertificates(parsedConfig initCommandConfig, clusterCAs initCe
 				nodeID, clusterIdentityCAFileName)},
 		{etcdServingCertificateFileName, clusterCAs.etcdAccess,
 			// Server and client: etcd dials its own client port with it (etcd issue 9785; kubeadm model, 1a).
-			leafRequest("etcd-"+nodeID, security.SubjectUnitEtcdServing, security.UsageServerAndClient, true),
+			leafRequest(etcdServingCommonNamePrefix+nodeID, security.SubjectUnitEtcdServing, security.UsageServerAndClient, true),
 			fmt.Sprintf("etcd serving certificate of node %s, signed by %s, served by etcd", nodeID, etcdAccessCAFileName)},
 		{etcdPeerCertificateFileName, clusterCAs.etcdAccess,
-			leafRequest("etcd-peer-"+nodeID, security.SubjectUnitEtcdPeer, security.UsageServerAndClient, true),
+			leafRequest(etcdPeerCommonNamePrefix+nodeID, security.SubjectUnitEtcdPeer, security.UsageServerAndClient, true),
 			fmt.Sprintf("etcd peer certificate of node %s, signed by %s, presented by etcd to its HA peers",
 				nodeID, etcdAccessCAFileName)},
 		{ccaServerEtcdClientCertificateFileName, clusterCAs.etcdAccess,
@@ -476,11 +514,25 @@ func writeInitLeafCertificateFiles(outputDirectory string, leafFile initLeafCert
 }
 
 // printInitSummary prints the list of generated files and next-step instructions.
-func printInitSummary(outputDirectory string) {
+func printInitSummary(outputDirectory string, layout clusterPKILayout) {
 	fmt.Println()
 	fmt.Printf("PKI and setup script written to %s/\n", outputDirectory)
 	fmt.Println()
 	fmt.Println("Files generated (each key is the same name with -key.pem, mode 0600):")
+	if layout.isSingleCA() {
+		fmt.Printf("  %s (single-CA layout of a cluster from before M280)\n", strings.Join(layout.installedFileNames(), ", "))
+	} else {
+		printThreeCAFileSummary()
+	}
+	fmt.Println("  secret-root.key    Secret root key (control plane only; same file on every replica)")
+	fmt.Println("  setup.sh           Setup script (review, then run with sudo)")
+	fmt.Println()
+	fmt.Println("Review the setup script, then run:")
+	fmt.Printf("  sudo %s/setup.sh\n", outputDirectory)
+}
+
+// printThreeCAFileSummary prints one line per file of the three-CA layout.
+func printThreeCAFileSummary() {
 	fmt.Printf("  %-40s CA of the API server and node identities\n", clusterIdentityCAFileName)
 	fmt.Printf("  %-40s CA trusted by etcd (etcd serving and client certificates)\n", etcdAccessCAFileName)
 	fmt.Printf("  %-40s CA of gate HTTPS certificates (clients of TLS gates trust it)\n", gateHTTPSCAFileName)
@@ -490,11 +542,6 @@ func printInitSummary(outputDirectory string) {
 	fmt.Printf("  %-40s etcd's peer certificate (HA)\n", etcdPeerCertificateFileName)
 	fmt.Printf("  %-40s cca server's etcd client certificate\n", ccaServerEtcdClientCertificateFileName)
 	fmt.Printf("  %-40s cca agent's etcd client certificate\n", nodeEtcdClientCertificateFileName)
-	fmt.Println("  secret-root.key    Secret root key (control plane only; same file on every replica)")
-	fmt.Println("  setup.sh           Setup script (review, then run with sudo)")
-	fmt.Println()
-	fmt.Println("Review the setup script, then run:")
-	fmt.Printf("  sudo %s/setup.sh\n", outputDirectory)
 }
 
 // writeInitSecretKeys writes the secret root key (Flow 29) for a new cluster.
@@ -524,7 +571,7 @@ func writeInitFile(outputDirectory string, fileName string, data []byte, permiss
 // exceeds 80 lines because it is predominantly shell template text assembled
 // via WriteString calls with no meaningful logic boundaries to extract.
 func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory string, clusterCIDR string, vipCIDR string,
-	etcdClientNetworks []*net.IPNet) string {
+	etcdClientNetworks []*net.IPNet, layout clusterPKILayout) string {
 	var scriptBuilder strings.Builder
 
 	scriptBuilder.WriteString("#!/bin/sh\n")
@@ -535,7 +582,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("SOURCE_DIR=\"")
 	scriptBuilder.WriteString(sourceDirectory)
 	scriptBuilder.WriteString("\"\n")
-	scriptBuilder.WriteString("PKI_DIR=/etc/ccattler/pki\n")
+	fmt.Fprintf(&scriptBuilder, "PKI_DIR=%s\n", clusterPKIDirectory)
 	scriptBuilder.WriteString("LOG_DIR=/var/log/ccattler\n")
 	scriptBuilder.WriteString("ETCD_DATA_DIR=/var/lib/etcd\n\n")
 
@@ -555,7 +602,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("echo '==> Creating directories'\n")
 	scriptBuilder.WriteString("mkdir -p /etc/ccattler \"$PKI_DIR\" \"$LOG_DIR\"\n\n")
 
-	scriptBuilder.WriteString(buildSetupScriptPKIInstallStep())
+	scriptBuilder.WriteString(buildSetupScriptPKIInstallStep(layout))
 	scriptBuilder.WriteString("# Secret keys exist only in a first-node init; HA secondaries receive copies.\n")
 	scriptBuilder.WriteString("if [ -f \"$SOURCE_DIR/secret-master.key\" ] && [ ! -f /etc/ccattler/secret-master.key ]; then\n")
 	scriptBuilder.WriteString("    install -m 600 \"$SOURCE_DIR/secret-master.key\" /etc/ccattler/secret-master.key\n")
@@ -564,7 +611,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("    install -m 400 \"$SOURCE_DIR/secret-root.key\" /etc/ccattler/secret-root.key\n")
 	scriptBuilder.WriteString("fi\n\n")
 
-	scriptBuilder.WriteString(buildSetupScriptEtcdStep(advertiseAddress))
+	scriptBuilder.WriteString(buildSetupScriptEtcdStep(advertiseAddress, layout))
 
 	scriptBuilder.WriteString("echo '==> Writing etcd endpoints for CLI auto-detection'\n")
 	fmt.Fprintf(&scriptBuilder, "echo 'https://127.0.0.1:%s' > /etc/ccattler/endpoints\n", setupScriptEtcdClientPort)
@@ -583,21 +630,13 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	fmt.Fprintf(&scriptBuilder, "ExecStart=/usr/local/bin/cca server \\\n")
 	fmt.Fprintf(&scriptBuilder, "  --listen 0.0.0.0:%s \\\n", defaultAPIListenPort)
 	fmt.Fprintf(&scriptBuilder, "  --dns --dns-listen %s:15353 \\\n", advertiseAddress)
-	writeSetupScriptPKIFlags(&scriptBuilder, []setupScriptPKIFlag{
-		{"cert", apiServerIdentityCertificateFileName}, {"key", privateKeyFileName(apiServerIdentityCertificateFileName)},
-		{"ca", clusterIdentityCAFileName}, {"ca-key", privateKeyFileName(clusterIdentityCAFileName)},
-		{"gate-ca-cert", gateHTTPSCAFileName}, {"gate-ca-key", privateKeyFileName(gateHTTPSCAFileName)},
-	})
+	writeSetupScriptPKIFlags(&scriptBuilder, setupScriptServerIdentityFlags(layout))
 	fmt.Fprintf(&scriptBuilder, "  --endpoints https://127.0.0.1:%s \\\n", setupScriptEtcdClientPort)
 	if vipCIDR != "" {
 		fmt.Fprintf(&scriptBuilder, "  --vip-cidr %s \\\n", vipCIDR)
 	}
-	writeSetupScriptPKIFlags(&scriptBuilder, []setupScriptPKIFlag{
-		{"etcd-cert", ccaServerEtcdClientCertificateFileName}, {"etcd-key", privateKeyFileName(ccaServerEtcdClientCertificateFileName)},
-		// Enrollment signs each joining node's etcd client certificate with it (D4).
-		{"etcd-access-ca-key", privateKeyFileName(etcdAccessCAFileName)},
-	})
-	fmt.Fprintf(&scriptBuilder, "  --etcd-ca %s\n", installedPKIPath(etcdAccessCAFileName))
+	writeSetupScriptPKIFlags(&scriptBuilder, setupScriptServerEtcdFlags(layout))
+	fmt.Fprintf(&scriptBuilder, "  --etcd-ca %s\n", installedPKIPath(layout.etcdCAFileName))
 	scriptBuilder.WriteString("Restart=on-failure\n")
 	scriptBuilder.WriteString("RestartSec=5\n")
 	scriptBuilder.WriteString("StandardOutput=journal\n")
@@ -620,15 +659,15 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	// The local cca-server above; an init host never ran `cca join`, so no saved address (M248).
 	fmt.Fprintf(&scriptBuilder, "  --api-server %s \\\n", net.JoinHostPort(advertiseAddress, defaultAPIListenPort))
 	writeSetupScriptPKIFlags(&scriptBuilder, []setupScriptPKIFlag{
-		{"cert", nodeIdentityForAPIFileName}, {"key", privateKeyFileName(nodeIdentityForAPIFileName)},
-		{"ca", clusterIdentityCAFileName},
-		{"etcd-cert", nodeEtcdClientCertificateFileName}, {"etcd-key", privateKeyFileName(nodeEtcdClientCertificateFileName)},
+		{"cert", layout.nodeIdentityFileName}, {"key", privateKeyFileName(layout.nodeIdentityFileName)},
+		{"ca", layout.clusterCAFileName},
+		{"etcd-cert", layout.nodeEtcdClientFileName}, {"etcd-key", privateKeyFileName(layout.nodeEtcdClientFileName)},
 	})
 	if clusterCIDR != "" {
 		fmt.Fprintf(&scriptBuilder, "  --cluster-cidr %s \\\n", clusterCIDR)
 	}
 	fmt.Fprintf(&scriptBuilder, "  --dns-upstream %s:15353 \\\n", advertiseAddress)
-	fmt.Fprintf(&scriptBuilder, "  --etcd-ca %s\n", installedPKIPath(etcdAccessCAFileName))
+	fmt.Fprintf(&scriptBuilder, "  --etcd-ca %s\n", installedPKIPath(layout.etcdCAFileName))
 	scriptBuilder.WriteString("Restart=on-failure\n")
 	scriptBuilder.WriteString("RestartSec=5\n")
 	scriptBuilder.WriteString("StandardOutput=journal\n")
@@ -651,9 +690,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("# Verify etcd is healthy with TLS.\n")
 	scriptBuilder.WriteString("if command -v etcdctl >/dev/null 2>&1; then\n")
 	fmt.Fprintf(&scriptBuilder, "    if etcdctl --endpoints=https://127.0.0.1:%s \\\n", setupScriptEtcdClientPort)
-	fmt.Fprintf(&scriptBuilder, "        --cacert %s \\\n", installedPKIPath(etcdAccessCAFileName))
-	fmt.Fprintf(&scriptBuilder, "        --cert %s \\\n", installedPKIPath(ccaServerEtcdClientCertificateFileName))
-	fmt.Fprintf(&scriptBuilder, "        --key %s \\\n", installedPKIPath(privateKeyFileName(ccaServerEtcdClientCertificateFileName)))
+	fmt.Fprintf(&scriptBuilder, "        --cacert %s \\\n", installedPKIPath(layout.etcdCAFileName))
+	fmt.Fprintf(&scriptBuilder, "        --cert %s \\\n", installedPKIPath(layout.serverEtcdClientFileName))
+	fmt.Fprintf(&scriptBuilder, "        --key %s \\\n", installedPKIPath(privateKeyFileName(layout.serverEtcdClientFileName)))
 	scriptBuilder.WriteString("        endpoint health 2>/dev/null; then\n")
 	scriptBuilder.WriteString("        echo '==> etcd healthy (TLS)'\n")
 	scriptBuilder.WriteString("    else\n")
@@ -748,16 +787,18 @@ func buildSetupScriptEtcdPortClosedNote() string {
 // buildSetupScriptEtcdStep returns the setup.sh step that finds the etcd
 // binary, writes etcd.service when no distribution unit exists (D3), and
 // writes the TLS drop-in, which never sets the data directory.
-func buildSetupScriptEtcdStep(advertiseAddress string) string {
+func buildSetupScriptEtcdStep(advertiseAddress string, layout clusterPKILayout) string {
 	var scriptBuilder strings.Builder
 	scriptBuilder.WriteString(setupScriptEtcdLookupStep)
 	scriptBuilder.WriteString(setupScriptEtcdUnitStep)
 
 	scriptBuilder.WriteString("# Grant etcd ownership of its own key pairs (serving, and peer for HA).\n")
 	scriptBuilder.WriteString("if id etcd >/dev/null 2>&1; then\n")
-	fmt.Fprintf(&scriptBuilder, "    chown etcd:etcd \"$PKI_DIR/%s\" \"$PKI_DIR/%s\" \"$PKI_DIR/%s\" \"$PKI_DIR/%s\"\n",
-		etcdServingCertificateFileName, privateKeyFileName(etcdServingCertificateFileName),
-		etcdPeerCertificateFileName, privateKeyFileName(etcdPeerCertificateFileName))
+	scriptBuilder.WriteString("    chown etcd:etcd")
+	for _, etcdOwnedFileName := range slices.Compact([]string{layout.etcdServingFileName, layout.etcdPeerFileName}) {
+		fmt.Fprintf(&scriptBuilder, " \"$PKI_DIR/%s\" \"$PKI_DIR/%s\"", etcdOwnedFileName, privateKeyFileName(etcdOwnedFileName))
+	}
+	scriptBuilder.WriteString("\n")
 	scriptBuilder.WriteString("fi\n\n")
 
 	scriptBuilder.WriteString("# Clear /etc/default/etcd to prevent apt-default DAEMON_ARGS from\n")
@@ -778,10 +819,10 @@ func buildSetupScriptEtcdStep(advertiseAddress string) string {
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:%s,https://127.0.0.1:%s\"\n",
 		advertiseAddress, setupScriptEtcdClientPort, setupScriptEtcdClientPort)
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:%s\"\n", advertiseAddress, setupScriptEtcdClientPort)
-	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_CERT_FILE=%s\"\n", installedPKIPath(etcdServingCertificateFileName))
-	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_KEY_FILE=%s\"\n", installedPKIPath(privateKeyFileName(etcdServingCertificateFileName)))
+	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_CERT_FILE=%s\"\n", installedPKIPath(layout.etcdServingFileName))
+	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_KEY_FILE=%s\"\n", installedPKIPath(privateKeyFileName(layout.etcdServingFileName)))
 	// Only the etcd access CA: the cluster identity and gate HTTPS CAs sign no etcd client (M280 D5).
-	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_TRUSTED_CA_FILE=%s\"\n", installedPKIPath(etcdAccessCAFileName))
+	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_TRUSTED_CA_FILE=%s\"\n", installedPKIPath(layout.etcdCAFileName))
 	scriptBuilder.WriteString("Environment=\"ETCD_CLIENT_CERT_AUTH=true\"\n")
 	scriptBuilder.WriteString("ETCD_OVERRIDE\n\n")
 

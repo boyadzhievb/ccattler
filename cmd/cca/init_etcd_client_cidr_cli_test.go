@@ -53,7 +53,7 @@ func TestInitRejectsInvalidEtcdClientCIDR(testContext *testing.T) {
 
 // TestInitWarnsOnWideEtcdClientCIDR: a network wider than /8 (IPv4) or /32 (IPv6), or
 // one with addresses that are not private or loopback (link-local included), is
-// accepted with a warning naming it and M280, and its rule is written; a private
+// accepted with a warning naming it and M181 (residual etcd trust), and its rule is written; a private
 // network gets no warning.
 func TestInitWarnsOnWideEtcdClientCIDR(testContext *testing.T) {
 	for _, testCase := range []struct {
@@ -79,7 +79,7 @@ func TestInitWarnsOnWideEtcdClientCIDR(testContext *testing.T) {
 			}
 			combinedOutput := stdoutContent + stderrContent
 			hasWarning := strings.Contains(combinedOutput, "WARNING") && strings.Contains(combinedOutput, testCase.value) &&
-				strings.Contains(combinedOutput, "M280")
+				strings.Contains(combinedOutput, "M181")
 			if hasWarning != testCase.wantWarning {
 				subtestContext.Errorf("warning = %v, want %v; output:\n%s", hasWarning, testCase.wantWarning, combinedOutput)
 			}

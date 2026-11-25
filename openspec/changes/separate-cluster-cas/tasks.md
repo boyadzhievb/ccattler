@@ -137,6 +137,75 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
   otherwise).
 - [ ] 3.4 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
+### 3b. Review round 1 (2026-11-25, on bc9343a..81a186d)
+
+Both verdicts request changes. The evidence is in scratchpad m280-security-audit.txt and m280-code-review.txt (Codex
+job review-mwvziltf-64n9nl). Every finding was verified in the code by the main session (command_server.go:519-532,
+enrollment.go:276-287, bootstrapAdminGrants :1001).
+
+**Root cause of the two HIGH findings and two MEDIUM ones.** Before M280, `node:<init host>` was both the server
+identity and the agent identity. Three behaviours hung on it, and all three broke when the identities were split:
+- the cluster-admin grant, which host scripts relied on by using node.pem as an admin client;
+- the control-plane enrollment record;
+- the protection of that node ID from enrollment by an unbound token.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| SA-H1 / CR-M2 | The init host (and HA secondaries) are no longer recorded as enrolled (the CN of the server certificate is now `ccattler-server`). The real agent is refused secrets, and an unbound token can enroll as `ctrl` | Fix: the server records its node from `node-identity-for-api.pem` (new flag set by setup.sh and the HA unit); old clusters keep today's path; tests for both |
+| CR-H1 | `node:ctrl` has lost cluster-admin; the e2e tests, caddy-sync, Ansible status checks, health_check and the HA tests use node.pem as an admin client → 403 | Fix (user decision 2026-11-25, "the automation replays the steps a real human admin does"; see below). No certificate is an admin credential |
+| SA-L5 | (moved) | Milestone M282, to confirm first |
+
+**CR-H1 decision (user, 2026-11-25).** The automation replays the guide's admin steps; no certificate is used as an
+admin credential:
+1. **Bootstrap** on the control-plane host with `sudo cca …`. It uses the root-only `/etc/ccattler/local-token`
+   (`user:local-admin`), which `cca server` writes at start (security/authn_local_token.go). The CLI sends no client
+   certificate.
+2. **An `e2e-admin` user** created with `cca user create` and a direct grant `--capability cluster.admin --scope
+   cluster`. All later checks run as it through `CCA_TOKEN`; raw API checks (`/api/state`, the debug proxy) send the
+   same bearer token.
+3. **caddy-sync** gets a least-privilege service user, granted only the capabilities its reads need, with a fresh
+   token from each deploy run in a root-only file its unit reads. Its renewal is not built: M281 removes its API
+   access altogether (Caddy forwards to the gates).
+4. **The guide** stops saying that root uses the node's certificate; it names the local token.
+
+Scope: every caller listed in CR-H1 (cluster_test.sh, caddy-sync.sh and its unit, the Ansible playbooks' status
+checks, health_check.sh, baremetal_ha_test.sh, vm-ha/ha_test.sh). A test or check proves that `sudo cca status` works
+on a new three-CA cluster.
+| SA-M1 | Old clusters: gate certificates issued before the upgrade keep ClientAuth until they expire (≤ 90 days); the docs say "fixed" | Fix: the docs state the window and the remedy (re-initialize), as the user decided (no migration) |
+| SA-M2 / CR-M3 | Node ID `cca-server` gets the server's etcd CN `etcd-client-cca-server` | Fix: reserve it in enrollment and cca init; test |
+| CR-M4 | Test gaps found by mutation (gate CA wiring, `SetEtcdClientCertificateAuthority`, empty etcd CSR, key modes 0600, peer certificate install, etcd default files) | Fix: one test per mutation, each shown to fail on the mutation |
+| SA-L1 | A worker's etcd client certificate is accepted on the HA peer port 2380 (same CA as kubeadm; narrower than before M280) | Fix: Ansible limits 2380 to the etcd members |
+| SA-L2 / CR-L5 | The single-CA warning is silent for: gate CA = cluster CA, an `--etcd-ca` bundle, no `--etcd-ca`, auto `--tls` | Fix: all four cases; test |
+| SA-L3 | `cca init` accepts reserved node IDs | Fix: validate; test |
+| SA-L4 | Stale "until M280 is fixed" text (command_init.go:248) | Fix |
+| SA-L5 | Pre-existing, old clusters only, PLAUSIBLE: the debug proxy verifies agent server certificates with ExtKeyUsageAny (api/node_debug_proxy.go:184) | Not M280's change: recorded as a follow-up bug for the user's queue |
+| CR-L6 | An old `cca join` binary against a new server gets no etcd certificate and no error | Fix: the server refuses an enrollment without the etcd CSR when it has the etcd access CA key, with an error naming the version |
+| CR-L7 | Old single-CA clusters cannot add an HA secondary (all six flags required) | Fix: accept `--ca/--ca-key` alone when the cluster is single-CA, documented; test |
+| CR patterns | CA description strings duplicated (command_init.go:166, join_credentials.go:459); `/etc/ccattler/pki` literal in 3 places; raw `etcd-`/`etcd-peer-` CN prefixes | Fix: one constant each |
+| CI | No workflow runs `-tags etcd_integration` | Belongs to M270 (real-etcd test tier); the real-etcd tests ran here (2i) |
+
+### 3c. Rework round 1 (2026-11-25, lead-developer; red → green per finding, outputs in /tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/rw-*.txt)
+
+| ID | Red (before the fix) | Fix and green |
+|---|---|---|
+| SA-H1 / CR-M2 | `TestServerRecordsControlPlaneNodeEnrollment` (server started with setup.sh's flags, init host and an HA secondary): "control-plane node "ctrl" is not recorded as enrolled", "an unbound join token enrolled as control-plane node "ctrl"" (same for ctrl-2) | Server flag `--control-plane-node-cert` (setup.sh and the HA unit pass `node-identity-for-api.pem`); without it the server certificate's CN as before (`TestServerRecordsNodeFromServerCertificateOnOldClusters`). Green: both enrolled, unbound tokens refused, the agent gets its gate keys (`DeliverGateKeys`) |
+| CR-H1 | — | **Stopped, needs a decision** (see the report): `cca user token` JWTs are signed by a per-process key (`NewWorkloadTokenIssuer`, command_server.go), so an `e2e-admin` or caddy-sync token dies at every cca-server restart and is not accepted by other HA replicas. Done: guide wording (local token, no certificate is an admin credential); `TestLocalAdminCLIReachesThreeCAServer` proves the `sudo cca status` path on a three-CA server (CA from `cluster-identity-ca.pem`, no client certificate, local token → 200; node identity alone → 403). Scripts unchanged |
+| SA-M1 | docs said "Fixed" | Window (≤ 90 days, gateCertificateTTL, nothing revokes) and remedy (re-initialize) in the security model, threat model, gate-tls-termination, PKI_GRAPH §3, Flow 36 and the guide |
+| SA-M2 / CR-M3 | `TestEnrollmentRefusesReservedNodeIDs`: "node ID "cca-server" enrolled; it is reserved" | `security.CCAServerEtcdClientName` reserved; `ValidateNodeIdentity` used by enrollment and cca init; the server's etcd CN is built from it. Green |
+| SA-L3 | `TestInitRefusesReservedOrInvalidNodeIDs`: cca init accepted ccattler-server, cca-server, Bad_Node, -ctrl | `parseInitCommandArgs` validates `--node-id` (after the hostname default). Green |
+| CR-M4 | Mutations M12, M13, M14, M15, M16, M18 each applied and restored; each fails its test (`rw-mutations.txt`) | New tests: `TestServerWiresGateCAIntoRouteTLS` (M12, via new `buildRouteTLSController`), `TestServerEnrollmentIssuesEtcdClientCertificates` (M13, `buildEnrollmentService`), `TestJoinEnrollmentRequestCarriesEtcdCSR` (M14, `buildJoinEnrollmentRequest`), `TestSetupScriptInstallsEveryInitFileWithItsMode` (M15, M16), `TestCLIEtcdDefaultsPreferM280Files` (M18). Green |
+| SA-L1 | `TestAnsibleEtcdPeerPortLimitedToMembers`: no peer firewall template | etcd-cluster role: nftables table `inet ccattler_etcd_peers` drops 2380/tcp from non-members, loaded by `ccattler-etcd-peer-firewall.service` before etcd and at boot. Template rendered with jinja2 (3 members); `ansible-playbook --syntax-check ha-deploy.yml` passes. Green. Not run on hosts: deploy run |
+| SA-L2 / CR-L5 | `TestServerWarnsOnEverySingleCACase`: no warning for auto --tls, gate CA = cluster CA, etcd CA bundle with the cluster CA, no --etcd-ca | `singleCAClusterWarning` compares every certificate of the files (bundles) and warns when a CA is missing or shared, and for auto --tls. Green |
+| SA-L4 | `TestEtcdClientNetworkWarningStatesResidualTrust`: warning said "until M280 is fixed" | Text names M181 residual trust. `TestInitWarnsOnWideEtcdClientCIDR` now looks for "M181" instead of "M280" (same assertion, the reviewed text) |
+| CR-L6 | `TestEnrollmentRefusesMissingEtcdCSR` (build: undefined `ErrEtcdClientCSRRequired`); `TestEnrollWithoutEtcdCSRNamesServerVersion`: "HTTP 200, error """ | Enrollment refuses with `ErrEtcdClientCSRRequired` before the token is consumed; `/api/enroll` adds "install cca <server version> … and run cca join again". Green |
+| CR-L7 | `TestInitSingleCASecondaryWritesOldLayout`: "--ca … go together" | `--ca/--ca-key` alone → `singleCAClusterPKILayout` (`ca.pem`, `node.pem` and `etcd.pem` server+client, setup.sh on those files, no gate or etcd access CA flags). Documented in the guide and PKI_GRAPH. `TestInitRefusesPartialExistingCAFlags` dropped its `--ca/--ca-key` case (now allowed by this decision) and gained two partial cases. Green |
+| Patterns | — | CA descriptions are constants (cca init and cca join); `/etc/ccattler/pki` only in `clusterPKIDirectory` (join default, server preflight, setup.sh `PKI_DIR`); `etcdServingCommonNamePrefix`, `etcdPeerCommonNamePrefix`; one PEM parser `pemCertificateDERs` for the warning and `--control-plane-node-cert` |
+
+Checks after the rework: gofmt clean; `go vet ./...` and with `-tags etcd_integration` clean; golangci-lint 0 issues
+(also `--build-tags etcd_integration` on cmd/cca and store); `go test -count=1 ./...` exit 0; `-race` on security,
+controllers and cmd/cca exit 0; `etcd_integration` (ETCD_BIN v3.5.36, store tests against a plain etcd on
+127.0.0.1:2379) exit 0, 23 PASS (`rw-etcd-integration.txt`).
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

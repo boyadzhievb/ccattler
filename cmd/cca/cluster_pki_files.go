@@ -8,7 +8,10 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/boyadzhievb/ccattler/security"
 )
 
 // clusterPKIDirectory is where setup.sh and cca join install the cluster PKI.
@@ -47,7 +50,7 @@ const (
 // ccaServerEtcdClientCommonName is the CommonName of cca server's etcd client
 // certificate. A distinct identity, not a separately authorized one: until
 // M181 (store access isolation, etcd roles) every accepted etcd client certificate has full etcd access.
-const ccaServerEtcdClientCommonName = "etcd-client-cca-server"
+const ccaServerEtcdClientCommonName = security.NodeEtcdClientCommonNamePrefix + security.CCAServerEtcdClientName
 
 // privateKeyFileName returns the key file of a certificate or CA file:
 // the same name with -key.pem.
@@ -60,28 +63,86 @@ func installedPKIPath(fileName string) string {
 	return filepath.Join(clusterPKIDirectory, fileName)
 }
 
-// controlPlaneCertificateFileNames are the certificates and CAs setup.sh
-// installs on a cca init host; each one's key is installed next to it.
-var controlPlaneCertificateFileNames = []string{
-	clusterIdentityCAFileName, etcdAccessCAFileName, gateHTTPSCAFileName,
+// Descriptions of the three CAs, written before their PEM blocks by cca init and cca join (D1a).
+const (
+	// clusterIdentityCADescription describes cluster-identity-ca.pem.
+	clusterIdentityCADescription = "cluster identity CA: signs the API server and node identities; the API trusts only it"
+	// etcdAccessCADescription describes etcd-access-ca.pem.
+	etcdAccessCADescription = "etcd access CA: signs etcd's serving and peer certificates and the etcd client certificates; etcd trusts only it"
+	// gateHTTPSCADescription describes gate-https-ca.pem.
+	gateHTTPSCADescription = "gate HTTPS CA: signs gate serving certificates; clients of TLS gates trust it, the API and etcd do not"
+	// singleCADescription describes ca.pem of a cluster from before M280 (HA secondary, CR-L7).
+	singleCADescription = "single cluster CA of a cluster from before M280: the API and etcd trust it, and it signs gates"
+)
+
+// CommonName prefixes of etcd's own certificates; the node etcd client prefix is security.NodeEtcdClientCommonNamePrefix.
+const (
+	// etcdServingCommonNamePrefix starts the CN of etcd's serving certificate, etcd-<node>.
+	etcdServingCommonNamePrefix = "etcd-"
+	// etcdPeerCommonNamePrefix starts the CN of etcd's peer certificate, etcd-peer-<node>.
+	etcdPeerCommonNamePrefix = "etcd-peer-"
+)
+
+// legacyEtcdCertificateFileName is etcd's serving and peer certificate on a cluster from before M280.
+const legacyEtcdCertificateFileName = "etcd.pem"
+
+// clusterPKILayout names, per role, the file cca init writes and setup.sh's
+// units use: the three-CA layout of D1a, or a single-CA cluster's older one.
+type clusterPKILayout struct {
+	clusterCAFileName        string // CA the API trusts; copied to /etc/ccattler for the CLI
+	etcdCAFileName           string // CA etcd trusts for clients and peers
+	gateCAFileName           string // gate HTTPS CA; "" on a single-CA cluster (no gate flags)
+	apiServerFileName        string // cca server --cert
+	nodeIdentityFileName     string // cca agent --cert
+	etcdServingFileName      string // etcd's serving certificate
+	etcdPeerFileName         string // etcd's peer certificate (HA)
+	serverEtcdClientFileName string // cca server --etcd-cert
+	nodeEtcdClientFileName   string // cca agent --etcd-cert
+}
+
+// threeCAClusterPKILayout is the layout of a cluster created by cca init from M280 on.
+var threeCAClusterPKILayout = clusterPKILayout{clusterIdentityCAFileName, etcdAccessCAFileName, gateHTTPSCAFileName,
 	apiServerIdentityCertificateFileName, nodeIdentityForAPIFileName, etcdServingCertificateFileName,
-	etcdPeerCertificateFileName, ccaServerEtcdClientCertificateFileName, nodeEtcdClientCertificateFileName,
+	etcdPeerCertificateFileName, ccaServerEtcdClientCertificateFileName, nodeEtcdClientCertificateFileName}
+
+// singleCAClusterPKILayout is the older layout an HA secondary of a single-CA cluster keeps (CR-L7).
+var singleCAClusterPKILayout = clusterPKILayout{legacyClusterCAFileName, legacyClusterCAFileName, "",
+	legacyNodeCertificateFileName, legacyNodeCertificateFileName, legacyEtcdCertificateFileName,
+	legacyEtcdCertificateFileName, legacyNodeCertificateFileName, legacyNodeCertificateFileName}
+
+// isSingleCA reports whether the layout has no separate etcd and gate CAs.
+func (layout clusterPKILayout) isSingleCA() bool {
+	return layout.gateCAFileName == ""
+}
+
+// installedFileNames returns the certificates and CAs setup.sh installs, each
+// once and in a fixed order; each one's key is installed next to it.
+func (layout clusterPKILayout) installedFileNames() []string {
+	var fileNames []string
+	for _, fileName := range []string{layout.clusterCAFileName, layout.etcdCAFileName, layout.gateCAFileName,
+		layout.apiServerFileName, layout.nodeIdentityFileName, layout.etcdServingFileName, layout.etcdPeerFileName,
+		layout.serverEtcdClientFileName, layout.nodeEtcdClientFileName} {
+		if fileName != "" && !slices.Contains(fileNames, fileName) {
+			fileNames = append(fileNames, fileName)
+		}
+	}
+	return fileNames
 }
 
 // buildSetupScriptPKIInstallStep returns the setup.sh lines that install every
-// certificate at 0644 and every key at 0600, owned by root, and copy the cluster
-// identity CA to /etc/ccattler for the CLI.
-func buildSetupScriptPKIInstallStep() string {
+// certificate of the layout at 0644 and every key at 0600, owned by root, and
+// copy the cluster CA to /etc/ccattler for the CLI.
+func buildSetupScriptPKIInstallStep(layout clusterPKILayout) string {
 	var stepBuilder strings.Builder
 	stepBuilder.WriteString("echo '==> Installing PKI certificates'\n")
-	for _, certificateFileName := range controlPlaneCertificateFileNames {
+	for _, certificateFileName := range layout.installedFileNames() {
 		fmt.Fprintf(&stepBuilder, "install -o root -g root -m 644 \"$SOURCE_DIR/%s\" \"$PKI_DIR/%s\"\n",
 			certificateFileName, certificateFileName)
 		keyFileName := privateKeyFileName(certificateFileName)
 		fmt.Fprintf(&stepBuilder, "install -o root -g root -m 600 \"$SOURCE_DIR/%s\" \"$PKI_DIR/%s\"\n", keyFileName, keyFileName)
 	}
-	fmt.Fprintf(&stepBuilder, "install -o root -g root -m 644 \"$SOURCE_DIR/%s\" /etc/ccattler/%s\n",
-		clusterIdentityCAFileName, clusterIdentityCAFileName)
+	fmt.Fprintf(&stepBuilder, "install -o root -g root -m 644 \"$SOURCE_DIR/%s\" %s/%s\n",
+		layout.clusterCAFileName, filepath.Dir(clusterPKIDirectory), layout.clusterCAFileName)
 	return stepBuilder.String()
 }
 
@@ -158,4 +219,32 @@ func firstExistingPath(candidatePaths []string) string {
 		}
 	}
 	return ""
+}
+
+// setupScriptServerIdentityFlags returns cca server's API flags in setup.sh:
+// its certificate and the cluster CA, and the gate HTTPS CA on a three-CA layout.
+func setupScriptServerIdentityFlags(layout clusterPKILayout) []setupScriptPKIFlag {
+	serverFlags := []setupScriptPKIFlag{
+		{"cert", layout.apiServerFileName}, {"key", privateKeyFileName(layout.apiServerFileName)},
+		{"ca", layout.clusterCAFileName}, {"ca-key", privateKeyFileName(layout.clusterCAFileName)},
+	}
+	if layout.isSingleCA() {
+		return serverFlags
+	}
+	return append(serverFlags,
+		setupScriptPKIFlag{"gate-ca-cert", layout.gateCAFileName}, setupScriptPKIFlag{"gate-ca-key", privateKeyFileName(layout.gateCAFileName)})
+}
+
+// setupScriptServerEtcdFlags returns cca server's etcd client flags in setup.sh;
+// a three-CA layout adds the etcd access CA key for enrollment (D4) and this
+// host's node identity, which the server records as enrolled (SA-H1).
+func setupScriptServerEtcdFlags(layout clusterPKILayout) []setupScriptPKIFlag {
+	etcdFlags := []setupScriptPKIFlag{
+		{"etcd-cert", layout.serverEtcdClientFileName}, {"etcd-key", privateKeyFileName(layout.serverEtcdClientFileName)},
+	}
+	if layout.isSingleCA() {
+		return etcdFlags
+	}
+	return append(etcdFlags, setupScriptPKIFlag{"etcd-access-ca-key", privateKeyFileName(layout.etcdCAFileName)},
+		setupScriptPKIFlag{"control-plane-node-cert", layout.nodeIdentityFileName})
 }

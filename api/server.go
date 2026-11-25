@@ -1721,8 +1721,12 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 		EtcdCSRPEM:  []byte(requestBody.EtcdCSRPEM),
 	})
 	if enrollmentError != nil {
+		enrollmentRefusal := enrollmentError.Error()
+		if errors.Is(enrollmentError, security.ErrEtcdClientCSRRequired) {
+			enrollmentRefusal += "; install cca " + apiServer.buildVersion + " (the server's version) on this node and run cca join again"
+		}
 		responseWriter.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: enrollmentError.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: enrollmentRefusal})
 		return
 	}
 

@@ -3,7 +3,8 @@
 > **M280:** auto gate certificates are issued with ServerAuth only, by the **gate HTTPS CA** (`gate-https-ca.pem`,
 > `cca server --gate-ca-cert/--gate-ca-key`) on clusters created by `cca init` from M280, and by the cluster CA on
 > older clusters. Clients of a TLS gate trust `gate-https-ca.pem` (old clusters: `ca.pem`). A stored certificate
-> with ClientAuth or from another issuer is re-issued at once. Where this page says "cluster CA" for gates, read
+> with ClientAuth or from another issuer is re-issued at once; the old certificate, whose key the gate nodes already
+> hold, stays valid until it expires (up to 90 days) unless the cluster is re-initialized (PKI_GRAPH §3). Where this page says "cluster CA" for gates, read
 > "the gate issuer". See [graphs/PKI_GRAPH.md](graphs/PKI_GRAPH.md).
 
 ## Problem

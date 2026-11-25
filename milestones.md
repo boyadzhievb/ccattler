@@ -552,6 +552,80 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 281 — The Testbed Load Balancer Forwards to Gates (M281, testbed)
+
+Decided with the user on 2026-11-25, during the M280 review.
+- **The problem:** caddy-sync (`scripts/caddy-sync.sh`) reads raw store facts through `/api/state`: routes, derived
+  backends, node addresses and overlay subnets. It needs an API credential that must be renewed, and it points
+  Caddy straight at container IPs.
+- **Why not serve that without credentials:** it would expose the internal network map and break the
+  deny-by-default rule.
+
+Wanted (the Kubernetes and cloud load-balancer model: the external load balancer sends traffic to the nodes'
+ingress, never to pods):
+- **Caddy forwards each gate hostname, or `*`, to the gate nodes;** the agents' gate proxies route to the backends.
+- **No API credential, no token renewal, no overlay host routes** on the testbed host.
+- **Check first:** that the gate proxy listens on node addresses for every route the testbed exposes, and how TLS
+  fits (SNI passthrough, or Caddy terminating TLS in front of HTTP gates).
+- **Until then:** M280's closing run gives caddy-sync a fresh least-privilege service user and token on each run.
+**Found on 2026-11-25** (design/gate-tls-termination.md:118-150, scripts/caddy-sync.sh:100-115):
+- **Today the testbed bypasses the product's ingress.** Caddy terminates TLS with its own internal CA (`tls internal`
+  plus `on_demand`) and sends plain HTTP straight to container IPs, so gate certificates and the gate proxy are never
+  tested from outside.
+- **The gates already do everything a load balancer needs.** Every agent with `--proxy` builds its host table from
+  all `desired/route/*/host` facts every 5 s, so new routes work on every node. With `--proxy-tls-listen` (node:443)
+  it terminates TLS itself with the gate certificate chosen by SNI.
+
+**History:**
+- **M94** introduced Caddy on the testbed host, and commit 40a1fa0 (2026-10-20) added caddy-sync. No reason for Caddy
+  is recorded. The likely one is Caddy's on-demand TLS (`tls internal` plus `on_demand`): a certificate for any new
+  hostname, with no configuration.
+- **The product chose its own gate proxy over Caddy/Envoy** (design/gate-tls-termination.md:226). Since M170 the
+  gates terminate TLS per hostname by SNI themselves.
+- **M170 recorded the bypass** as finding F5 and listed "Caddy TLS passthrough on the testbed host" as future work
+  (design/milestones/m170-gate-tls-e2e.md:20, :86). M281 is that follow-up.
+
+**Planned design: L4 forwarding, like a cloud network load balancer.**
+- **Forwarding:** the testbed host forwards TCP 80 and 443 unchanged to the nodes' gate proxy ports, with health
+  checks, written once per deploy run from the VM inventory.
+- **What goes away:** no TLS on the host, no certificates, no token, no API reads, no overlay host routes. The
+  caddy-sync service, script, unit and install step are removed.
+- **New routes and new TLS gates** work without any change on the host. Clients verify gate certificates with
+  `gate-https-ca.pem`, which tests the product path end to end.
+- **New hostnames need DNS:** a wildcard record, or `/etc/hosts` lines in the tests.
+
+**Tool: HAProxy replaces Caddy (user decision, 2026-11-25).**
+- **Configuration:** two TCP frontends (80, 443) in `mode tcp`, with the nodes' gate proxy ports as backends with
+  `check`. It is written once per deploy run from the VM inventory.
+- **Why HAProxy:**
+  - true TLS passthrough, so external clients verify the real gate certificate;
+  - active health checks in the free version;
+  - `send-proxy-v2` ready for real client IPs;
+  - no custom build: Caddy needs the third-party `caddy-l4` plugin for passthrough, and nginx open source has only
+    passive health checks.
+- **The tool does not remove the API access by itself;** forwarding to the gates does.
+- **Removed:** Caddy, caddy-sync.sh and its unit, and the install step.
+- **Changed:** the host setup script and `design/deploy-host.md`.
+
+**Open, for the proposal:**
+- **The agents' flags:** verify that the deploy cluster's agents run `--proxy` and `--proxy-tls-listen`, and on which
+  ports.
+- **Client IPs:** at L4 the gates see the host's IP, not the client's, unless the gate proxy supports the PROXY
+  protocol (it matters for sticky sessions and rate limits).
+- **Dependence on host routes:** check whether any e2e check relies on caddy-sync's host routes to container IPs.
+
+To be proposed as an OpenSpec change.
+
+### Phase 282 — The Debug Proxy Accepts an Agent Certificate of Any Usage (M282, bug, to confirm first)
+
+Found in the M280 security audit (SA-L5, PLAUSIBLE, pre-existing):
+- **The bug:** `api/node_debug_proxy.go:184` verifies the agent debug server's certificate with ExtKeyUsageAny. On
+  clusters from before M280, a gate certificate whose host equals a node ID could pass as that agent's debug server
+  for anyone with a network position between the server and the agent.
+- **First:** reproduce it.
+- **Then:** require a usage or identity that only agent debug servers have. Note that joined node certificates are
+  ClientAuth only today.
+
 ### Phase 280 — Every Cluster-CA Certificate Is an etcd Root Client (M280, security bug)
 
 Found in the M279 security audit (2026-11-24), verified in the code. Priority (user, 2026-11-24): before M278. Design decision (user, 2026-11-25): option A, separate CAs per purpose as Kubernetes does (gate/serving CA never trusted for client auth, etcd CA for etcd clients only, cluster CA for node and server identities); also covers the mTLS CommonName mapping found 2026-11-25 (security/authn_mtls.go maps any cluster-CA client cert to node:<CN>, and the server principal node:<server CN> is cluster-admin).
@@ -1489,6 +1563,8 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M266 — Agents Rewrite Unchanged Instance State Every Second | 266 | Bug fix (found in the M262 testbed check, 2026-11-23): every agent rewrote each running instance's unchanged state once per second, an etcd write per instance per second that woke every controller watching instances. The agent now writes only a changed state, and the test store behaves like etcd for unchanged writes in transactions, so such loops fail unit tests. |
 | M267 — Rebalancing Moves Instances Onto Nodes They Don't Fit | 267 | Bug fix (found in a full deploy run, 2026-11-23): the scheduler's rebalancing chose a target node by instance count alone, so it moved instances onto nodes without room for their CPU or memory; placement then put the replacement back, in an endless loop. A rebalance move now needs the same fit as a placement, a moved instance is never left looking running on its old node, and every agent write of an instance's facts is guarded by its placement and proven by a fault-injection test that fails every write in turn. Also in this release: M275, `types/keys.go` split into one file per subject (no behaviour change). |
 | M280 — Every Cluster-CA Certificate Is an etcd Root Client | 280 | Security fix (found in the M279 security audit, 2026-11-24): gate certificates were issued by the cluster CA with client authentication, and etcd trusted every certificate from that CA, so a gate key was enough to read and write the whole fact store. Serving certificates no longer authenticate clients, and etcd accepts only its own client identities. |
+| M281 — The Testbed Load Balancer Forwards to Gates | 281 | Testbed: HAProxy replaces Caddy on the testbed host and forwards TCP 80/443 unchanged to the gate nodes, as a cloud network load balancer would (user decision 2026-11-25), instead of reading routes, backends and overlay subnets from the API with a token. No API credential to renew and no internal network map outside the cluster. |
+| M282 — The Debug Proxy Accepts an Agent Certificate of Any Usage | 282 | Bug fix (from the M280 security audit, to confirm first): the server's connection to an agent debug API verifies the agent's certificate with any usage, so on clusters from before M280 a gate certificate named like a node could pass as that agent. |
 | M278 — A Moved Instance Keeps the Source's IP When Its Own IP Is Unknown | 278 | Bug fix (found in the M267 round-9 review, 2026-11-24): when an instance's IP could not be resolved, its state was published without an IP and the old value stayed, so after a move the target could show `running` with the source's IP and traffic went there. A serving state is now never published next to another node's IP. |
 | M279 — RHEL-Family Install Works | 279 | Bug fix (found 2026-11-24 following the guide on Rocky Linux 9.8): **security:** install.sh left `/usr/local/bin/cca` owned by the installing user in every earlier release, while systemd and `sudo cca` run it as root; it now installs it root:root 0755 (existing hosts: `sudo chown root:root /usr/local/bin/cca`). install.sh now only installs the binary, like kind and Homebrew: it checks the release checksum, installs `cca` root-owned, and on RHEL, AlmaLinux and Rocky restores its SELinux label; cluster prerequisites are in the guide. setup.sh writes and enables its own etcd unit when no package provides one, names real etcd sources, and resets the base unit's `EnvironmentFile`. New `cca init --etcd-client-cidr <cidr>` (repeatable or comma-separated; a network covering every address is refused): setup.sh opens the etcd client port 2379/tcp in firewalld or ufw only to those networks; without it the port stays closed and setup.sh prints the commands that open it. The agent finds distribution CNI plugins; the installation guide covers RHEL, AlmaLinux and Rocky 9 and 10 (containerd from Docker's repository, checksum-pinned etcd). |
 | M276 — Security and Trust Proven by Evidence | 276 | Security and trust (requested 2026-11-24; M277 merged in): a user can check that CCattler is not malware without trusting the project: reproducible, signed releases with provenance and an SBOM verified by install.sh, no outbound connection except configured ones (egress check, air-gapped install), a documented host footprint with an install-then-uninstall test, hardened units, OpenSSF Scorecard and an "Is CCattler safe to try?" page. Then every threat in the threat model maps to a control and every control to a named test or deploy check. An exhaustive route × capability authorization matrix, fuzzing of untrusted input, govulncheck and gosec in CI, adversarial deploy checks (no plaintext secrets, no admin certificate from a join token, no workload access to the debug API), a hardening benchmark checked by `cca security-check` (like kube-bench), a public security model, a disclosure process (SECURITY.md, private reporting, advisories), then a published external audit. |

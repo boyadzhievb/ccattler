@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"slices"
 	"testing"
@@ -144,5 +145,41 @@ func TestIssueCertificateRequiresUsage(t *testing.T) {
 		if !slices.Equal(issuedCertificate.ExtKeyUsage, wantExtKeyUsage) {
 			t.Errorf("usage %d: ExtKeyUsage %v, want %v", usage, issuedCertificate.ExtKeyUsage, wantExtKeyUsage)
 		}
+	}
+}
+
+// TestEnrollmentRefusesReservedNodeIDs (SA-M2, CR-M3): no node may enroll as
+// ccattler-server (the server's API principal) or cca-server (whose etcd client
+// CN would be the server's, etcd-client-cca-server), even with a token bound to it.
+func TestEnrollmentRefusesReservedNodeIDs(t *testing.T) {
+	enrollmentService, _ := newTestEnrollmentService(t)
+	etcdAccessCA, _ := NewCertificateAuthority(EtcdAccessCertificateAuthority, time.Hour)
+	enrollmentService.SetEtcdClientCertificateAuthority(etcdAccessCA)
+	for _, reservedNodeID := range []string{"ccattler-server", "cca-server"} {
+		boundToken, _ := enrollmentService.GenerateJoinToken(context.Background(), reservedNodeID, 5*time.Minute)
+		if _, enrollError := enrollmentService.EnrollNode(context.Background(), EnrollmentRequest{Token: boundToken.Token,
+			NodeID: reservedNodeID, CSRPEM: generateTestCSR(t, reservedNodeID, nil), EtcdCSRPEM: generateTestCSR(t, reservedNodeID, nil),
+		}); enrollError == nil {
+			t.Errorf("node ID %q enrolled; it is reserved", reservedNodeID)
+		}
+	}
+}
+
+// TestEnrollmentRefusesMissingEtcdCSR (CR-L6): a server with the etcd access CA
+// refuses an enrollment without an etcd CSR (a cca join from before M280), which
+// would leave a node that etcd refuses, and keeps the token unused.
+func TestEnrollmentRefusesMissingEtcdCSR(t *testing.T) {
+	enrollmentService, _ := newTestEnrollmentService(t)
+	etcdAccessCA, _ := NewCertificateAuthority(EtcdAccessCertificateAuthority, time.Hour)
+	enrollmentService.SetEtcdClientCertificateAuthority(etcdAccessCA)
+	joinToken, _ := enrollmentService.GenerateJoinToken(context.Background(), "worker-1", 5*time.Minute)
+	_, enrollError := enrollmentService.EnrollNode(context.Background(), EnrollmentRequest{
+		Token: joinToken.Token, NodeID: "worker-1", CSRPEM: generateTestCSR(t, "worker-1", nil)})
+	if !errors.Is(enrollError, ErrEtcdClientCSRRequired) {
+		t.Fatalf("enrollment without an etcd CSR: error %v, want ErrEtcdClientCSRRequired", enrollError)
+	}
+	if _, retryError := enrollmentService.EnrollNode(context.Background(), EnrollmentRequest{Token: joinToken.Token, NodeID: "worker-1",
+		CSRPEM: generateTestCSR(t, "worker-1", nil), EtcdCSRPEM: generateTestCSR(t, "worker-1", nil)}); retryError != nil {
+		t.Errorf("the refused enrollment consumed the token: %v", retryError)
 	}
 }

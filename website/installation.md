@@ -382,7 +382,15 @@ stays closed, and `setup.sh` prints the firewalld and ufw commands that open it 
 | `cca-server-etcd-client-certificate.pem`, `node-etcd-client-certificate.pem` | the server's and the agent's etcd client certificates |
 
 Each has its key next to it with `-key.pem`. Clusters set up by an earlier release keep `ca.pem` and `node.pem`;
-`cca server` warns at every start that they share one CA, and re-initializing with `cca init` separates them.
+`cca server` warns at every start that they share one CA, and re-initializing with `cca init` separates them. On
+such a cluster, gate certificates issued before the upgrade can still act as API and etcd client certificates until
+they expire, up to 90 days; re-initializing ends that at once.
+
+**Another control-plane host (HA).** `cca init` on the new host reuses the first host's CAs: on a cluster set up with
+this release, give it all six flags, `--ca`, `--ca-key`, `--etcd-access-ca`, `--etcd-access-ca-key`, `--gate-https-ca`
+and `--gate-https-ca-key`, with the files copied from the first host. On a cluster set up by an earlier release (one
+CA), give only `--ca /etc/ccattler/pki/ca.pem --ca-key /etc/ccattler/pki/ca-key.pem`: `cca init` then writes that
+cluster's file layout (`ca.pem`, `node.pem`, `etcd.pem`). Any other combination is refused.
 
 `~/cca-init` holds the CA private keys and the secret root key. Once `setup.sh` has copied them to `/etc/ccattler`,
 keep a backup of that directory somewhere safe and delete `~/cca-init`.
@@ -457,9 +465,10 @@ sudo cca status        # on the control-plane host
 
 ### 3. Use the CLI without sudo
 
-`sudo cca …` works on the control-plane host because root can read the node's own certificate in `/etc/ccattler/pki`.
-That certificate is the machine's identity, with full rights, so don't use it for daily work. Give yourself a user
-account instead (replace `USERNAME`):
+`sudo cca …` works on the control-plane host because root can read the local token `/etc/ccattler/local-token`,
+which `cca server` writes at every start; the CLI sends it as `user:local-admin`, with full rights. No certificate is
+an admin credential: the node's certificates in `/etc/ccattler/pki` identify the machine to the API and etcd only.
+Don't use the local token for daily work. Give yourself a user account instead (replace `USERNAME`):
 
 ```bash
 sudo cca user create USERNAME

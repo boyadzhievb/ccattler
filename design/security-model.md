@@ -55,6 +55,7 @@ PKI" ([runtime-invariant-flows.md](runtime-invariant-flows.md)).
   accepted etcd client certificate, the server's or any node's, has full etcd access, and a compromised node, gate
   nodes included, keeps store access through its own node etcd client certificate. The new CommonNames are distinct
   identities, not separately authorized ones; M181 (Store Access Isolation) adds etcd roles per identity.
+- **Old clusters: a window of up to 90 days.** Gate certificates issued before the upgrade still carry ClientAuth and stay valid until they expire, up to 90 days (gateCertificateTTL): nothing revokes them, and their keys are already on every gate node. Until then they authenticate to the API as `node:<gate host>` and to etcd as a root client. The remedy is to re-initialize the cluster with `cca init` (user decision: no migration); otherwise wait out the 90 days, and meanwhile audit gate hosts named like `ccattler-server` or a node ID.
 - **Old clusters** keep one CA (`ca.pem`) and get the gate fix only; `cca server` warns at every start until the
   cluster is re-initialized with `cca init`.
 

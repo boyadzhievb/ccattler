@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -34,10 +35,27 @@ const EnrolledNodePrefix = "enrollment/node/"
 // "node:ccattler-server" principal is bound to cluster-admin.
 const ServerCertificateCommonName = "ccattler-server"
 
-// reservedNodeIDs are node IDs that enrollment never issues, because their
-// "node:<id>" principal is the server identity bound to cluster-admin.
+// CCAServerEtcdClientName is the name in cca server's etcd client CommonName,
+// etcd-client-cca-server; reserved as a node ID so no node gets that CN (SA-M2).
+const CCAServerEtcdClientName = "cca-server"
+
+// reservedNodeIDs are node IDs that enrollment and cca init never issue: the
+// server's API principal (bound to cluster-admin) and its etcd client name.
 var reservedNodeIDs = map[string]bool{
 	ServerCertificateCommonName: true,
+	CCAServerEtcdClientName:     true,
+}
+
+// ValidateNodeIdentity checks a node ID's form (a lowercase DNS label) and
+// refuses the reserved server names; enrollment and cca init use it.
+func ValidateNodeIdentity(nodeID string) error {
+	if validateError := types.ValidateNodeID(nodeID); validateError != nil {
+		return validateError
+	}
+	if reservedNodeIDs[nodeID] {
+		return fmt.Errorf("node ID %q is reserved", nodeID)
+	}
+	return nil
 }
 
 // tokenHashPrefix is the number of characters from the raw token value stored
@@ -199,7 +217,7 @@ type EnrollmentResponse struct {
 // The certificate is returned only if that transaction succeeds, so one token
 // can enroll at most one node. Binds the node-agent RBAC role on success.
 func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, request EnrollmentRequest) (*EnrollmentResponse, error) {
-	if validateError := types.ValidateNodeID(request.NodeID); validateError != nil {
+	if validateError := ValidateNodeIdentity(request.NodeID); validateError != nil {
 		return nil, fmt.Errorf("enrollment rejected: %w", validateError)
 	}
 
@@ -366,12 +384,20 @@ func (enrollmentService *EnrollmentService) signNodeCSR(request EnrollmentReques
 // authorized one: until M181 every accepted etcd client certificate has full etcd access.
 const NodeEtcdClientCommonNamePrefix = "etcd-client-"
 
+// ErrEtcdClientCSRRequired refuses an enrollment without an etcd CSR on a server
+// with the etcd access CA: a cca join from before M280, whose node etcd would refuse (CR-L6).
+var ErrEtcdClientCSRRequired = errors.New("enrollment rejected: this server issues etcd client certificates, " +
+	"and this cca join sent no etcd CSR (cca join before M280)")
+
 // signNodeEtcdClientCSR signs the node's etcd CSR with the etcd access CA as a
 // ClientAuth-only certificate with CN etcd-client-<node> and no SANs (M280 D4).
-// Returns nil without an etcd access CA or without an etcd CSR (an older cca join).
+// Returns nil without an etcd access CA; ErrEtcdClientCSRRequired without an etcd CSR.
 func (enrollmentService *EnrollmentService) signNodeEtcdClientCSR(request EnrollmentRequest) ([]byte, error) {
-	if enrollmentService.etcdClientCertificateAuthority == nil || len(request.EtcdCSRPEM) == 0 {
+	if enrollmentService.etcdClientCertificateAuthority == nil {
 		return nil, nil
+	}
+	if len(request.EtcdCSRPEM) == 0 {
+		return nil, ErrEtcdClientCSRRequired
 	}
 	parsedCSR, parseError := parseEnrollmentCSR(request.EtcdCSRPEM)
 	if parseError != nil {
