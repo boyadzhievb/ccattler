@@ -183,7 +183,8 @@ short Flow "Cluster PKI" in runtime-invariant-flows.md links to it.
 ## Failure cases
 
 Rows changed during apply (main session, 2026-11-25, finding CR3-L4): the HA-secondary row follows CR-L7 and SA2-L3,
-and the two `cca server` exit rows record user decision 1 and SA3-L2.
+and the two `cca server` exit rows record user decision 1 and SA3-L2. Their wording was aligned with the code
+(main session, 2026-11-25, findings CR4-L3 and SA4-L2).
 
 | Case | Behaviour |
 |---|---|
@@ -191,8 +192,8 @@ and the two `cca server` exit rows record user decision 1 and SA3-L2.
 | Old cluster, no gate CA | Gate certificates come from the cluster CA with ServerAuth only; warning at start |
 | Agent enrolled before M280 joins a new server | It keeps its old `node.pem` for etcd; etcd (etcd access CA only) refuses it; the agent logs a TLS error. Documented: re-run `cca join` (a new-cluster setup has no such agents) |
 | HA secondary given only `--ca/--ca-key` | Accepted only for a CA from before M280 (no kind in its Subject OU): the secondary keeps the single-CA layout (CR-L7). An M280 CA there is refused, and the six-flag path requires each CA's own kind (SA2-L3) |
-| `--control-plane-node-cert` given but invalid (foreign CA, expired, no ClientAuth, invalid or reserved CN) | `cca server` exits 1 at startup with the path and the reason, before it creates the store (user decision 1, 2026-11-25; rework 4). Without the flag it warns and records nothing. A record write that fails or is not confirmed also exits (SA3-L1) |
-| A CA file of the wrong kind given to `cca server` (`--ca`, `--etcd-ca`, `--gate-ca-cert`) | `cca server` exits 1 naming the flag, the file and both kinds; a CA from before M280 (no OU) is accepted (SA3-L2) |
+| `--control-plane-node-cert` given but invalid (foreign CA, expired, no ClientAuth, invalid or reserved CN) | `cca server` exits 1 at startup with the path and the reason, before it creates the store (user decision 1, 2026-11-25; rework 4). Without the flag, a three-CA server (certificate CN `ccattler-server`) warns and records nothing; a cluster from before M280 records the server certificate's CN, and a failed record there only warns (CR4-L3). With the flag, a record write that fails or is not confirmed also exits, naming the path (SA3-L1) |
+| A CA file of the wrong kind given to `cca server` (`--ca`, `--etcd-ca`, `--gate-ca-cert`), alone or in a bundle | `cca server` exits 1 naming the flag, the file and both kinds; every certificate in the file is checked (SA4-L2); a CA from before M280 (no OU) is accepted (SA3-L2) |
 | Enrollment without an etcd CA on the server | No etcd certificate in the response; `cca join` keeps today's behaviour |
 | Re-issue loop | A certificate with ServerAuth only from the configured issuer is never re-issued (test) |
 

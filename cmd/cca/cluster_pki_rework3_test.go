@@ -127,11 +127,11 @@ func enrolledNodeRecorded(factStore store.StateStore, nodeID string) bool {
 // identity, in its order: the identity-file checks (before the store), then the
 // enrollment record. Returns the first error; cca server exits on it.
 func startServerIdentityAndEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config, parsedConfig serverCommandConfig) error {
-	verifiedNodeCertificate, identityError := checkServerIdentityFiles(parsedConfig)
+	verifiedIdentity, identityError := checkServerIdentityFiles(parsedConfig)
 	if identityError != nil {
 		return identityError
 	}
-	return bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, verifiedNodeCertificate)
+	return bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, verifiedIdentity)
 }
 
 // TestControlPlaneNodeCertificateMustBelongToTheCluster (SA2-L1/CR2-L1, user
@@ -347,11 +347,13 @@ func TestAnsibleUnitsFollowTheClusterPKILayout(t *testing.T) {
 	}
 }
 
-// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5, SA3-L4): the etcd drop-in requires
-// and follows the peer-firewall unit and reloads its rules before every start;
-// the role never restarts that unit (Requires= would restart etcd with it).
+// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5, SA3-L4, SA4-L3, SA4-L4): the
+// etcd drop-in requires and follows the peer-firewall unit and reloads its rules
+// as root before every start; a reload unit, part of nftables.service and not
+// required by etcd, re-applies them after an nftables restart.
 func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
 	const firewallUnit = "ccattler-etcd-peer-firewall.service"
+	const reloadUnit = "ccattler-etcd-peer-firewall-reload.service"
 	etcdDropIn := renderAnsibleRoleTemplate(t, "etcd-cluster", "etcd-cluster.conf.j2", "three_ca", "ctrl")
 	unitSection, _, _ := strings.Cut(etcdDropIn, "[Service]")
 	for _, wantLine := range []string{"[Unit]", "Requires=" + firewallUnit, "After=" + firewallUnit} {
@@ -359,19 +361,36 @@ func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
 			t.Errorf("etcd drop-in [Unit] lacks %q:\n%s", wantLine, unitSection)
 		}
 	}
-	roleTasks := string(mustReadFile(t, filepath.Join(ansibleRolesDirectory, "etcd-cluster", "tasks", "main.yml")))
-	// SA3-L4: every etcd start reloads the rules the firewall unit loads.
-	_, firewallUnitExec, _ := strings.Cut(roleTasks, "      ExecStart=")
+	for _, dropInLine := range strings.Split(etcdDropIn, "\n") {
+		if !strings.HasPrefix(dropInLine, "#") && strings.Contains(dropInLine, reloadUnit) {
+			t.Errorf("the etcd drop-in must not depend on %s (an nftables restart would restart etcd): %s", reloadUnit, dropInLine)
+		}
+	}
+	roleTasksPath := filepath.Join(ansibleRolesDirectory, "etcd-cluster", "tasks", "main.yml")
+	firewallUnitText, _ := ansibleTaskField(t, roleTasksPath, "Install the unit that loads the etcd peer port firewall at boot", "copy", "content").(string)
+	_, firewallUnitExec, _ := strings.Cut(firewallUnitText, "ExecStart=")
 	firewallUnitExec, _, _ = strings.Cut(firewallUnitExec, "\n")
+	// SA3-L4, SA4-L3: every etcd start reloads the rules, as root ("+").
 	_, serviceSection, _ := strings.Cut(etcdDropIn, "[Service]")
 	serviceSection, _, _ = strings.Cut(serviceSection, "ExecStart=")
-	if firewallUnitExec == "" || !slices.Contains(strings.Split(serviceSection, "\n"), "ExecStartPre="+firewallUnitExec) {
-		t.Errorf("etcd drop-in [Service] lacks ExecStartPre=%s before ExecStart:\n%s", firewallUnitExec, serviceSection)
+	if firewallUnitExec == "" || !slices.Contains(strings.Split(serviceSection, "\n"), "ExecStartPre=+"+firewallUnitExec) {
+		t.Errorf("etcd drop-in [Service] lacks ExecStartPre=+%s before ExecStart:\n%s", firewallUnitExec, serviceSection)
 	}
-	_, firewallTask, _ := strings.Cut(roleTasks, "name: ccattler-etcd-peer-firewall\n")
-	firewallTask, _, _ = strings.Cut(firewallTask, "\n- name:")
-	if !strings.Contains(firewallTask, "state: started") || strings.Contains(firewallTask, "restarted") {
-		t.Errorf("the peer-firewall unit task must start, never restart, the unit:\n%s", firewallTask)
+	// SA4-L4: the reload unit restarts with nftables and re-applies the same file.
+	reloadUnitText, _ := ansibleTaskField(t, roleTasksPath,
+		"Install the unit that re-applies the etcd peer port firewall after nftables restarts", "copy", "content").(string)
+	for _, wantLine := range []string{"PartOf=nftables.service", "After=nftables.service", "ExecStart=" + firewallUnitExec, "WantedBy=nftables.service"} {
+		if !slices.Contains(strings.Split(reloadUnitText, "\n"), wantLine) {
+			t.Errorf("%s lacks %q:\n%s", reloadUnit, wantLine, reloadUnitText)
+		}
+	}
+	if enabled, _ := ansibleTaskField(t, roleTasksPath, "Enable the etcd peer port firewall reload unit", "systemd", "enabled").(bool); !enabled {
+		t.Errorf("%s is not enabled", reloadUnit)
+	}
+	for _, unitTaskName := range []string{"Load the etcd peer port firewall now and at boot", "Enable the etcd peer port firewall reload unit"} {
+		if unitState := ansibleTaskField(t, roleTasksPath, unitTaskName, "systemd", "state"); unitState != "started" {
+			t.Errorf("task %q must start, never restart, its unit (Requires= would restart etcd): state %v", unitTaskName, unitState)
+		}
 	}
 }
 

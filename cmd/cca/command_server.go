@@ -302,7 +302,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	}
 	// Verified before the store exists: a bad identity file stops the server
 	// before it writes anything or runs as leader.
-	verifiedNodeCertificate, identityError := checkServerIdentityFiles(parsedConfig)
+	verifiedIdentity, identityError := checkServerIdentityFiles(parsedConfig)
 	if identityError != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", identityError)
 		os.Exit(1)
@@ -343,7 +343,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 
 	if runAPIServer {
 		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig,
-			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore, keyringCodec, verifiedNodeCertificate)
+			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore, keyringCodec, verifiedIdentity)
 	}
 
 	printStartupBannerAndAwaitShutdown(ctx, parsedConfig, runAPIServer)
@@ -622,7 +622,7 @@ func configureAndStartAPIServer(
 	enrollmentEnabled bool,
 	secretStore *security.SecretStore,
 	keyringCodec *security.KeyringEnvelopeCodec,
-	verifiedNodeCertificate *x509.Certificate,
+	verifiedIdentity *verifiedNodeIdentity,
 ) {
 
 	issuerURL := resolveServerIssuerURL(parsedConfig)
@@ -644,7 +644,7 @@ func configureAndStartAPIServer(
 	}
 
 	bootstrapAdminGrants(factStore, serverPrincipal)
-	if enrollmentError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, verifiedNodeCertificate); enrollmentError != nil {
+	if enrollmentError := bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig, verifiedIdentity); enrollmentError != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", enrollmentError)
 		os.Exit(1)
 	}

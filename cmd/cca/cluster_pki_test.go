@@ -135,6 +135,51 @@ func requestPrincipalWithClientCertificate(t *testing.T, serverURL string, serve
 	return string(responseBody), nil
 }
 
+// tlsServerRefusesClientCertificate reports whether the TLS server at hostPort
+// refuses clientCertificate at the TLS layer: a TLS alert during the handshake
+// (TLS 1.2) or on the first read after it (TLS 1.3), not an HTTP status. The
+// server is verified against serverRootsPEM; the second result is what was seen.
+func tlsServerRefusesClientCertificate(t *testing.T, hostPort string, serverRootsPEM []byte,
+	clientCertificate tls.Certificate) (bool, string) {
+	t.Helper()
+	serverRoots := x509.NewCertPool()
+	if !serverRoots.AppendCertsFromPEM(serverRootsPEM) {
+		t.Fatal("no CA certificate in the server roots")
+	}
+	tlsConnection, dialError := tls.DialWithDialer(&net.Dialer{Timeout: clusterPKITestRequestTimeout}, "tcp", hostPort,
+		&tls.Config{RootCAs: serverRoots, MinVersion: tls.VersionTLS12,
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &clientCertificate, nil }})
+	if dialError != nil {
+		return strings.Contains(dialError.Error(), "remote error: tls:"), dialError.Error()
+	}
+	defer func() { _ = tlsConnection.Close() }()
+	_ = tlsConnection.SetDeadline(time.Now().Add(clusterPKITestRequestTimeout))
+	_, _ = io.WriteString(tlsConnection, "GET /health HTTP/1.1\r\nHost: tls-refusal-probe\r\nConnection: close\r\n\r\n")
+	responseStart := make([]byte, 12)
+	readBytes, readError := io.ReadFull(tlsConnection, responseStart)
+	if readError != nil {
+		return strings.Contains(readError.Error(), "remote error: tls:"), readError.Error()
+	}
+	return false, "response " + string(responseStart[:readBytes])
+}
+
+// issueGateCAClientKeyPair issues a ClientAuth certificate from the gate HTTPS
+// CA, which RouteTLSController never does: it tests CA separation itself,
+// not only the missing EKU of real gate certificates (SA4-L1).
+func issueGateCAClientKeyPair(t *testing.T, gateCA *security.CertificateAuthority) tls.Certificate {
+	t.Helper()
+	issued, issueError := gateCA.IssueCertificate(security.IssueCertificateRequest{CommonName: clusterPKITestNodeID,
+		Usage: security.UsageClient, TTL: time.Hour})
+	if issueError != nil {
+		t.Fatal(issueError)
+	}
+	keyPair, pairError := tls.X509KeyPair(issued.CertificatePEM, issued.PrivateKeyPEM)
+	if pairError != nil {
+		t.Fatal(pairError)
+	}
+	return keyPair
+}
+
 // writeClusterPKITestFile writes one PEM file into directory and returns its path.
 func writeClusterPKITestFile(t *testing.T, directory string, fileName string, content []byte) string {
 	t.Helper()
@@ -421,8 +466,8 @@ func TestSetupScriptUsesEtcdCA(t *testing.T) {
 }
 
 // TestAPIRefusesNonClusterCACertificates: the API, set up as setup.sh runs it,
-// refuses an etcd client certificate and a gate certificate (other CAs), and
-// accepts the node's API identity (D5).
+// refuses an etcd client certificate, a gate certificate and a ClientAuth
+// certificate from the gate CA (at TLS, SA4-L1), and accepts the node's API identity (D5).
 func TestAPIRefusesNonClusterCACertificates(t *testing.T) {
 	outputDirectory := runClusterPKITestInit(t)
 	initFilePath := func(fileName string) string { return filepath.Join(outputDirectory, fileName) }
@@ -436,7 +481,11 @@ func TestAPIRefusesNonClusterCACertificates(t *testing.T) {
 	}
 	envelopeCodec := newClusterPKITestEnvelopeCodec(t)
 	gateKeyPair := issueGateKeyPairThroughController(t, controllers.NewRouteTLSController(gateCA, envelopeCodec), envelopeCodec, "app.example.com")
-	refusedCertificates := map[string]tls.Certificate{"gate certificate": gateKeyPair}
+	gateCAClientKeyPair := issueGateCAClientKeyPair(t, gateCA)
+	if refused, observed := tlsServerRefusesClientCertificate(t, echoServer.Listener.Addr().String(), clusterCAPEM, gateCAClientKeyPair); !refused {
+		t.Errorf("the API did not refuse a ClientAuth certificate from the gate HTTPS CA at TLS: %s", observed)
+	}
+	refusedCertificates := map[string]tls.Certificate{"gate certificate": gateKeyPair, "gate CA client certificate": gateCAClientKeyPair}
 	for _, etcdClientFile := range []string{"node-etcd-client-certificate", "cca-server-etcd-client-certificate"} {
 		etcdClientKeyPair, pairError := tls.LoadX509KeyPair(initFilePath(etcdClientFile+".pem"), initFilePath(etcdClientFile+"-key.pem"))
 		if pairError != nil {

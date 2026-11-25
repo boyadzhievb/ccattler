@@ -115,33 +115,42 @@ The API SHALL verify client certificates against the cluster CA only, and map on
 principal. Certificates from the etcd CA or the gate CA SHALL be refused.
 
 #### Scenario: Certificates from other CAs
-- **GIVEN** a valid etcd client certificate and a valid gate certificate
-- **WHEN** each is presented to the API as a client certificate
-- **THEN** the handshake fails and no principal is produced
-- Test: `TestAPIRefusesNonClusterCACertificates`
+- **GIVEN** a valid etcd client certificate, a valid gate certificate and a ClientAuth certificate from the gate CA
+- **WHEN** each is presented to the API as a client certificate (and the last also to etcd)
+- **THEN** the handshake fails and no principal is produced: the CAs are separate, not only the usages (SA4-L1)
+- Test: `TestAPIRefusesNonClusterCACertificates`, `TestGateCertificateIsRefusedByEtcd` (etcd_integration), T19 on the
+  deploy cluster
 
 ### Requirement: cca server records only a verified control-plane node
 A given `--control-plane-node-cert` SHALL be verified before the store is created (chain to `--ca`, valid now,
 ClientAuth, valid unreserved node ID). If it fails, or its enrollment record is not confirmed, `cca server` SHALL exit
-non-zero naming the path and the reason. Without the flag it SHALL warn. (User decision 1, 2026-11-25.)
+non-zero naming the path and the reason. Without the flag, the server certificate's CN SHALL be recorded on a cluster
+from before M280 (a failure only warns), and `ccattler-server` SHALL be warned about, never recorded. (User decision 1.)
 
 #### Scenario: Invalid control-plane node certificate
 - **GIVEN** a server started as setup.sh starts it, against a real etcd, with a `--control-plane-node-cert` from a
   foreign CA
 - **WHEN** it starts
-- **THEN** it exits 1 naming the path and the reason, and etcd holds the same keys as before
+- **THEN** it exits 1 naming the path and the reason, prints nothing to stdout, and etcd holds the same keys as before
 - Test: `TestInvalidNodeCertificateLeavesEtcdUntouched` (etcd_integration),
   `TestServerExitsOnInvalidNodeCertificateBeforeStartup`, `TestControlPlaneNodeCertificateMustBelongToTheCluster`
 
 #### Scenario: Enrollment record not confirmed
 - **GIVEN** a verified `--control-plane-node-cert` and a store whose write fails or is not found afterwards
 - **WHEN** the server records the node
-- **THEN** startup fails with the reason; without the flag (a cluster from before M280) it only warns
+- **THEN** startup fails naming the path and the reason; without the flag (a cluster from before M280) it only warns
 - Test: `TestControlPlaneNodeRecordMustBeConfirmed`
 
+#### Scenario: No control-plane node certificate
+- **GIVEN** a server started without `--control-plane-node-cert`
+- **WHEN** its certificate names `ccattler-server` (three-CA) or a node (a cluster from before M280)
+- **THEN** the first warns and records nothing; the second records that node
+- Test: `TestThreeCAServerWithoutNodeCertFlagRecordsNoServerName`, `TestServerRecordsNodeFromServerCertificateOnOldClusters`
+
 ### Requirement: cca server checks the kind of each CA file
-`cca server` SHALL refuse at startup a CA file given as `--ca`, `--etcd-ca` or `--gate-ca-cert` whose Subject OU names
-another kind than its flag's. A CA from before M280 (no kind) SHALL be accepted.
+`cca server` SHALL refuse at startup a CA file given as `--ca`, `--etcd-ca` or `--gate-ca-cert` in which any
+certificate's Subject OU names another kind than its flag's, bundles included. A CA from before M280 (no kind) SHALL
+be accepted.
 
 #### Scenario: CA file of the wrong kind
 - **GIVEN** `etcd-access-ca.pem` as `--gate-ca-cert`, or another CA of the wrong kind for its flag

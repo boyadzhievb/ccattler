@@ -450,6 +450,56 @@ SC2034). `ansible-playbook --syntax-check`: baremetal, ha, demo, site, test-depl
   `RolloutController.Now` on `time.Now` (controllers/rollout.go:58); only the failure controller's clock is frozen.
   Not caused by M280, not rerun; it becomes milestone M285.
 
+### 3j. Review round 4 (2026-11-25, on af63794..3b06fe3)
+
+Both verdicts approve with LOW findings only: security-audit (m280-security-audit-r4.txt) and code-reviewer
+(m280-code-review-r4.txt, Codex job review-mwwbjjnk-1nxygq). Every round-3 finding is closed:
+- the preflight writes 0 keys before it exits (15 on a valid start);
+- the head binary exits with empty stdout, where the base binary printed "Secret keyring ready" first;
+- 22 mutations are caught.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| SA4-L1 | T19 and `TestGateCertificateIsRefusedByEtcd` prove only that the ServerAuth-only gate certificate is refused, not CA separation. A ClientAuth certificate from the gate CA got TLS through etcd (200) and the API (403 at authorization) in a live run with the gate CA wrongly trusted | Fix: the Go real-etcd tests, and T19 on the deploy cluster, also present a ClientAuth certificate signed by the gate CA (T19 mints it on the control node in a root-only temp dir, never printed, removed after). Refusal must be at TLS (exit 35/56) |
+| SA4-L2 | `checkServerCAKinds` reads only the first certificate of a CA file; a bundle passes | Fix: check every certificate in each CA file |
+| SA4-L3 | `ExecStartPre=/usr/sbin/nft` runs as `User=etcd` on units without `PermissionsStartOnly` (setup.sh's own unit), so etcd never starts (fails closed) | Fix: `ExecStartPre=+/usr/sbin/nft …` |
+| SA4-L4 | `systemctl restart nftables` flushes the peer rule while etcd keeps running | Fix: a reload unit with `PartOf=nftables.service` and `After=`, which re-applies the file; etcd does not require it |
+| CR4-L1 | Only the etcd_integration test guards the startup order, and CI runs `-short` (M63 survives) | Fix: the binary test asserts empty stdout before the exit |
+| CR4-L2 | Ignoring the record error in `configureAndStartAPIServer` fails no test (M58b) | Accepted, same class as M45: no binary-level `cca server` test; recorded |
+| CR4-L3 | The spec and design say "without the flag it warns", but a pre-M280 cluster records the server certificate's CN silently; the record exit names the node ID, not the path | Fix: wording in the spec and design to match the code; the exit message names the path too |
+| CR4 style | Test receivers `failingStore`/`droppingStore`; the `ansibleTaskField` doc says string but returns `any` | Fix |
+| Codex | The read-back accepts any existing record | Rejected by the reviewer: every reader of `enrollment/node/{id}` checks existence only (secret_delivery.go:185, enrollment.go:308) |
+| CI | No workflow runs `-tags etcd_integration` | M270 (real-etcd test tier), as recorded before |
+
+### 3k. Rework round 5 (2026-11-25, lead-developer, on 3b06fe3; outputs in scratchpad rw5-*.txt)
+
+Red is the auditor's configuration or a mutation on the fixed tree that restores the old behaviour (`rw4-mutate.sh`,
+`rw5-mutations.txt`); green is the same check on this tree.
+
+| ID | Red | Fix and green |
+|---|---|---|
+| SA4-L1 (Go) | M64, etcd trusting etcd access + gate CA and the API `--ca` = cluster + gate CA (auditor's trust-only): `TestGateCertificateIsRefusedByEtcd` "etcd did not refuse a ClientAuth certificate from the gate HTTPS CA at TLS: response HTTP/1.1 200"; `TestAPIRefusesNonClusterCACertificates` the same for the API plus "accepted … principal node:ctrl" (`rw5-red-trust.txt`) | `issueGateCAClientKeyPair` (ClientAuth from the gate CA) and `tlsServerRefusesClientCertificate` (TLS alert at the handshake or on the first read, not an HTTP status); the real-etcd test (new cluster) and the API test require refusal at TLS. Green, also under `-short` |
+| SA4-L1 (T19) | Live harness `rw5live/t19.sh` (reviewer setup, rebuilt): trust-only with the 3b06fe3 binary: probe "200 0 200 0", T19 FAIL "etcd did not refuse a ClientAuth certificate from the gate CA" (`rw5-t19-live.txt`) | `gate_tls_check_gate_ca_client_refused` (called by T19): on the control node, as root, mints a ClientAuth certificate from the gate HTTPS CA in a `mktemp -d` dir (umask 077), checks it (`openssl verify -purpose sslclient`, key matches), presents it to :2379 and :9770, prints only "<code> <exit>", removes the files on exit (trap, `rm -f` + `rmdir`). Both must be 35/56. Normal: probe "000 56 000 56", T19 PASS; eku-both FAIL; no key file left in /tmp. A cluster from before M280 (no gate CA key) logs "T19 SKIP (gate CA client)": one CA there, nothing to separate. With this tree's binary, the trust-only `--ca` bundle stops the server (SA4-L2) |
+| SA4-L2 | M69 (first certificate only): `TestServerCAKindChecks` | `checkCAFileKind` checks every certificate of each CA file; new cases: `--ca` bundle cluster + gate refused, cluster + pre-M280 CA accepted. Green |
+| SA4-L3 | M65 (no "+"): `TestEtcdStartsOnlyAfterThePeerFirewall` | `ExecStartPre=+/usr/sbin/nft -f …`; the test requires `+` and the firewall unit's command. Green |
+| SA4-L4 | M66 (no PartOf), M67 (no After), M68 (etcd Requires= the reload unit): same test | `ccattler-etcd-peer-firewall-reload.service` (PartOf= and After=nftables.service, WantedBy=nftables.service, the same nft command), enabled and started, never restarted; etcd does not depend on it. The test reads both units from the task YAML. Green |
+| CR4-L1 | M63b (identity check after the store, af63794 order) now caught by the default-build `TestServerExitsOnInvalidNodeCertificateBeforeStartup` (stdout must be empty); runs under `-short` | Green |
+| CR4-L3 | M70 (record error without the path): `TestControlPlaneNodeRecordMustBeConfirmed` | `verifiedNodeIdentity` carries the path; the record exit names it. Spec requirement and design row describe the no-flag cases as the code does (old cluster records the server certificate's CN; `ccattler-server` warns), new scenario "No control-plane node certificate" with its tests; the API scenario includes the gate-CA client certificate. `openspec validate --strict` valid |
+| CR4 style | — | Receivers `failingTransactionStore`, `droppingTransactionStore`; `ansibleTaskField` doc says it returns any YAML value |
+
+Checks: gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also
+`--build-tags etcd_integration` on cmd/cca and store) (`rw5-checks.txt`); `go test -count=1 ./...` exit 0, 20
+packages ok (`rw5-full-test.txt`); `-race` on security, controllers, cmd/cca ok (`rw5-race.txt`); etcd_integration
+(ETCD_BIN v3.5.36; plain etcd on 127.0.0.1:2379 for store): store and cmd/cca ok, 400 PASS
+(`rw5-etcd-integration.txt`); shellcheck: local_admin_access.sh 0, gate_tls_checks.sh 1 (pre-existing SC2034);
+`ansible-playbook --syntax-check` on the 6 playbooks ok; `openspec validate separate-cluster-cas --strict` valid.
+Only the deploy run proves the T19 mint on the real control node and the reload unit on a real nftables restart.
+
+**Main session on rework 5 (2026-11-25):** the agent's own choice "T19 SKIP (gate CA client)" on a pre-M280
+single-CA cluster (no gate CA key) is accepted. Such a cluster has one CA and no separation to prove (user decision
+1: no migration). The closing full run builds a fresh three-CA cluster, and its log must show T19's gate-CA client
+check ran and passed, not skipped. Check this when recording 3.4.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

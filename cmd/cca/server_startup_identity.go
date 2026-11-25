@@ -25,19 +25,25 @@ type serverCAFlag struct {
 	wantKind        security.CertificateAuthorityKind // the kind its Subject OU must name, if it names one
 }
 
+// verifiedNodeIdentity is a --control-plane-node-cert that passed verification.
+type verifiedNodeIdentity struct {
+	certificatePath string            // the flag's file, named in startup errors
+	certificate     *x509.Certificate // the verified node certificate (CN = node ID)
+}
+
 // checkServerIdentityFiles checks the CA files' kinds and verifies
 // --control-plane-node-cert before the store is created; it returns the verified
 // node identity (nil without the flag). cca server exits on an error.
-func checkServerIdentityFiles(parsedConfig serverCommandConfig) (*x509.Certificate, error) {
+func checkServerIdentityFiles(parsedConfig serverCommandConfig) (*verifiedNodeIdentity, error) {
 	if kindError := checkServerCAKinds(parsedConfig); kindError != nil {
 		return nil, kindError
 	}
 	return resolveControlPlaneNodeIdentity(parsedConfig)
 }
 
-// checkServerCAKinds refuses a CA file whose Subject OU names another kind than
-// its flag's, e.g. etcd-access-ca.pem as --gate-ca-cert (SA3-L2). A CA without a
-// kind (from before M280, or an external etcd's CA) is accepted.
+// checkServerCAKinds refuses a CA file in which any certificate's Subject OU
+// names another kind than its flag's, e.g. etcd-access-ca.pem as --gate-ca-cert
+// or bundled into --ca (SA3-L2, SA4-L2). A CA without a kind is accepted.
 func checkServerCAKinds(parsedConfig serverCommandConfig) error {
 	for _, caFlag := range []serverCAFlag{
 		{"--ca", parsedConfig.tlsCACertPath, security.ClusterIdentityCertificateAuthority},
@@ -47,12 +53,31 @@ func checkServerCAKinds(parsedConfig serverCommandConfig) error {
 		if caFlag.certificatePath == "" {
 			continue
 		}
-		caCertificate, loadError := readFirstPEMCertificateFile(caFlag.certificatePath)
-		if loadError != nil {
-			return fmt.Errorf("%s %s: %w", caFlag.flagName, caFlag.certificatePath, loadError)
+		if kindError := checkCAFileKind(caFlag); kindError != nil {
+			return fmt.Errorf("%s %s: %w", caFlag.flagName, caFlag.certificatePath, kindError)
+		}
+	}
+	return nil
+}
+
+// checkCAFileKind checks every certificate of one CA file: none may name a kind
+// other than the flag's. A file without a certificate is an error.
+func checkCAFileKind(caFlag serverCAFlag) error {
+	caFileContent, readError := os.ReadFile(caFlag.certificatePath) //nolint:gosec // operator-given path
+	if readError != nil {
+		return readError
+	}
+	certificateDERs := pemCertificateDERs(caFileContent)
+	if len(certificateDERs) == 0 {
+		return errors.New("no PEM certificate")
+	}
+	for _, certificateDER := range certificateDERs {
+		caCertificate, parseError := x509.ParseCertificate(certificateDER)
+		if parseError != nil {
+			return parseError
 		}
 		if loadedKind, hasKind := security.CertificateAuthorityKindOf(caCertificate); hasKind && loadedKind != caFlag.wantKind {
-			return fmt.Errorf("%s %s is the %s CA, not the %s CA", caFlag.flagName, caFlag.certificatePath, loadedKind, caFlag.wantKind)
+			return fmt.Errorf("holds the %s CA, not the %s CA", loadedKind, caFlag.wantKind)
 		}
 	}
 	return nil
@@ -61,7 +86,7 @@ func checkServerCAKinds(parsedConfig serverCommandConfig) error {
 // resolveControlPlaneNodeIdentity loads --control-plane-node-cert and verifies
 // it against --ca; nil without the flag. The error names the path and the
 // reason: a given but invalid identity stops the server (user decision 1).
-func resolveControlPlaneNodeIdentity(parsedConfig serverCommandConfig) (*x509.Certificate, error) {
+func resolveControlPlaneNodeIdentity(parsedConfig serverCommandConfig) (*verifiedNodeIdentity, error) {
 	certificatePath := parsedConfig.controlPlaneNodeCertificatePath
 	if certificatePath == "" {
 		return nil, nil
@@ -73,7 +98,7 @@ func resolveControlPlaneNodeIdentity(parsedConfig serverCommandConfig) (*x509.Ce
 	if loadError != nil {
 		return nil, fmt.Errorf("--control-plane-node-cert %s is not a valid node identity of this cluster: %w", certificatePath, loadError)
 	}
-	return nodeCertificate, nil
+	return &verifiedNodeIdentity{certificatePath: certificatePath, certificate: nodeCertificate}, nil
 }
 
 // readFirstPEMCertificateFile parses the first certificate of a PEM file.
@@ -109,11 +134,14 @@ func verifyControlPlaneNodeCertificate(nodeCertificate *x509.Certificate, cluste
 
 // bootstrapControlPlaneNodeEnrollment records this host's node as enrolled so no
 // unbound token can enroll as it (Flow 27): the verified --control-plane-node-cert
-// (a failed record is an error, cca server exits), else on old clusters the server
+// (a failed record is an error naming the file), else on old clusters the server
 // certificate's CN, never ccattler-server; there a failure only warns.
-func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config, verifiedNodeCertificate *x509.Certificate) error {
-	if verifiedNodeCertificate != nil {
-		return recordControlPlaneNodeEnrollment(factStore, verifiedNodeCertificate)
+func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config, verifiedIdentity *verifiedNodeIdentity) error {
+	if verifiedIdentity != nil {
+		if recordError := recordControlPlaneNodeEnrollment(factStore, verifiedIdentity.certificate); recordError != nil {
+			return fmt.Errorf("--control-plane-node-cert %s: %w", verifiedIdentity.certificatePath, recordError)
+		}
+		return nil
 	}
 	serverLeafCertificate := serverLeafCertificateForEnrollment(serverTLSConfig)
 	if serverLeafCertificate == nil || serverLeafCertificate.Subject.CommonName == "" {

@@ -29,7 +29,7 @@ type failingTransactionStore struct {
 }
 
 // Transaction fails without writing.
-func (failingStore failingTransactionStore) Transaction(context.Context, []store.Compare, []store.Op, []store.Op) (bool, error) {
+func (failingTransactionStore failingTransactionStore) Transaction(context.Context, []store.Compare, []store.Op, []store.Op) (bool, error) {
 	return false, errors.New("etcdserver: request timed out")
 }
 
@@ -40,7 +40,7 @@ type droppingTransactionStore struct {
 }
 
 // Transaction reports success without writing.
-func (droppingStore droppingTransactionStore) Transaction(context.Context, []store.Compare, []store.Op, []store.Op) (bool, error) {
+func (droppingTransactionStore droppingTransactionStore) Transaction(context.Context, []store.Compare, []store.Op, []store.Op) (bool, error) {
 	return true, nil
 }
 
@@ -97,7 +97,7 @@ func runCCABinaryFromPackageMain(t *testing.T, commandArgs ...string) (string, s
 
 // TestServerExitsOnInvalidNodeCertificateBeforeStartup (stop-time check, user
 // decision 1): cca server with an invalid --control-plane-node-cert exits 1 with
-// the path and reason, before it creates the store (no "connected", no banner).
+// the path and reason, before it creates the store: stdout stays empty (CR4-L1).
 // The store left untouched: TestInvalidNodeCertificateLeavesEtcdUntouched (etcd_integration).
 func TestServerExitsOnInvalidNodeCertificateBeforeStartup(t *testing.T) {
 	outputDirectory := runClusterPKITestInit(t)
@@ -110,18 +110,23 @@ func TestServerExitsOnInvalidNodeCertificateBeforeStartup(t *testing.T) {
 		t.Fatalf("cca server with a foreign --control-plane-node-cert: exit %d, stderr %q; want exit 1 naming the path and the reason",
 			exitCode, stderrContent)
 	}
-	if strings.Contains(stdoutContent, "CCattler server") || strings.Contains(stdoutContent, "enrollment") {
-		t.Errorf("cca server started before refusing the node certificate; stdout %q", stdoutContent)
+	if stdoutContent != "" {
+		t.Errorf("cca server did startup work before refusing the node certificate; stdout %q, want empty", stdoutContent)
 	}
 }
 
-// TestServerCAKindChecks (SA3-L2): cca server refuses a CA file whose Subject
-// OU names another kind than its flag's, and accepts the right kinds and a CA
-// from before M280 (no OU) for every flag.
+// TestServerCAKindChecks (SA3-L2, SA4-L2): cca server refuses a CA file in which
+// any certificate's Subject OU names another kind than its flag's, bundles
+// included, and accepts the right kinds and a CA from before M280 (no OU).
 func TestServerCAKindChecks(t *testing.T) {
 	outputDirectory := runClusterPKITestInit(t)
 	initFile := func(fileName string) string { return filepath.Join(outputDirectory, fileName) }
 	legacyCAPath, _ := writeLegacySingleCAFiles(t)
+	bundleDirectory := t.TempDir()
+	clusterAndGateBundlePath := writeClusterPKITestFile(t, bundleDirectory, "cluster-and-gate.pem",
+		append(mustReadFile(t, initFile(clusterIdentityCAFileName)), mustReadFile(t, initFile(gateHTTPSCAFileName))...))
+	clusterAndLegacyBundlePath := writeClusterPKITestFile(t, bundleDirectory, "cluster-and-legacy.pem",
+		append(mustReadFile(t, initFile(clusterIdentityCAFileName)), mustReadFile(t, legacyCAPath)...))
 	threeCAConfig := serverCommandConfig{tlsCACertPath: initFile(clusterIdentityCAFileName),
 		etcdCACertPath: initFile(etcdAccessCAFileName), gateCACertPath: initFile(gateHTTPSCAFileName)}
 	withChange := func(change func(*serverCommandConfig)) serverCommandConfig {
@@ -137,11 +142,14 @@ func TestServerCAKindChecks(t *testing.T) {
 		{"three-CA cluster as setup.sh starts it", threeCAConfig, ""},
 		{"pre-M280 CA for every flag", serverCommandConfig{tlsCACertPath: legacyCAPath, etcdCACertPath: legacyCAPath, gateCACertPath: legacyCAPath}, ""},
 		{"etcd access CA as --gate-ca-cert", withChange(func(config *serverCommandConfig) { config.gateCACertPath = initFile(etcdAccessCAFileName) }),
-			"--gate-ca-cert " + initFile(etcdAccessCAFileName) + " is the etcd access CA, not the gate HTTPS CA"},
+			"--gate-ca-cert " + initFile(etcdAccessCAFileName) + ": holds the etcd access CA, not the gate HTTPS CA"},
 		{"gate HTTPS CA as --ca", withChange(func(config *serverCommandConfig) { config.tlsCACertPath = initFile(gateHTTPSCAFileName) }),
-			"is the gate HTTPS CA, not the cluster identity CA"},
+			"holds the gate HTTPS CA, not the cluster identity CA"},
 		{"cluster identity CA as --etcd-ca", withChange(func(config *serverCommandConfig) { config.etcdCACertPath = initFile(clusterIdentityCAFileName) }),
-			"is the cluster identity CA, not the etcd access CA"},
+			"holds the cluster identity CA, not the etcd access CA"},
+		{"--ca bundle of the cluster and gate CAs", withChange(func(config *serverCommandConfig) { config.tlsCACertPath = clusterAndGateBundlePath }),
+			"--ca " + clusterAndGateBundlePath + ": holds the gate HTTPS CA, not the cluster identity CA"},
+		{"--ca bundle with a pre-M280 CA", withChange(func(config *serverCommandConfig) { config.tlsCACertPath = clusterAndLegacyBundlePath }), ""},
 		{"unreadable --etcd-ca", withChange(func(config *serverCommandConfig) { config.etcdCACertPath = initFile("missing.pem") }), "missing.pem"},
 	}
 	for _, testCase := range testCases {
@@ -155,9 +163,9 @@ func TestServerCAKindChecks(t *testing.T) {
 	}
 }
 
-// TestControlPlaneNodeRecordMustBeConfirmed (SA3-L1): with
+// TestControlPlaneNodeRecordMustBeConfirmed (SA3-L1, CR4-L3): with
 // --control-plane-node-cert given, a record write that fails or is not found
-// afterwards is a startup error; on an old cluster (no flag) it only warns.
+// afterwards is a startup error naming the file; on an old cluster (no flag) it only warns.
 func TestControlPlaneNodeRecordMustBeConfirmed(t *testing.T) {
 	outputDirectory := runClusterPKITestInit(t)
 	parsedConfig := serverConfigFromSetupScript(t, outputDirectory, "127.0.0.1", clusterPKITestNodeID)
@@ -173,8 +181,10 @@ func TestControlPlaneNodeRecordMustBeConfirmed(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Cleanup(func() { _ = testCase.factStore.Close() })
 		startupError := startServerIdentityAndEnrollment(testCase.factStore, serverTLSConfig, parsedConfig)
-		if startupError == nil || !strings.Contains(startupError.Error(), testCase.wantError) {
-			t.Errorf("%s: startup error %v, want one naming %q", testCase.name, startupError, testCase.wantError)
+		if startupError == nil || !strings.Contains(startupError.Error(), testCase.wantError) ||
+			!strings.Contains(startupError.Error(), parsedConfig.controlPlaneNodeCertificatePath) {
+			t.Errorf("%s: startup error %v, want one naming %q and %s", testCase.name, startupError, testCase.wantError,
+				parsedConfig.controlPlaneNodeCertificatePath)
 		}
 	}
 	oldClusterStore := failingTransactionStore{store.NewMemoryStore()}
@@ -237,8 +247,9 @@ func TestAnsibleNamesPKIFilesOnlyThroughGroupVars(t *testing.T) {
 	}
 }
 
-// ansibleTaskField returns a string field of the named task in an Ansible task
-// file (fieldPath: e.g. "set_fact", "cca_pki_layout"); fails when absent.
+// ansibleTaskField returns the value (string, list or map, as YAML decoded it)
+// at fieldPath (e.g. "set_fact", "cca_pki_layout") of the named task in an
+// Ansible task file; fails the test when absent.
 func ansibleTaskField(t *testing.T, taskFilePath string, taskName string, fieldPath ...string) any {
 	t.Helper()
 	var taskList []map[string]any

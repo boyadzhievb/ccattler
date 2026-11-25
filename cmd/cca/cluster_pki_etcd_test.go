@@ -167,6 +167,8 @@ func TestEtcdRefusesClusterCACertificates(t *testing.T) {
 // ccattler-server is refused by etcd on a new cluster (gate HTTPS CA, which etcd
 // does not trust) and on an old one, whose etcd trusts the single cluster CA
 // that also signs gates: there the missing ClientAuth usage refuses it (D3).
+// On the new cluster a ClientAuth certificate from the gate CA is refused at
+// TLS too, which proves the CA separation, not only the EKU (SA4-L1).
 func TestGateCertificateIsRefusedByEtcd(t *testing.T) {
 	outputDirectory := runClusterPKITestInit(t)
 	initFilePath := func(fileName string) string { return filepath.Join(outputDirectory, fileName) }
@@ -190,20 +192,23 @@ func TestGateCertificateIsRefusedByEtcd(t *testing.T) {
 	legacyNodeKeyPair, _ := tls.X509KeyPair(legacyNode.CertificatePEM, legacyNode.PrivateKeyPEM)
 	envelopeCodec := newClusterPKITestEnvelopeCodec(t)
 
+	gateCAClientKeyPair := issueGateCAClientKeyPair(t, gateHTTPSCA)
 	clusterSetups := map[string]struct {
 		serverFiles    etcdTLSServerFiles             // what etcd serves and trusts
 		serverCAPEM    []byte                         // CA of etcd's serving certificate
 		acceptedClient tls.Certificate                // a certificate etcd accepts, to know it is up
 		gateIssuer     *security.CertificateAuthority // the CA RouteTLSController issues gates from
+		gateCAClient   *tls.Certificate               // a ClientAuth certificate from the gate CA; nil where it is etcd's CA
 	}{
 		"new cluster, gate HTTPS CA": {etcdTLSServerFiles{initFilePath(etcdServingCertificateFileName),
 			initFilePath(privateKeyFileName(etcdServingCertificateFileName)), initFilePath(etcdAccessCAFileName)},
-			mustReadFile(t, initFilePath(etcdAccessCAFileName)), loadInitKeyPair(t, outputDirectory, nodeEtcdClientCertificateFileName), gateHTTPSCA},
+			mustReadFile(t, initFilePath(etcdAccessCAFileName)), loadInitKeyPair(t, outputDirectory, nodeEtcdClientCertificateFileName), gateHTTPSCA,
+			&gateCAClientKeyPair},
 		"old cluster, one CA": {etcdTLSServerFiles{
 			writeClusterPKITestFile(t, legacyDirectory, "etcd.pem", legacyEtcdServing.CertificatePEM),
 			writeClusterPKITestFile(t, legacyDirectory, "etcd-key.pem", legacyEtcdServing.PrivateKeyPEM),
 			writeClusterPKITestFile(t, legacyDirectory, "ca.pem", legacyClusterCA.CACertificatePEM())},
-			legacyClusterCA.CACertificatePEM(), legacyNodeKeyPair, legacyClusterCA},
+			legacyClusterCA.CACertificatePEM(), legacyNodeKeyPair, legacyClusterCA, nil},
 	}
 	for _, setupName := range slices.Sorted(maps.Keys(clusterSetups)) {
 		clusterSetup := clusterSetups[setupName]
@@ -213,6 +218,14 @@ func TestGateCertificateIsRefusedByEtcd(t *testing.T) {
 			controllers.NewRouteTLSController(clusterSetup.gateIssuer, envelopeCodec), envelopeCodec, security.ServerCertificateCommonName)
 		if etcdAcceptsClientCertificate(t, clientURL, clusterSetup.serverCAPEM, gateKeyPair) == nil {
 			t.Errorf("%s: etcd accepted a gate certificate for host %s", setupName, security.ServerCertificateCommonName)
+		}
+		if clusterSetup.gateCAClient == nil {
+			continue
+		}
+		// SA4-L1: CA separation itself, not only the gate certificate's missing ClientAuth.
+		if refused, observed := tlsServerRefusesClientCertificate(t, strings.TrimPrefix(clientURL, "https://"),
+			clusterSetup.serverCAPEM, *clusterSetup.gateCAClient); !refused {
+			t.Errorf("%s: etcd did not refuse a ClientAuth certificate from the gate HTTPS CA at TLS: %s", setupName, observed)
 		}
 	}
 }
