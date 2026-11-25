@@ -475,7 +475,15 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
     - commands printed unquoted;
     - no `main()` wrapper against a cut-off download;
     - a weak "printed before sudo" test check.
-- [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
+- [x] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
+  Result (2026-11-25): run 45575688276 on 711eaac (workflow_dispatch) passed:
+  - success, RUN_KIND full;
+  - workloads airflow, whoami, whoami-multiport and gate-tls; SKIP_CHECKS empty; adversarial replay with all cases;
+  - DEPLOY_OUTCOME and REPLAY_OUTCOME both success;
+  - whoami churn: "4 distinct whoami instance IDs seen, bound 6 (4 from the test's steps + margin 2)", so 0
+    unexplained.
+
+  The M279 changelog row in milestones.md was corrected before the release to describe the binary-only install.sh.
 
 ## Workflow follow-up
 
