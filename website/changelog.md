@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.97.0-beta <Badge type="tip" text="latest" /> {#v1-97-0-beta}
+## v1.98.0-beta <Badge type="tip" text="latest" /> {#v1-98-0-beta}
+
+**2026-11-25** — RHEL-Family Install Works.
+
+- **RHEL-Family Install Works** (M279) — Bug fix (found 2026-11-24 following the guide on Rocky Linux 9.8): **security:** install.sh left `/usr/local/bin/cca` owned by the installing user in every earlier release, while systemd and `sudo cca` run it as root; it now installs it root:root 0755 (existing hosts: `sudo chown root:root /usr/local/bin/cca`). install.sh now only installs the binary, like kind and Homebrew: it checks the release checksum, installs `cca` root-owned, and on RHEL, AlmaLinux and Rocky restores its SELinux label; cluster prerequisites are in the guide. setup.sh writes and enables its own etcd unit when no package provides one, names real etcd sources, and resets the base unit's `EnvironmentFile`. New `cca init --etcd-client-cidr <cidr>` (repeatable or comma-separated; a network covering every address is refused): setup.sh opens the etcd client port 2379/tcp in firewalld or ufw only to those networks; without it the port stays closed and setup.sh prints the commands that open it. The agent finds distribution CNI plugins; the installation guide covers RHEL, AlmaLinux and Rocky 9 and 10 (containerd from Docker's repository, checksum-pinned etcd).
+
+---
+
+## v1.97.0-beta {#v1-97-0-beta}
 
 **2026-11-24** — Rebalancing Moves Instances Onto Nodes They Don't Fit.
 
