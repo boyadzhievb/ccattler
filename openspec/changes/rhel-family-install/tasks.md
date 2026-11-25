@@ -431,6 +431,13 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   - **AlmaLinux 10.3** (192.168.100.109, enforcing): the same output; `/usr/local/bin/cca` is `0 0 … bin_t`, version
     OK. An earlier run with `INSTALL_PATH=/opt/cca-draft/bin` also created the directory root-owned and labelled
     the binary.
+  - **Debian 13** (192.168.100.103, fresh):
+    - without `curl` (and without sudo) it stops: "curl is required; install it first (…#prepare-a-fresh-host)",
+      nothing installed;
+    - after the guide's step 1 (sudo, curl; run by the user), the run prints `install -o 0 -g 0 -m 0755 …`, with no
+      restorecon and no RHEL note;
+    - `ls -ln /usr/local/bin/cca` shows `1 0 0`; `cca version` and `sudo cca version` print `cca v1.97.0-beta`
+      (Debian's secure_path includes /usr/local/bin).
   - shellcheck `-s sh` and `-s dash` clean.
   Tests and guide (lead-developer; install.sh not changed, `cmp` with the tested draft passes):
   - **Tests:** `cmd/cca/install_script_test.go` rewritten to the spec's 5 tests (14 subcases, each under dash and
