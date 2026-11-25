@@ -415,6 +415,36 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   relativeInstall/installPathForm/installPathValue merged into one `installPath` template ({install}, {work},
   {name}). Checks: gofmt clean, golangci-lint ./... 0 issues, go vet, go test -count=1 ./... exit 0, -race ok,
   TestDocCrossCheck ok, vitepress build of a copy.
+  Round 7 (2026-11-24): security adequate, code review low only (a symlink chain through a user-writable directory,
+  a doc-comment length). **Superseded:** the code it reviewed was removed by the 2026-11-25 decision (design.md).
+
+- [x] 3t Binary-only install.sh (user decision 2026-11-25, option 1; design.md): replace install.sh (main session,
+  91 lines), the tests per the rewritten binary-install spec, and the guide's Quick install as kind-style lines.
+  VM evidence (2026-11-25, the new install.sh, default INSTALL_PATH, release v1.97.0-beta):
+  - **Rocky 9.8** (192.168.100.108, fresh, SELinux enforcing):
+    - without `tar` it stops: "tar is required; install it first (…#prepare-a-fresh-host)", nothing installed;
+    - after the guide's step 2 (`dnf install tar ca-certificates`), the run prints `install -o 0 -g 0 -m 0755 …`
+      and `restorecon …`;
+    - `ls -lnZ /usr/local/bin/cca` shows `1 0 0 system_u:object_r:bin_t:s0`; `sudo /usr/local/bin/cca version`
+      prints `cca v1.97.0-beta`;
+    - `sudo cca` fails with "command not found", as the printed RHEL note says.
+  - **AlmaLinux 10.3** (192.168.100.109, enforcing): the same output; `/usr/local/bin/cca` is `0 0 … bin_t`, version
+    OK. An earlier run with `INSTALL_PATH=/opt/cca-draft/bin` also created the directory root-owned and labelled
+    the binary.
+  - shellcheck `-s sh` and `-s dash` clean.
+  Tests and guide (lead-developer; install.sh not changed, `cmp` with the tested draft passes):
+  - **Tests:** `cmd/cca/install_script_test.go` rewritten to the spec's 5 tests (14 subcases, each under dash and
+    bash). They run a copy of install.sh with the os-release path pointed at a fixture.
+    `TestInstallScriptCNIDirectoriesMatchAgent` removed, because install.sh no longer lists CNI directories.
+  - **Mutation check:** 8 deliberate changes to install.sh each broke a test, for example dropping `-o 0 -g 0`, the
+    digest check, exact-name matching, restorecon or the selinuxenabled condition.
+  - **Guide:** Quick install says what the script does and adds the kind-style manual lines; the claims about
+    warnings and ownership checks are removed.
+  - **Checks (verified by the main session):** gofmt clean; `golangci-lint run ./...` 0 issues; TestInstallScript*,
+    TestDocCrossCheck* and TestShippedUnitFiles* pass; `go test -count=1 ./...` passes in all 20 packages.
+  - **Recorded, not rerun:** `go test -race ./...` failed in `integration` (TestServiceGroupCoScheduled timeout at
+    service_group_test.go:106; ha_resilience_test.go:230 6/9 running). No file under integration/ changed and the
+    package passes without -race, so these are timing-sensitive tests, a test bug and not a defect of this change.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up

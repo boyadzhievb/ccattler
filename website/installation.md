@@ -77,8 +77,7 @@ do not need this.
 
 **`sudo cca` on RHEL, AlmaLinux and Rocky.** sudo there runs commands with its own `secure_path`
 (`/sbin:/bin:/usr/sbin:/usr/bin`), which leaves out `/usr/local/bin`, where the quick install puts `cca`. Every
-`sudo cca …` below then fails with `command not found`. Add the directory once (Debian and Ubuntu already include it;
-the quick install warns when it is missing):
+`sudo cca …` below then fails with `command not found`. Add the directory once (Debian and Ubuntu already include it):
 
 ```bash
 sudoers_file=$(mktemp)
@@ -203,22 +202,27 @@ from the networks given to `cca init --etcd-client-cidr` (see [Set up a cluster 
 
 ## Quick install
 
-One command — detects your OS and architecture, downloads the right binary, installs to `/usr/local/bin/`:
+One command: it downloads the binary for your OS and CPU, checks its SHA-256 against the release's `checksums.txt`,
+and installs `cca` owned by root (mode 0755) into `/usr/local/bin/`. It installs nothing else; the prerequisites for a
+cluster host are in [Prepare a fresh host](#prepare-a-fresh-host).
 
 ```bash
 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
 ```
 
-Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon). On SELinux hosts it restores the binary's SELinux label.
-When `/usr/local/bin` is not on sudo's `secure_path`, it warns and links to the fix in
-[step 1 of Prepare a fresh host](#prepare-a-fresh-host).
-With sudo it installs `cca` owned by root (mode 0755). If your user can write to the install directory itself (older
-Debian: `/usr/local` and `/usr/local/bin` owned by `root:staff`, mode 2775), it installs without sudo and `cca` stays
-owned by you; anyone in that group can already replace programs root runs from there, so on a cluster host make both
-directories root-only (`sudo chown root:root /usr/local /usr/local/bin && sudo chmod 0755 /usr/local /usr/local/bin`)
-and run the install again. The script warns when the binary, its directory or a parent can be changed by someone
-other than root. It checks owners and modes only, so it cannot see a filesystem a user controls, such as a
-loop-mounted image, FUSE or NFS: install `cca` on a local filesystem only root can change.
+Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon). On RHEL, AlmaLinux and Rocky with SELinux enabled it
+also runs `restorecon` on the binary, so systemd can run it.
+
+Or install it by hand. Each archive, `cca-<version>-linux-<arch>.tar.gz`, holds `cca` and `k8s-to-cca`:
+
+```bash
+VERSION=v1.97.0-beta   # any tag from GitHub Releases
+RELEASE_URL=https://github.com/boyadzhievb/ccattler/releases/download/${VERSION}
+[ "$(uname -m)" = x86_64 ] && curl -fsSL "${RELEASE_URL}/cca-${VERSION}-linux-amd64.tar.gz" | tar -xz cca
+[ "$(uname -m)" = aarch64 ] && curl -fsSL "${RELEASE_URL}/cca-${VERSION}-linux-arm64.tar.gz" | tar -xz cca
+sudo install -o root -g root -m 0755 cca /usr/local/bin/cca
+sudo restorecon /usr/local/bin/cca   # RHEL family only
+```
 
 Pin a specific version (the variable must be set for `bash`, which runs the script, not for `curl`):
 

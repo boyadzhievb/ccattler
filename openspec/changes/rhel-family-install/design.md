@@ -38,6 +38,24 @@ key is read or written differently, so there are no writers to fence and no chan
 
 ## Decisions
 
+**install.sh installs the binary only, 2026-11-25 (user decision, option 1; supersedes D1/D2 and the install.sh parts
+of rounds 1–7).** After 7 rounds on host-computed logic (sudoers text, chown/chmod advice, path walks), the user
+pointed at kind (two lines per CPU), Homebrew and Pi-hole. install.sh is now the kind/Homebrew model in 91 lines:
+- **Platform:** one `case` each for OS and CPU, and `/etc/os-release` (`ID`, `ID_LIKE`) for the Debian or RHEL path.
+- **Download:** the release archive and `checksums.txt`, matched by exact name; a mismatch or a missing entry stops
+  with nothing installed.
+- **Install:** each privileged command is printed, then run through sudo (`run_as_root`): `install -o 0 -g 0 -m
+  0755`, and on the RHEL path `restorecon` when `selinuxenabled`.
+- **Output:** fixed next steps, plus one fixed sudo note on RHEL.
+- **Dropped:** no prerequisite checks (they stay in the guide), no secure_path or ownership detection, no computed
+  advice.
+
+Kept from M279: the setup.sh fixes (etcd unit, `--etcd-client-cidr`, firewall), the agent's CNI directories, the
+guide's Debian and RHEL blocks.
+
+Review cap (user, 2026-11-25): one review round on this change; only HIGH or MEDIUM findings are fixed, lows are
+listed, then release.
+
 **No privileged commands printed by install.sh, 2026-11-24 (user decision on review round 5, option A2).**
 - **Why:** computed privileged advice went wrong again. Rounds 1–3 found it in the sudoers text, rounds 4–5 in the
   `chown`/`chmod` advice: the printed `sudo chmod 0755 '<dir>'` would remove `/tmp`'s sticky bit, and would hand a

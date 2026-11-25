@@ -1,106 +1,66 @@
 # Spec Delta
 
 ## Purpose
-States what `install.sh` must leave on a host, so the installed `cca` binary runs as a systemd service and through
-`sudo` on every supported Linux family, SELinux hosts included, and cannot be replaced by an unprivileged user.
+States what `install.sh` must leave on a host: the `cca` binary for its OS and CPU, checksum-verified, owned by root
+and, on SELinux hosts, labelled so systemd can run it. Nothing else; cluster prerequisites are in the guide.
 
 ## ADDED Requirements
 
-### Requirement: A binary installed with sudo is owned by root
-When `install.sh` needs `sudo` to write the install directory, the installed `cca` SHALL be owned by root (uid and
-gid 0) with mode 0755, never by the user who ran the script, because systemd units and `sudo cca` run it as root.
-(Added during apply, 2026-11-24: security finding S1, user decision option a.)
+### Requirement: install.sh installs only the binary
+`install.sh` SHALL download the release archive for the host's OS and CPU, verify it against the release's
+`checksums.txt`, and install `cca`. It SHALL NOT check or install cluster prerequisites, and SHALL NOT print any
+command computed from the host (no sudoers, `chown` or `chmod` advice). (Rewritten during apply, 2026-11-25, user
+decision: a binary-only installer like kind and Homebrew, after 7 review rounds on host-computed logic.)
 
-#### Scenario: Installed into a root-owned directory
-- **GIVEN** an install directory the user cannot write, so the script uses `sudo`
+#### Scenario: Fixed output only
+- **GIVEN** any supported host
+- **WHEN** `install.sh` runs
+- **THEN** it prints each privileged command before running it, then fixed next steps, and its output contains no
+  `sudoers`, `secure_path=`, `chown` or `chmod`
+- Test: `TestInstallScriptPrintsOnlyFixedAdvice` (subcases `Debian`, `RHEL`, `other Linux`)
+
+### Requirement: A bad checksum installs nothing
+`install.sh` SHALL stop with a non-zero exit and install nothing when the archive's SHA-256 differs from its entry in
+`checksums.txt`, or when the entry is missing. The entry is matched by exact file name.
+
+#### Scenario: Checksum mismatch or missing entry
+- **GIVEN** an archive whose SHA-256 differs from `checksums.txt`, or a `checksums.txt` without its exact name
+- **WHEN** `install.sh` verifies it
+- **THEN** it exits non-zero and no `cca` is installed
+- Test: `TestInstallScriptAbortsOnBadChecksum` (subcases `mismatch`, `missing entry`)
+
+### Requirement: The installed binary is owned by root
+`install.sh` SHALL install `cca` with `install -o 0 -g 0 -m 0755`, running it through `sudo` unless already root,
+because systemd units and `sudo cca` run it as root. (Security finding S1.)
+
+#### Scenario: Root-owned install
+- **GIVEN** a non-root user
 - **WHEN** `install.sh` installs `cca`
-- **THEN** the installed file is owned by uid 0 and gid 0 with mode 0755, and no step leaves it owned by the user
+- **THEN** it runs `sudo install -o 0 -g 0 -m 0755 … <INSTALL_PATH>/cca`, and no step leaves the file owned by the user
 - Test: `TestInstallScriptInstallsRootOwnedBinary`; check `install-host:rhel-family` (`ls -ln /usr/local/bin/cca`)
 
-#### Scenario: Installed where others can change it
-- **GIVEN** a binary not owned by uid 0, or an install directory or any parent up to `/` that is not root-owned or
-  is group- or world-writable (a sticky parent counts as safe only when root owns its child on the path)
-- **WHEN** `install.sh` finishes on Linux
-- **THEN** it warns that whoever can change that path can change what systemd and `sudo` run as root, names the first
-  unsafe directory (quoted), and says to install into a directory writable only by root along its whole path, such
-  as `/usr/local/bin`, with the guide's link. It prints no `chown`, `chmod` or other privileged command. (Changed
-  during apply, 2026-11-24, user decision on review round 5, option A2: the printed `chmod 0755` would have removed
-  `/tmp`'s sticky bit.)
-- Test: `TestInstallScriptWarnsWhenBinaryNotRootOwned` (subcases: user-owned binary, group-writable dir, user-owned
-  dir, user-owned parent, sticky world-writable dir such as `/tmp`; each asserts no `chown`/`chmod` in the output)
+### Requirement: The RHEL family gets the SELinux label and one fixed sudo note
+`install.sh` SHALL take the RHEL path when `/etc/os-release` `ID` or `ID_LIKE` names `rhel`, `fedora` or `centos`, and
+the Debian path for `debian` or `ubuntu`. On the RHEL path it SHALL run `restorecon` on the installed binary when
+`selinuxenabled` succeeds, and print one fixed note that `sudo` there does not search `/usr/local/bin`. The other
+paths SHALL do neither.
 
-### Requirement: install.sh refuses an install path it cannot use
-`install.sh` SHALL stop with an error naming the given path when that path is `-`, contains a newline, or cannot
-be entered, instead of installing somewhere else. (Added during apply, 2026-11-24: review round 5.)
+#### Scenario: The family decides the path
+- **GIVEN** `os-release` with `ID=rocky` (`ID_LIKE="rhel centos fedora"`), `ID=almalinux`, `ID=fedora`, `ID=debian`,
+  `ID=ubuntu`, or `ID=arch`
+- **WHEN** `install.sh` runs with `selinuxenabled` succeeding
+- **THEN** the first three run `restorecon` and print the sudo note; the others do neither
+- Test: `TestInstallScriptPicksFamilyPath` (one subcase per value)
 
-#### Scenario: Unusable install path
-- **GIVEN** `INSTALL_PATH` set to `-`, to a value containing a newline, or to a directory the user cannot enter
+#### Scenario: SELinux disabled on the RHEL path
+- **GIVEN** the RHEL path and `selinuxenabled` failing or missing
 - **WHEN** `install.sh` runs
-- **THEN** it exits non-zero, installs nothing, and the error contains the given path
-- Test: `TestInstallScriptRefusesUnusableInstallPath`
-
-### Requirement: The installed binary carries the system label on SELinux hosts
-When SELinux is enabled on the host (`selinuxenabled` succeeds), `install.sh` SHALL give the installed `cca` binary
-the label the policy defines for its path (for `/usr/local/bin`, `bin_t`). On a host without SELinux tools, or with
-SELinux disabled, the step SHALL be skipped silently. (Changed during apply, 2026-11-24: review finding R2.)
-
-#### Scenario: SELinux enabled, the binary gets the policy label
-- **GIVEN** a host where `selinuxenabled` succeeds
-- **WHEN** `install.sh` installs `cca` into the install directory
-- **THEN** it runs `restorecon` on the installed file after installing it
-- Test: `TestInstallScriptRestoresSELinuxLabel` (fake `sudo`, `install`, `selinuxenabled` and `restorecon` on PATH)
-
-#### Scenario: SELinux installed but disabled
-- **GIVEN** `restorecon` exists but `selinuxenabled` fails
-- **WHEN** `install.sh` runs
-- **THEN** it does not run `restorecon` and prints nothing about SELinux
-- Test: `TestInstallScriptRestoresSELinuxLabel` (subcase `SELinux disabled`)
-
-#### Scenario: No SELinux tools, no error
-- **GIVEN** a host without `restorecon` or `selinuxenabled`
-- **WHEN** `install.sh` runs
-- **THEN** it installs `cca`, exits 0, and prints nothing about SELinux
-- Test: `TestInstallScriptWithoutSELinuxTools`
+- **THEN** it runs no `restorecon` and prints nothing about SELinux, and still prints the sudo note
+- Test: `TestInstallScriptRestoresSELinuxLabel` (subcases `enabled`, `disabled`, `missing`)
 
 #### Scenario: A systemd unit can execute the binary on an enforcing host
 - **GIVEN** a fresh RHEL-family host (Rocky Linux 9, AlmaLinux 10) with SELinux enforcing
-- **WHEN** `cca` is installed with the quick-install command, the host is set up with `cca init` and `setup.sh`,
-  and `cca-server` and `cca-agent` are started
+- **WHEN** `cca` is installed with the quick-install command, the host is set up with `cca init` and `setup.sh`, and
+  `cca-server` and `cca-agent` are started
 - **THEN** both units are `active`, and the journal has no `203/EXEC` and no `Permission denied` for `/usr/local/bin/cca`
 - Check: `install-host:rhel-family` (by hand, on the reverted VMs, against the published release)
-
-### Requirement: install.sh says when sudo will not find the binary
-On Linux, when the install directory is not on sudo's `secure_path`, `install.sh` SHALL print a warning naming the
-directory and how to call `cca` by its full path, and its next steps SHALL use that full path.
-
-#### Scenario: Directory missing from secure_path, full-path advice
-- **GIVEN** sudo's `secure_path` is `/sbin:/bin:/usr/sbin:/usr/bin` and the install directory is `/usr/local/bin`
-- **WHEN** `install.sh` finishes
-- **THEN** it warns that `sudo` will not find `cca` there and its next steps call `sudo '/usr/local/bin/cca' status` (every printed path single-quoted; user decision 2026-11-24, option a)
-- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `missing`)
-
-### Requirement: install.sh prints no sudoers text
-`install.sh` SHALL NOT print a sudoers drop-in or any `Defaults secure_path` line computed from the host. When the
-install directory is not on sudo's `secure_path` it SHALL point to the guide's fixed snippet instead. (Changed during
-apply, 2026-11-24, user decision on review round 3, option a: three rounds found ways to fool a computed drop-in.)
-
-#### Scenario: Install directory missing from secure_path, no sudoers text
-- **GIVEN** sudo's `secure_path` is `/sbin:/bin:/usr/sbin:/usr/bin` and the install directory is `/usr/local/bin`
-- **WHEN** `install.sh` finishes
-- **THEN** its output contains no `Defaults secure_path` and no `/etc/sudoers.d` command; it names the guide's
-  `secure_path` step (installation page link), and the next steps call `sudo '/usr/local/bin/cca'`
-- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcase `missing`)
-
-#### Scenario: Unusual paths never reach sudoers text
-- **GIVEN** an install directory that is a symlink, user-owned, relative, or under a user-owned parent, or sudo
-  passes the caller's PATH (`~/.local/bin`, `.`)
-- **WHEN** `install.sh` finishes
-- **THEN** its output contains no `Defaults secure_path` and no `/etc/sudoers.d` command
-- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcases for each case)
-
-#### Scenario: Install directory on secure_path, or not Linux
-- **GIVEN** sudo's `secure_path` includes the install directory, as given or as resolved through symlinks (as on
-  rpm-ostree hosts, where `/usr/local` links to `/var/usrlocal`), or the host is macOS
-- **WHEN** `install.sh` finishes
-- **THEN** no `secure_path` warning is printed
-- Test: `TestInstallScriptWarnsWhenSudoPathLacksInstallDir` (subcases `on path`, `symlinked dir on path`, `macOS`)
