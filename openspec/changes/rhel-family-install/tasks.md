@@ -92,7 +92,7 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   the other subcases assert `4. sudo cca status`); fix `sudo_cca`, set to `${INSTALL_PATH}/cca` with the warning;
   green under sh and bash; shellcheck sh and dash clean. Checks: gofmt, golangci-lint ./... 0 issues, go vet,
   go test -count=1 ./... exit 0, -race ok, bash -n on the guide blocks, vitepress build of a copy.
-- [ ] 3.4 Independent review: `code-reviewer` (correctness) and a patterns review against `design/Anti-pattern.md`;
+- [x] 3.4 Independent review: `code-reviewer` (correctness) and a patterns review against `design/Anti-pattern.md`;
   each finding recorded as fixed or rejected.
   Round 1 (2026-11-24, on e330546..4a93ca2):
   - **code-reviewer (Opus high, Codex job review-mwurjj9s-qlcte1): approve.** No correctness bug, no Debian regression
@@ -445,6 +445,29 @@ Milestone M279. Design: [design.md](design.md). Specs: [binary-install](specs/bi
   - **Recorded, not rerun:** `go test -race ./...` failed in `integration` (TestServiceGroupCoScheduled timeout at
     service_group_test.go:106; ha_resilience_test.go:230 6/9 running). No file under integration/ changed and the
     package passes without -race, so these are timing-sensitive tests, a test bug and not a defect of this change.
+- [x] 3u Final review round (the single round under the user's cap, 2026-11-25, on b37b499..be963bf; Opus high):
+  - **code-reviewer: approve.** No HIGH or MEDIUM. Its own 3 mutations each broke a test, and all 5 tests fail on the
+    b37b499 install.sh. gofmt, golangci-lint (0 issues), `go test ./cmd/cca` and shellcheck sh/dash are clean. Codex
+    reported a HIGH (the manual block has no checksum), downgraded to LOW because both files come from the same HTTPS
+    origin, and a MEDIUM (selinuxenabled present without restorecon), rejected because policycoreutils is always
+    there with SELinux.
+  - **security-audit: install.sh adequate**: checksum before install, exact-name match, always root:root 0755, a
+    0700 work dir with the trap set at once, no injection, fixed output. **MEDIUM:** the guide's manual block
+    extracted into the current directory without an `&&` chain, so a failed download could install a planted
+    `./cca` as root. **Fixed** in c382919: a private `mktemp -d` and an `&&` chain, plus a sentence on a root-only
+    directory. Tested on Alma: with a wrong VERSION and a planted /tmp/cca nothing was replaced, and the real block
+    installs root-owned `bin_t`.
+  - **LOW, follow-up, not fixed under the cap:**
+    - the manual block has no checksum (kind has none either);
+    - `command -v selinuxenabled` relies on the user's PATH (the Rocky and Alma runs over ssh found it);
+    - the RHEL note names /usr/local/bin for a custom INSTALL_PATH;
+    - a bare `sudo: not found` without sudo;
+    - a misleading "Checksum mismatch" when no sha tool exists;
+    - no `--` before paths;
+    - no tag pattern check on CCATTLER_VERSION;
+    - commands printed unquoted;
+    - no `main()` wrapper against a cut-off download;
+    - a weak "printed before sudo" test check.
 - [ ] 3.5 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ## Workflow follow-up
