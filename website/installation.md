@@ -217,12 +217,17 @@ Or install it by hand. Each archive, `cca-<version>-linux-<arch>.tar.gz`, holds 
 
 ```bash
 VERSION=v1.97.0-beta   # any tag from GitHub Releases
-RELEASE_URL=https://github.com/boyadzhievb/ccattler/releases/download/${VERSION}
-[ "$(uname -m)" = x86_64 ] && curl -fsSL "${RELEASE_URL}/cca-${VERSION}-linux-amd64.tar.gz" | tar -xz cca
-[ "$(uname -m)" = aarch64 ] && curl -fsSL "${RELEASE_URL}/cca-${VERSION}-linux-arm64.tar.gz" | tar -xz cca
-sudo install -o root -g root -m 0755 cca /usr/local/bin/cca
+ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')   # amd64 or arm64
+cd "$(mktemp -d)" \
+  && curl -fsSL "https://github.com/boyadzhievb/ccattler/releases/download/${VERSION}/cca-${VERSION}-linux-${ARCH}.tar.gz" | tar -xz cca \
+  && sudo install -o root -g root -m 0755 cca /usr/local/bin/cca \
+  && cd -
 sudo restorecon /usr/local/bin/cca   # RHEL family only
 ```
+
+The download runs in a new private directory, and each step runs only if the one before it succeeded, so a failed
+download never installs another file named `cca`. Install into a directory only root can write, such as
+`/usr/local/bin`: whoever can write the directory can replace the binary systemd and `sudo` run as root.
 
 Pin a specific version (the variable must be set for `bash`, which runs the script, not for `curl`):
 
