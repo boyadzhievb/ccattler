@@ -627,6 +627,13 @@ cmd/cca ok (`rw7-etcd-integration.txt`); shellcheck gate_tls_checks.sh only the 
 separate-cluster-cas --strict` valid. Hosts that ran rework 5 or 6 keep a stale, harmless reload unit file; the
 role does not remove it (testbed runs wipe the cluster).
 
+**Stop-time check (Codex, 2026-11-26), CONFIRMED:** the "longest exposure is one interval" wording is overstated.
+`AccuracySec=1s` lets systemd fire up to 1 s late, so a flush just after a tick leaves the rule missing for up to
+interval + AccuracySec, plus the nft run time (about 31 s with the defaults).
+- **Fix (rework 8, batched with review round 7):** every place that states the bound says "at most one interval
+  plus the timer accuracy (about 31 s by default)": PKI_GRAPH, the role and drop-in comments, the nft template
+  header, and this file's decision block.
+
 **Main session on rework 7 (2026-11-26):** all three of the agent's choices are accepted.
 - **The `-sync` unit names,** per the brief; the decision block is corrected above.
 - **`AccuracySec=1s`:** systemd's 1-minute default would stretch the window past one interval.
