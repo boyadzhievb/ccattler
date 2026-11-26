@@ -672,7 +672,7 @@ Found during the M280 rework (CR-H1), 2026-11-25; confirmed in the code by the m
 **Testbed:** the deploy run creates an `e2e-admin` user and uses its `CCA_TOKEN` across server restarts and
 replicas: the guide's step 3, replayed.
 
-OpenSpec change: [`persistent-token-signing-key`](openspec/changes/persistent-token-signing-key/) (proposal, awaiting the user's go; checklist in its `tasks.md`).
+OpenSpec change: [`persistent-token-signing-key`](openspec/changes/persistent-token-signing-key/) (checklist in its `tasks.md`). Approved by the user 2026-11-26 ("go"), including the four additions: cluster-wide issuer URL, keyring operations carry the key, `keyring/token-signing/` placement, `--max-user-token-ttl` 24 h.
 
 ### Phase 281 — The Testbed Load Balancer Forwards to Gates (M281, testbed)
 
