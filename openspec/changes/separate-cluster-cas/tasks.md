@@ -577,11 +577,13 @@ withdrawn.**
   wipe the cca agent's own tables.
 - **Test:** the systemd model shows "flush apply" on a first start after the role ran with nftables inactive.
 
-**Open, needs a decision (not covered by 3l):** SA5-L2's second case, a first `systemctl start nftables` while the
-reload unit is already active (nftables inactive when the role ran), still flushes the peer rule without re-applying
-it: `rw6systemd/model-first-start.sh` logs "flush" only (`rw6-systemd-first-start.txt`). `ReloadPropagatedFrom=`
-does not cover a start. Options need the main session or the user (e.g. `BindsTo=`/`Requisite=` changes how the role
-starts the unit, or start nftables in the role).
+**Decided, no longer open (the user's timer decision above, 2026-11-26).** Rework 6 had left one case open, which
+the timer decision now covers in rework 7: SA5-L2's second case.
+- **The case:** a first `systemctl start nftables` while the reload unit was already active (nftables inactive when
+  the role ran) flushed the peer rule without re-applying it.
+- **Evidence:** `rw6systemd/model-first-start.sh` logged "flush" only (`rw6-systemd-first-start.txt`).
+  `ReloadPropagatedFrom=` does not cover a start.
+- **Rework 7's test:** the same model shows the timer re-applying the rule after that first start.
 
 ## Workflow follow-up
 
