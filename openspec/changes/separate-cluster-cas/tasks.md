@@ -553,6 +553,30 @@ packages ok, no known-flaky failure (`rw6-full-test.txt`); `-race` on security, 
 (pre-existing SC2034); `ansible-playbook --syntax-check` on the 7 playbooks ok (the two rotate-root-key-* files
 are included task lists); `openspec validate separate-cluster-cas --strict` valid.
 
+**User decision (2026-11-26, "go for a"): reconcile the peer rule with a timer, the kubeadm/kube-proxy model of
+re-syncing instead of trusting.** This supersedes both the conditional start below and the reload unit.
+- **The timer:** a systemd timer (`ccattler-etcd-peer-firewall.timer`, every 30 s, plus at boot) runs
+  `nft -f /etc/ccattler/etcd-peer-firewall.nft`, the atomic, idempotent table replace.
+- **What it covers:** nftables' first start, reload, restart and stop, and a manual `nft flush ruleset`. The
+  longest exposure is one interval; this is documented.
+- **What is removed:** the reload unit (`PartOf=`, `ReloadPropagatedFrom=`, `ExecReload=`) and any start condition.
+- **What stays:** etcd's `ExecStartPre=+` (etcd never starts without the rule) and the firewall unit at boot.
+- **What the role never does:** enable or start `nftables.service`, whose `flush ruleset` would wipe the cca agent's
+  data-plane tables on live re-runs.
+
+**Superseded: resolved by the main session (2026-11-26), no decision needed; the question to the user is
+withdrawn.**
+- **The cause:** the reload unit is already `WantedBy=nftables.service`, so any start of nftables pulls it in. But the
+  role starts it unconditionally (etcd-cluster/tasks/main.yml:118-123). While nftables is inactive the unit sits
+  "active" (RemainAfterExit), so nftables' first start does not run it again.
+- **Fix (rework 7, batched with review round 6):** the role checks `systemctl is-active nftables`. If nftables is
+  active, it starts the reload unit. If not, it only enables the unit and keeps it stopped (an existing active
+  instance is stopped), so nftables' first start runs it and re-applies the rule.
+- **Meanwhile:** the peer rule comes from the firewall unit and from etcd's `ExecStartPre=+`.
+- **What this avoids:** enabling or starting nftables.service on etcd members, whose `flush ruleset` would also
+  wipe the cca agent's own tables.
+- **Test:** the systemd model shows "flush apply" on a first start after the role ran with nftables inactive.
+
 **Open, needs a decision (not covered by 3l):** SA5-L2's second case, a first `systemctl start nftables` while the
 reload unit is already active (nftables inactive when the role ran), still flushes the peer rule without re-applying
 it: `rw6systemd/model-first-start.sh` logs "flush" only (`rw6-systemd-first-start.txt`). `ReloadPropagatedFrom=`
