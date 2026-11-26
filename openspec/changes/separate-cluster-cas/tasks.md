@@ -693,6 +693,32 @@ packages ok, no known-flaky failure (`rw8-full-test.txt`); `-race` on security, 
   `nft` run time: normally about 31 s, at most interval + accuracy + start timeout if `nft` hangs", wherever the
   bound is stated.
 
+### 3r. Review round 8 and the structural cut (2026-11-26)
+
+Both round-8 verdicts approve (m280-security-audit-r8.txt, m280-code-review-r8.txt), with LOW findings only, all
+about the HA etcd peer-port firewall and its sync timer.
+- **Why stop:** that component, added in rework 1 for round 1's LOW SA-L1, produced findings in rounds 4 to 8.
+  openspec/config.yaml:41 (three same-class rounds → structural fix and tell the user) was breached; the main
+  session acknowledged this to the user.
+
+**User decision (2026-11-26, "yes do that"): remove the peer firewall entirely; the product does not manage host
+firewalls.**
+- **What is removed:**
+  - the etcd-cluster role's nft rule table and template;
+  - its boot unit, sync service and timer, and their defaults;
+  - the firewall lines in etcd's drop-in (`Requires=`, `After=`, `ExecStartPre=+`);
+  - their tests, and D8 (superseded).
+- **The Kubernetes model:** kubeadm documents the required ports ("2380: etcd peers only") and leaves firewalling to
+  the operator. Its etcd peer and client certificates also come from one etcd CA.
+- **What is documented instead:** the guide and the HA docs get a port table (2379 from the API servers and agents,
+  2380 from etcd members only, 9770, 443/8080 for gates).
+- **SA-L1 is re-dispositioned to an accepted risk:** a worker's etcd client certificate is accepted on 2380 if the
+  operator leaves the port open. This is narrower than before M280, when every cluster certificate was accepted.
+  It is stated in the threat model and moves to M181.
+- **The round-8 LOWs** (SA8 1-5, CR8 F1-F4) are moot with the removal; the recorded suggestions stay follow-ups.
+- **Process (user, the same day):** after each review round the main session stops and waits for the user's go. At
+  most 2 review rounds per milestone. One small review of this removal was approved as part of the decision.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

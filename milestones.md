@@ -1477,6 +1477,10 @@ Split from M179 on 2026-11-12; scheduled right after M179 (number chosen so noth
 ### Phase 181 — Store Access Isolation (M181)
 
 - [ ] Design doc: agent access to state (etcd roles vs API gateway)
+- [ ] From M280 (2026-11-26, user decision): etcd's peer port 2380 trusts the etcd access CA, which also signs every
+  worker's etcd client certificate. A worker can therefore reach 2380 if the operator leaves it open; the product
+  does not manage host firewalls (kubeadm model). Close it here, e.g. with a separate etcd peer CA, or by etcd
+  identity checks on peers.
 - [ ] From M280 (2026-11-25): M280 gives distinct etcd identities (`cca-server-etcd-client-certificate.pem`, CN
   `etcd-client-cca-server`; one `node-etcd-client-certificate.pem` per node, CN `etcd-client-<node-id>`, all from the
   etcd access CA), but etcd's client-certificate auth only checks the CA, so each still has full access.
