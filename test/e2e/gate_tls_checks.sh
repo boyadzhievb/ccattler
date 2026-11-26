@@ -477,11 +477,55 @@ gate_tls_check_rotation() {
     log "  T5 PASS: rotated certificate served, 0 failed requests during rotation"
 }
 
-# gate_tls_check_restart_stability covers T12: restarts keep the same auto cert.
+# deploy-run:user-token-survives-restart (M283): a user token minted before
+# T12's cca-server restart still works after it. The token stays on the
+# control node in a root-only file; cca reads it from CCA_TOKEN, set inside
+# the remote shell from that file, so it is never printed or in an argv.
+USER_TOKEN_RESTART_USER="e2e-admin"                   # user with a direct cluster.admin grant
+USER_TOKEN_RESTART_FILE="/root/.cca-e2e-admin-token"  # root-only token file on the control node
+USER_TOKEN_RESTART_TTL="1h"                           # lifetime of the test token
+
+# user_token_restart_prepare creates e2e-admin with a direct cluster.admin
+# grant (if it does not exist) and mints its token into the root-only file.
+user_token_restart_prepare() {
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca user create $USER_TOKEN_RESTART_USER >/dev/null 2>&1 || true; \
+        sudo /usr/local/bin/cca role grant user:$USER_TOKEN_RESTART_USER --capability cluster.admin --scope cluster >/dev/null \
+        && sudo sh -c 'umask 077; /usr/local/bin/cca user token $USER_TOKEN_RESTART_USER --ttl $USER_TOKEN_RESTART_TTL \
+        > $USER_TOKEN_RESTART_FILE && test -s $USER_TOKEN_RESTART_FILE'"
+}
+
+# user_token_restart_status_ok runs cca status on the control node with the
+# token from the file as CCA_TOKEN (the env token wins over the local token).
+user_token_restart_status_ok() {
+    # \$(cat …) is expanded by the remote root shell, never here.
+    ssh_vm "$CTRL_NODE" "sudo sh -c 'CCA_TOKEN=\$(cat $USER_TOKEN_RESTART_FILE) && export CCA_TOKEN \
+        && /usr/local/bin/cca status >/dev/null 2>&1'"
+}
+
+# user_token_restart_cleanup removes the token file and the e2e-admin user, so a rerun starts clean.
+user_token_restart_cleanup() {
+    ssh_vm "$CTRL_NODE" "sudo rm -f $USER_TOKEN_RESTART_FILE; \
+        sudo /usr/local/bin/cca user delete $USER_TOKEN_RESTART_USER >/dev/null 2>&1" || true
+}
+
+# user_token_restart_fail cleans up, then fails the run naming the check.
+user_token_restart_fail() {
+    user_token_restart_cleanup
+    fail "FAIL (deploy-run:user-token-survives-restart): $1"
+}
+
+# gate_tls_check_restart_stability covers T12: restarts keep the same auto cert;
+# around the cca-server restart it runs deploy-run:user-token-survives-restart.
 gate_tls_check_restart_stability() {
     local fingerprint_before worker_ip="${NODE_IPS[$WORKER1_NODE]}"
     fingerprint_before=$(gate_tls_fingerprint "$GATE_TLS_NODE_IP" "tls-auto.home.arpa")
+    user_token_restart_prepare || user_token_restart_fail "could not create $USER_TOKEN_RESTART_USER or mint its token"
+    user_token_restart_status_ok || user_token_restart_fail "cca status with the user token failed before the restart"
     ssh_vm "$CTRL_NODE" "sudo systemctl restart cca-server" || fail "gate-tls T12: cca-server restart failed"
+    gate_tls_wait_until_quiet "$GATE_TLS_RECOVERY_TIMEOUT" user_token_restart_status_ok \
+        || user_token_restart_fail "cca status with the same user token failed after the cca-server restart"
+    user_token_restart_cleanup
+    log "  PASS (deploy-run:user-token-survives-restart): the token minted before the cca-server restart works after it"
     ssh_vm "$WORKER1_NODE" "sudo systemctl restart cca-agent" || fail "gate-tls T12: cca-agent restart failed"
     gate_tls_wait_until "$GATE_TLS_RECOVERY_TIMEOUT" "HTTPS via restarted $WORKER1_NODE" \
         gate_tls_https_ok "$worker_ip" "tls-auto.home.arpa"

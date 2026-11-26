@@ -50,15 +50,22 @@ Graphs to read before the code: design/graphs/AUTHN_GRAPH.md and design/graphs/S
   — `storedEnvelopeArea` shared by both planners and countV1Envelopes; retirement scans encryptedStorePrefixes.
 - [x] 2.4 `--max-user-token-ttl` in `handleUserToken` (D5); key confinement. 1.6 goes green.
   — `parseUserTokenTTL`; the flag refuses values below the 8h default, so the spec's 8h default always holds.
-- [ ] 2.5 Deploy check `deploy-run:user-token-survives-restart`:
-  - test/e2e/cluster_test.sh creates an `e2e-admin` user with a direct `--capability cluster.admin` grant and mints a
+- [x] 2.5 Deploy check `deploy-run:user-token-survives-restart`:
+  - the deploy test creates an `e2e-admin` user with a direct `--capability cluster.admin` grant and mints a
     token;
-  - it calls `cca status` with `CCA_TOKEN` before and after the existing `cca-server` restart (cluster_test.sh:2157).
+  - it calls `cca status` with `CCA_TOKEN` before and after the existing `cca-server` restart of gate-tls T12
+    (test/e2e/gate_tls_checks.sh, `gate_tls_check_restart_stability`).
 
   The HA check `ha:user-token-cross-replica` goes in vm-ha/ha_test.sh: a token from replica 1 is accepted by replica
   2. It is verified on the next E2E HA run (per the user's rule).
-  — open: the HA check is written (ha_test.sh Check 6b, also compares /oidc/jwks); the cluster_test.sh part is
-  stopped: the only cca-server restarts are in the `--upgrade` Step 7, which deploy-testbed.yml never runs.
+  - **Changed 2026-11-26 (main session):** the reference was cluster_test.sh:2157. That restart is in the `--upgrade`
+    Step 7, which deploy-testbed.yml never runs, so the check could not appear in the full run (3.3). The check moved
+    to T12's restart, which the default gate-tls group runs.
+  — 2026-11-26: done in gate_tls_checks.sh. The token is minted into a root-only file on the control node, 0600, and
+    read into CCA_TOKEN by the remote shell, so it is never printed or in an argv. Cleanup removes the file and the
+    user. shellcheck: no new findings. Stub harness (scratchpad m283-harness.txt): PASS when the token works; FAIL
+    with cleanup when it is refused after the restart. The HA check is ha_test.sh Check 6b, which also compares
+    /oidc/jwks.
 - [x] 2.6 Docs and graphs:
   - AUTHN_GRAPH and SECRETS_GRAPH;
   - Flow 37 in runtime-invariant-flows.md;
@@ -81,6 +88,19 @@ Graphs to read before the code: design/graphs/AUTHN_GRAPH.md and design/graphs/S
   - **Stop-time hook findings are recorded only.**
 - [ ] 3.3 One full Deploy Testbed run (job summary `full run`) whose log shows `deploy-run:user-token-survives-restart`
   passed; record the run ID.
+
+**Main session (2026-11-26), on the implementation report:**
+- **Accepted, the agent's choices:**
+  - `--max-user-token-ttl` cannot be below the 8 h default;
+  - only API replicas load the identity (`--controllers-only` skips it);
+  - the external OIDC authenticator keeps one key and ignores `kid`, as before.
+- **Recorded, out of scope:**
+  - `/oidc/jwks` and `/.well-known/openid-configuration` require authentication (api/server.go:313, :335: the
+    exempt paths are `/healthz`, `/metrics` and `/api/enroll`), although OIDC expects them public. Nothing outside
+    the cluster uses them today, since `CredentialBrokerController` has no production caller. To be fixed with the
+    credential-broker or federation follow-up.
+  - `WorkloadTokenIssuer.PublicKey()` now has only test callers (minor dead code); `KeyID()` and
+    `UserTokenIssuer.PublicKey()` were test-only already. Same follow-up.
 
 ## Workflow follow-up
 
