@@ -10,8 +10,8 @@
 # ExecStartPre reloads the rules at every etcd start (SA3-L4): Requires= proves
 # only that the unit ran once, not that the table is still loaded. nft -f
 # replaces the table atomically, so a reload is idempotent. "+" runs it as root
-# whatever User= the etcd unit has (SA4-L3). An nftables restart while etcd
-# runs is covered by ccattler-etcd-peer-firewall-reload.service (SA4-L4).
+# whatever User= the etcd unit has (SA4-L3). A flush while etcd runs is
+# repaired within one interval by ccattler-etcd-peer-firewall-sync.timer.
 [Unit]
 Requires=ccattler-etcd-peer-firewall.service
 After=ccattler-etcd-peer-firewall.service

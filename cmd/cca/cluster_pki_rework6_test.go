@@ -5,7 +5,9 @@ package main
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +48,7 @@ func TestTLSRefusalCountsOnlyCertificateAlerts(t *testing.T) {
 	if caError != nil {
 		t.Fatal(caError)
 	}
+	clientKeyPair := issueGateCAClientKeyPair(t, serverCA)
 	alertCases := []struct {
 		alertName        string // the alert, as RFC 8446 names it
 		alertDescription byte   // its code on the wire
@@ -66,7 +69,7 @@ func TestTLSRefusalCountsOnlyCertificateAlerts(t *testing.T) {
 			}
 			defer func() { _ = listener.Close() }()
 			serveOneTLSAlert(t, listener, alertCase.alertDescription)
-			refused, observed := tlsServerRefusesClientCertificate(t, listener.Addr().String(), serverCA.CACertificatePEM(), tls.Certificate{})
+			refused, observed := tlsServerRefusesClientCertificate(t, listener.Addr().String(), serverCA.CACertificatePEM(), clientKeyPair)
 			if !strings.Contains(observed, "remote error: tls:") {
 				t.Fatalf("the probe did not receive the alert: %s", observed)
 			}
@@ -74,5 +77,55 @@ func TestTLSRefusalCountsOnlyCertificateAlerts(t *testing.T) {
 				t.Errorf("alert %s: refusal = %v, want %v (%s)", alertCase.alertName, refused, alertCase.wantRefusal, observed)
 			}
 		})
+	}
+}
+
+// fatalRecordingTB is a testing.TB whose Fatal records the message and ends the
+// calling goroutine, so a test can assert that a helper fails its caller (SA6).
+type fatalRecordingTB struct {
+	testing.TB          // the real test, for every other method
+	fatalMessage string // what the helper passed to Fatal or Fatalf
+}
+
+// Helper does nothing: the recording TB has no call stack to mark.
+func (fatalRecordingTB *fatalRecordingTB) Helper() {}
+
+// Fatal records the message and stops the calling goroutine, as testing.T does.
+func (fatalRecordingTB *fatalRecordingTB) Fatal(arguments ...any) {
+	fatalRecordingTB.fatalMessage = fmt.Sprint(arguments...)
+	runtime.Goexit()
+}
+
+// Fatalf records the formatted message and stops the calling goroutine.
+func (fatalRecordingTB *fatalRecordingTB) Fatalf(format string, arguments ...any) {
+	fatalRecordingTB.fatalMessage = fmt.Sprintf(format, arguments...)
+	runtime.Goexit()
+}
+
+// TestTLSRefusalRejectsAnEmptyClientCertificate (SA6): a server answers an
+// empty client certificate with certificate_required, so the refusal helper
+// fails the test instead of counting that as proof of CA separation.
+func TestTLSRefusalRejectsAnEmptyClientCertificate(t *testing.T) {
+	serverCA, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, clusterPKITestTTL)
+	if caError != nil {
+		t.Fatal(caError)
+	}
+	listener, listenError := net.Listen("tcp", "127.0.0.1:0")
+	if listenError != nil {
+		t.Fatal(listenError)
+	}
+	defer func() { _ = listener.Close() }()
+	serveOneTLSAlert(t, listener, 116) // certificate_required, as Go sends for an empty certificate
+	recordingTB := &fatalRecordingTB{TB: t}
+	helperReturned := false
+	helperDone := make(chan struct{})
+	go func() {
+		defer close(helperDone)
+		tlsServerRefusesClientCertificate(recordingTB, listener.Addr().String(), serverCA.CACertificatePEM(), tls.Certificate{})
+		helperReturned = true
+	}()
+	<-helperDone
+	if helperReturned || !strings.Contains(recordingTB.fatalMessage, "empty client certificate") {
+		t.Errorf("an empty client certificate did not fail the test: returned=%v, fatal=%q", helperReturned, recordingTB.fatalMessage)
 	}
 }

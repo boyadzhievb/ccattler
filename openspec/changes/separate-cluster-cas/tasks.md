@@ -555,7 +555,9 @@ are included task lists); `openspec validate separate-cluster-cas --strict` vali
 
 **User decision (2026-11-26, "go for a"): reconcile the peer rule with a timer, the kubeadm/kube-proxy model of
 re-syncing instead of trusting.** This supersedes both the conditional start below and the reload unit.
-- **The timer:** a systemd timer (`ccattler-etcd-peer-firewall.timer`, every 30 s, plus at boot) runs
+- **The timer:** a systemd timer (`ccattler-etcd-peer-firewall-sync.timer` running a separate oneshot
+  `-sync.service`; name corrected in rework 7, because a timer named after the boot unit would trigger that
+  RemainAfterExit unit only once), every 30 s, plus at boot) runs
   `nft -f /etc/ccattler/etcd-peer-firewall.nft`, the atomic, idempotent table replace.
 - **What it covers:** nftables' first start, reload, restart and stop, and a manual `nft flush ruleset`. The
   longest exposure is one interval; this is documented.
@@ -584,6 +586,53 @@ the timer decision now covers in rework 7: SA5-L2's second case.
 - **Evidence:** `rw6systemd/model-first-start.sh` logged "flush" only (`rw6-systemd-first-start.txt`).
   `ReloadPropagatedFrom=` does not cover a start.
 - **Rework 7's test:** the same model shows the timer re-applying the rule after that first start.
+
+### 3n. Review round 6 (2026-11-26, on 8b2ccfc..30d1931)
+
+Both verdicts approve with LOW findings only: security-audit (m280-security-audit-r6.txt, harnesses in audit-r6/)
+and code-reviewer (m280-code-review-r6.txt, Codex job review-mwxeydem-420i73). Every 3l row is closed.
+- **T19 under cluster_test.sh's `set -Eeuo pipefail`:** it PASSes, SKIPs and FAILs exactly as intended.
+- **Interrupt cases:** 32 of them, under dash and bash, leave no files and always FAIL T19.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| CR6-L1 / SA6 | With OpenSSL 3, the verify step's "mint-failed" reason is the certificate subject, not the error | Fix: take the first `^error` line for that step |
+| SA6 | `certificate_required` counts as a refusal, but Go sends it only when the client sent no certificate, so an empty key pair could "prove" separation | Fix: `tlsServerRefusesClientCertificate` fails the test when the client certificate is empty |
+| CR6-L2 | The reload-unit test checks lines anywhere, not per section (ExecReload in [Unit] passes) | Moot: the reload unit is removed by the timer decision. The new timer test checks settings per section |
+| CR6-L3 | PKI_GRAPH says a manual flush is repaired at the next nftables start | Fix: rewrite the line for the timer |
+| SA6 note | A timer whose service has `RemainAfterExit=true` runs it once and idles | Fix in the timer design: a separate oneshot service without RemainAfterExit; don't reuse the firewall unit |
+| Codex | The single-CA rule could hide a partial three-CA install | Rejected: the rule was decided in 3k, new clusters never write pki/ca.pem, and a three-CA cluster without `cluster-identity-ca.pem` has no API, so T19's own API check fails first |
+| Suggestions | T19's remote script is one 1.7 KB line; test files are named after rework rounds | Recorded; not changed in M280 |
+
+### 3o. Rework round 7 (2026-11-26, lead-developer, on 30d1931; outputs in scratchpad rw7-*.txt)
+
+Red is the 30d1931 file (role, script or helper) or a mutation of this tree (`rw7-mutations.txt`); green is the same
+check on this tree. Unit names follow the main session's rework-7 brief: `ccattler-etcd-peer-firewall-sync.timer`
+runs `ccattler-etcd-peer-firewall-sync.service` (the decision block above says `ccattler-etcd-peer-firewall.timer`,
+which by systemd's naming would run the boot unit with `RemainAfterExit=`, the SA6 note).
+
+| ID | Red | Fix and green |
+|---|---|---|
+| Decision "go for a" (timer) | New `TestEtcdPeerFirewallSyncTimer` and `TestEtcdRoleLeavesNftablesServiceAlone` on the 30d1931 role: no role defaults, the reload-unit tasks still have `peer-firewall-reload`, `PartOf=nftables`, `ReloadPropagatedFrom=`, `WantedBy=nftables` (`rw7-red-timer.txt`). Model `rw6systemd/model-timer.sh` (model interval 3 s) on the 30d1931 reload unit: after nftables' first start and a manual flush, the rule is "NOT back within 5s" (`rw7-systemd-timer-model.txt`; its stop and reload rows are not claimed, the model does not enable the unit) | Reload unit and its tasks removed. `ccattler-etcd-peer-firewall-sync.service` (oneshot, no RemainAfterExit, the boot unit's nft command) and `.timer` (`OnBootSec=`, `OnUnitActiveSec=` = `etcd_peer_firewall_sync_interval` 30s, `AccuracySec=` 1s so the exposure stays one interval, `WantedBy=timers.target`), enabled and started; interval and accuracy are role defaults (new `roles/etcd-cluster/defaults/main.yml`). Boot unit and etcd's `ExecStartPre=+` kept; the role never manages nftables.service. Tests check settings per section ([Unit], [Service], [Timer], [Install]) and no RemainAfterExit; mutations caught: M71 RemainAfterExit in the service, M72 OnUnitActiveSec in [Install], M73 a task starting nftables. Model green: first start back after 3 s, stop 4 s, reload 3 s, manual flush 4 s (interval 3 s plus the 1 s accuracy and 0.5 s polling) |
+| CR6-L1 | `t19stub.sh` case three-ca-noncA-gate (the reviewer's) on 30d1931: "mint-failed: verify: CN=gate" (`rw7-t19-harness.txt`) | `mint_failed` takes the first `^error` line, else the filtered first line. Green: "mint-failed: verify: error 79 at 1 depth lookup: invalid CA certificate"; the other harness cases unchanged; dash interrupt cases still leave no file (`rw7-dash-interrupt.txt`) |
+| SA6 | New `TestTLSRefusalRejectsAnEmptyClientCertificate` with the empty-certificate check mutated away: "an empty client certificate did not fail the test: returned=true" (`rw7-red-empty.txt`) | `tlsServerRefusesClientCertificate` (now `testing.TB`) fails the test on an empty certificate; the alert test uses a real gate-CA client pair. Green (`rw7-green-empty.txt`); the real-etcd and API refusal tests pass |
+| CR6-L3 | PKI_GRAPH said a manual flush lasts until the next etcd or nftables start or reload | PKI_GRAPH row, role task comment, etcd drop-in comment and the nft template header describe the timer: the longest exposure is one interval |
+
+Checks: gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also
+`--build-tags etcd_integration` on cmd/cca and store) (`rw7-checks.txt`); `go test -count=1 ./...` exit 0, 20
+packages ok, no known-flaky failure (`rw7-full-test.txt`); `-race` on security, controllers, cmd/cca ok
+(`rw7-race.txt`); etcd_integration (same ETCD_BIN v3.5.36; plain etcd on 127.0.0.1:2379 for store): store and
+cmd/cca ok (`rw7-etcd-integration.txt`); shellcheck gate_tls_checks.sh only the pre-existing SC2034;
+`ansible-playbook --syntax-check` on the 7 playbooks ok (`rw7-ansible.txt`); `openspec validate
+separate-cluster-cas --strict` valid. Hosts that ran rework 5 or 6 keep a stale, harmless reload unit file; the
+role does not remove it (testbed runs wipe the cluster).
+
+**Main session on rework 7 (2026-11-26):** all three of the agent's choices are accepted.
+- **The `-sync` unit names,** per the brief; the decision block is corrected above.
+- **`AccuracySec=1s`:** systemd's 1-minute default would stretch the window past one interval.
+- **No removal task for the reload unit:** it only ever existed in unreleased reworks 5 and 6, so at most on
+  testbed VMs. It applies the same rule and does no harm, and a removal task for a never-released artifact would be
+  dead weight in the role.
 
 ## Workflow follow-up
 

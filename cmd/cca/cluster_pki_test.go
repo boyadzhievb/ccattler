@@ -154,12 +154,17 @@ func isCertificateRefusalAlert(connectionError error) bool {
 }
 
 // tlsServerRefusesClientCertificate reports whether the TLS server at hostPort
-// refuses clientCertificate at the TLS layer: a certificate-related TLS alert
-// during the handshake (TLS 1.2) or on the first read after it (TLS 1.3), not an
-// HTTP status. The second result is what was seen (server roots: serverRootsPEM).
-func tlsServerRefusesClientCertificate(t *testing.T, hostPort string, serverRootsPEM []byte,
+// refuses clientCertificate (never empty) with a certificate-related TLS alert,
+// at the handshake (TLS 1.2) or on the first read (TLS 1.3), not an HTTP status.
+// The second result is what was seen (server roots: serverRootsPEM).
+func tlsServerRefusesClientCertificate(t testing.TB, hostPort string, serverRootsPEM []byte,
 	clientCertificate tls.Certificate) (bool, string) {
 	t.Helper()
+	// SA6: a server answers an empty certificate with certificate_required, so it
+	// would "refuse" without ever seeing the certificate under test.
+	if len(clientCertificate.Certificate) == 0 {
+		t.Fatal("tlsServerRefusesClientCertificate: empty client certificate, a refusal would prove nothing")
+	}
 	serverRoots := x509.NewCertPool()
 	if !serverRoots.AppendCertsFromPEM(serverRootsPEM) {
 		t.Fatal("no CA certificate in the server roots")

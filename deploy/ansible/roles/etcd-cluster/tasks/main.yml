@@ -90,35 +90,46 @@
     enabled: true
     daemon_reload: true
 
-# "systemctl restart nftables" and "systemctl reload nftables" flush the ruleset
-# while etcd keeps running (SA4-L4, SA5-L2). This unit is part of
-# nftables.service: it is restarted with it (PartOf=), reloaded with it
-# (ReloadPropagatedFrom=, ExecReload=) and runs after it, re-applying the peer
-# rules. etcd does not require it, so an nftables restart never restarts etcd.
-# A manual "nft flush ruleset" bypasses systemd and stays an operator action.
-- name: Install the unit that re-applies the etcd peer port firewall after nftables restarts
+# Anything that flushes the ruleset while etcd runs removes the peer rule: the
+# first start, a reload, restart or stop of nftables.service, a manual
+# "nft flush ruleset" (SA4-L4, SA5-L2). Instead of following nftables.service,
+# a timer re-applies the rules every etcd_peer_firewall_sync_interval (user
+# decision "go for a", the kube-proxy model): the longest exposure is one
+# interval. nft -f replaces the table atomically, so a re-apply is idempotent.
+# The service has no RemainAfterExit, so every timer tick runs it again. The
+# role never enables or starts nftables.service, whose "flush ruleset" would
+# also wipe the cca agent's data-plane tables.
+- name: Install the service that re-applies the etcd peer port firewall
   copy:
-    dest: /etc/systemd/system/ccattler-etcd-peer-firewall-reload.service
+    dest: /etc/systemd/system/ccattler-etcd-peer-firewall-sync.service
     mode: "0644"
     content: |
       [Unit]
-      Description=CCattler: re-apply the etcd peer port firewall when nftables restarts or reloads
-      PartOf=nftables.service
-      ReloadPropagatedFrom=nftables.service
-      After=nftables.service
+      Description=CCattler: re-apply the etcd peer port firewall (run by its timer)
 
       [Service]
       Type=oneshot
-      RemainAfterExit=true
       ExecStart=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
-      ExecReload=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
+
+- name: Install the timer that re-applies the etcd peer port firewall
+  copy:
+    dest: /etc/systemd/system/ccattler-etcd-peer-firewall-sync.timer
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=CCattler: re-apply the etcd peer port firewall every {{ etcd_peer_firewall_sync_interval }}
+
+      [Timer]
+      OnBootSec={{ etcd_peer_firewall_sync_interval }}
+      OnUnitActiveSec={{ etcd_peer_firewall_sync_interval }}
+      AccuracySec={{ etcd_peer_firewall_sync_accuracy }}
 
       [Install]
-      WantedBy=nftables.service
+      WantedBy=timers.target
 
-- name: Enable the etcd peer port firewall reload unit
+- name: Start the etcd peer port firewall timer now and at boot
   systemd:
-    name: ccattler-etcd-peer-firewall-reload
+    name: ccattler-etcd-peer-firewall-sync.timer
     state: started
     enabled: true
     daemon_reload: true
