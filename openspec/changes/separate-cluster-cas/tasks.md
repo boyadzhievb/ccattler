@@ -739,6 +739,11 @@ Implements the 3r user decision. Nothing new is ticked.
   control plane"); the accepted risk (2380 trusts the etcd access CA until M181) in design/threat-model.md (T1) and
   design/security-model.md (cluster PKI).
 
+**Stop-time check (Codex, 2026-11-26): "existing deployments retain the peer firewall after upgrade". Recorded,
+not acted on** (per the user's rule: stop-time findings never trigger work). The peer firewall was never released.
+It existed only in unreleased M280 commits (reworks 1-8), so no user deployment has it; at most a testbed HA VM that
+ran one of those commits.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:
