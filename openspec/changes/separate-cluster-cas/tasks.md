@@ -130,8 +130,28 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     issues (also `--build-tags etcd_integration` on cmd/cca and store); `go test -count=1 ./...` exit 0; `-race` on
     security, controllers, cmd/cca exit 0; every `etcd_integration` test (store's 20 against a plain etcd on
     127.0.0.1:2379, the two PKI tests with TLS etcd) PASS with etcd v3.5.36 (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/etcd-integration-final.txt).
-- [ ] 3.2 Deploy check `deploy-run:gate-cert-not-client`: on the deploy cluster, a gate certificate and key presented
+- [x] 3.2 Deploy check `deploy-run:gate-cert-not-client`: on the deploy cluster, a gate certificate and key presented
   to etcd and to the API fail the TLS handshake. Then `install-host:three-cas` on a fresh VM with the guide.
+  **`install-host:three-cas` DONE (2026-11-26).** A fresh Debian 13 VM (192.168.100.103, snapshot reverted by the user)
+  was set up following website/installation.md exactly:
+  - **sudo:** the user ran the guide's passwordless-sudo block.
+  - **Prerequisites:** the guide's steps 2 and 3 (containerd active, nft, CNI 1.9.1, etcd-server).
+  - **`cca`:** built from master 9e55d52 (code as at a5fe10a) and installed with
+    `install -o root -g root -m 0755` (M280 is unreleased).
+  - **Cluster:** `cca init --advertise-address 192.168.100.103 --node-id ctrl`, then `sudo setup.sh` (exit 0, "etcd
+    healthy (TLS)"), then `systemctl enable --now cca-server cca-agent`; etcd, cca-server and cca-agent active;
+    `sudo cca status` shows ctrl alive.
+  - **PKI:**
+    - all 9 D1a pairs are present; keys 0600, certificates 0644, the etcd pairs owned by etcd;
+    - every file starts with its "# CCattler" line;
+    - issuers, OUs, CNs (`etcd-server-ctrl`, `etcd-client-cca-server`, `etcd-client-node-ctrl`) and EKUs match D1a;
+    - `ETCD_TRUSTED_CA_FILE=/etc/ccattler/pki/etcd-access-ca.pem`;
+    - no single-CA warning in the cca-server journal.
+  - **Trust:** node-identity-for-api.pem presented to etcd gets curl `000 exit 56` (refused);
+    node-etcd-client-certificate.pem gets 200.
+  - **Workload:** the Getting Started `web.cca` (nginx, 3 instances) runs 3/3; `cca describe service web` gives VIP
+    10.200.0.1, and the VIP answered 200 200 200.
+  - **Deploy part:** see the 3.4 run 45819982283 (T19 PASS, no SKIP).
   - **The deploy part is DONE** in run 45819982283 (a5fe10a), 14:35:12: "T19 PASS (deploy-run:gate-cert-not-client):
     etcd and the API refuse tls-auto's gate certificate and a ClientAuth certificate from the gate CA at the
     handshake; the same gate pair loads against the gate listener; the node etcd client certificate is accepted".
