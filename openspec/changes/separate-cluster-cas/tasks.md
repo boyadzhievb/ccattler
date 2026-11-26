@@ -719,6 +719,26 @@ firewalls.**
 - **Process (user, the same day):** after each review round the main session stops and waits for the user's go. At
   most 2 review rounds per milestone. One small review of this removal was approved as part of the decision.
 
+### 3s. Removal of the peer firewall (2026-11-26, lead-developer, on de884c7; outputs in scratchpad rw9-*.txt)
+
+Implements the 3r user decision. Nothing new is ticked.
+- **Removed (deploy/ansible/roles/etcd-cluster):**
+  - templates/etcd-peer-firewall.nft.j2 and defaults/main.yml (only the sync timer's three variables; `git rm`);
+  - tasks/main.yml: the rule-file task, the boot unit `ccattler-etcd-peer-firewall.service` and its start task, the
+    sync service and timer and their start task, the "reload changed rules" task (no reload-unit leftovers remained);
+  - templates/etcd-cluster.conf.j2: `[Unit] Requires=`/`After=` on the firewall unit, `ExecStartPre=+/usr/sbin/nft`,
+    and their comment; a comment now says the operator limits 2380.
+- **Removed tests (firewall only):** cmd/cca/cluster_pki_rework7_test.go (`TestEtcdPeerFirewallSyncTimer`,
+  `TestEtcdRoleLeavesNftablesServiceAlone` and their helpers, used nowhere else; `git rm`),
+  `TestEtcdStartsOnlyAfterThePeerFirewall` (rework3) and `TestAnsibleEtcdPeerPortLimitedToMembers` (rework). The
+  layout-render tests of etcd-cluster.conf.j2 stay.
+- **Docs:** design.md D8 marked superseded, the Risks list names the accepted risk and the HA-roles risk no longer
+  lists the firewall; PKI_GRAPH's etcd (HA peers) row states the operator's job and the accepted risk.
+- **Added:** a port table (2379, 2380, 9770, 443/8080, plus 4789/udp VXLAN) with "firewalling is the operator's
+  job" in website/installation.md ("Ports and firewalling") and website/reference/architecture.md ("Multi-node
+  control plane"); the accepted risk (2380 trusts the etcd access CA until M181) in design/threat-model.md (T1) and
+  design/security-model.md (cluster PKI).
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

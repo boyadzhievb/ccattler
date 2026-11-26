@@ -413,28 +413,3 @@ func TestCLIEtcdDefaultsPreferM280Files(t *testing.T) {
 			wantEtcdSets, wantIdentitySets)
 	}
 }
-
-// TestAnsibleEtcdPeerPortLimitedToMembers (SA-L1): every node holds an etcd
-// access CA client certificate, which etcd's peer port also accepts, so the HA
-// role lets only the etcd members reach 2380 (an nftables table, kept at boot).
-func TestAnsibleEtcdPeerPortLimitedToMembers(t *testing.T) {
-	const roleDirectory = "../../deploy/ansible/roles/etcd-cluster"
-	firewallTemplate, readError := os.ReadFile(filepath.Join(roleDirectory, "templates", "etcd-peer-firewall.nft.j2"))
-	if readError != nil {
-		t.Fatalf("no etcd peer firewall template: %v", readError)
-	}
-	for _, wantText := range []string{"tcp dport 2380", "drop", "groups['etcd']", "hostvars[member].ansible_host"} {
-		if !strings.Contains(string(firewallTemplate), wantText) {
-			t.Errorf("etcd-peer-firewall.nft.j2 lacks %q", wantText)
-		}
-	}
-	roleTasks := string(mustReadFile(t, filepath.Join(roleDirectory, "tasks", "main.yml")))
-	firewallTaskIndex := strings.Index(roleTasks, "etcd-peer-firewall.nft.j2")
-	etcdStartIndex := strings.Index(roleTasks, "- name: Reload systemd and start etcd cluster")
-	if firewallTaskIndex < 0 || etcdStartIndex < 0 || firewallTaskIndex > etcdStartIndex {
-		t.Error("the etcd-cluster role does not install the peer firewall before it starts etcd")
-	}
-	if !strings.Contains(roleTasks, "ccattler-etcd-peer-firewall") {
-		t.Error("the etcd-cluster role does not keep the peer firewall across reboots (ccattler-etcd-peer-firewall unit)")
-	}
-}

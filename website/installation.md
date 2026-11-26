@@ -334,6 +334,22 @@ Second run detects the existing inventory and deploys CCattler across your hosts
 | cca agent | Every worker node | `cca-agent.service` |
 | Certificates | `/etc/ccattler/pki` | Three CAs (cluster identity, etcd access, gate HTTPS) and each process's own certificates |
 
+### Ports and firewalling
+
+Firewalling is the operator's job: CCattler does not install rules that limit who reaches these ports (as with
+kubeadm). `setup.sh` only opens ports in an active firewalld or ufw, see above.
+
+| Port | Service | Reachable from |
+|---|---|---|
+| 2379/tcp | etcd clients | the API servers (control-plane hosts) and the agents on every node |
+| 2380/tcp | etcd peers (multi-node etcd only) | the etcd members only |
+| 9770/tcp | CCattler API (`cca server`) | agents, `cca` CLI users and the other API servers |
+| 443/tcp, 8080/tcp | gates (agent gate proxy: HTTPS with `--proxy-tls-listen`, HTTP with `--proxy-listen`) | the clients of your gates |
+| 4789/udp | VXLAN overlay | the other nodes |
+
+Keep 2380 closed to everything but the etcd members: until M181, etcd's peer port trusts the etcd access CA, which
+also signs every worker's etcd client certificate, so a worker could reach it if the port is left open.
+
 ## Set up a cluster by hand
 
 These are the steps the Ansible playbook runs, done by hand. In the commands, replace `CONTROL_PLANE_IP` with the

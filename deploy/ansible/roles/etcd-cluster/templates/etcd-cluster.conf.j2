@@ -5,21 +5,10 @@
 # Clients and peers are trusted only from the etcd access CA (M280); peers
 # present etcd-peer-certificate.pem (ServerAuth and ClientAuth). File names
 # follow the cluster's PKI layout (cca_pki, group_vars).
-# etcd starts only after the peer port firewall loaded, and not when it failed
-# (M280 SA2-L5): Before= in the firewall unit orders, it does not require.
-# ExecStartPre reloads the rules at every etcd start (SA3-L4): Requires= proves
-# only that the unit ran once, not that the table is still loaded. nft -f
-# replaces the table atomically, so a reload is idempotent. "+" runs it as root
-# whatever User= the etcd unit has (SA4-L3). A flush while etcd runs is
-# repaired by ccattler-etcd-peer-firewall-sync.timer: the rule is missing for
-# at most one interval plus the timer accuracy (about 31 s by default).
-[Unit]
-Requires=ccattler-etcd-peer-firewall.service
-After=ccattler-etcd-peer-firewall.service
-
+# The role does not manage a host firewall (M280, user decision 2026-11-26):
+# the operator limits the peer port 2380 to the etcd members (installation.md).
 [Service]
 UnsetEnvironment=DAEMON_ARGS ETCD_NAME ETCD_DATA_DIR ETCD_LISTEN_CLIENT_URLS ETCD_ADVERTISE_CLIENT_URLS ETCD_CERT_FILE ETCD_KEY_FILE ETCD_TRUSTED_CA_FILE ETCD_CLIENT_CERT_AUTH
-ExecStartPre=+/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
 ExecStart=
 ExecStart=/usr/bin/etcd \
   --name {{ inventory_hostname }} \

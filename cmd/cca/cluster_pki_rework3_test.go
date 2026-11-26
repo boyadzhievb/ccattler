@@ -347,36 +347,6 @@ func TestAnsibleUnitsFollowTheClusterPKILayout(t *testing.T) {
 	}
 }
 
-// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5, SA3-L4, SA4-L3): the etcd
-// drop-in requires and follows the peer-firewall unit and reloads its rules as
-// root before every start; it does not depend on the sync timer or its service.
-func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
-	const firewallUnit = "ccattler-etcd-peer-firewall.service"
-	etcdDropIn := renderAnsibleRoleTemplate(t, "etcd-cluster", "etcd-cluster.conf.j2", "three_ca", "ctrl")
-	unitSection, _, _ := strings.Cut(etcdDropIn, "[Service]")
-	for _, wantLine := range []string{"[Unit]", "Requires=" + firewallUnit, "After=" + firewallUnit} {
-		if !slices.Contains(strings.Split(unitSection, "\n"), wantLine) {
-			t.Errorf("etcd drop-in [Unit] lacks %q:\n%s", wantLine, unitSection)
-		}
-	}
-	for _, dropInLine := range strings.Split(etcdDropIn, "\n") {
-		if !strings.HasPrefix(dropInLine, "#") && strings.Contains(dropInLine, etcdPeerFirewallSyncUnit) {
-			t.Errorf("the etcd drop-in must not depend on %s: %s", etcdPeerFirewallSyncUnit, dropInLine)
-		}
-	}
-	roleTasksPath := filepath.Join(ansibleRolesDirectory, "etcd-cluster", "tasks", "main.yml")
-	firewallUnitExec := etcdPeerFirewallCommand(t, roleTasksPath)
-	// SA3-L4, SA4-L3: every etcd start reloads the rules, as root ("+").
-	_, serviceSection, _ := strings.Cut(etcdDropIn, "[Service]")
-	serviceSection, _, _ = strings.Cut(serviceSection, "ExecStart=")
-	if !slices.Contains(strings.Split(serviceSection, "\n"), "ExecStartPre=+"+firewallUnitExec) {
-		t.Errorf("etcd drop-in [Service] lacks ExecStartPre=+%s before ExecStart:\n%s", firewallUnitExec, serviceSection)
-	}
-	if unitState := ansibleTaskField(t, roleTasksPath, "Load the etcd peer port firewall now and at boot", "systemd", "state"); unitState != "started" {
-		t.Errorf("the firewall unit must be started, never restarted (Requires= would restart etcd): state %v", unitState)
-	}
-}
-
 // writeLegacySingleCAFiles writes a CA as cca init wrote it before M280 (Subject
 // O=CCattler, CN "CCattler Root CA", no OU) and returns its certificate and key paths.
 func writeLegacySingleCAFiles(t *testing.T) (string, string) {

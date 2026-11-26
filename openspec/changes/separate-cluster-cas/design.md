@@ -181,6 +181,13 @@ It is written from today's code first (task 1.0), so it shows the single-CA prob
 short Flow "Cluster PKI" in runtime-invariant-flows.md links to it.
 
 ### D8. The etcd peer rule is reconciled by a timer (user decision "go for a", 2026-11-26, during apply)
+**Superseded (user decision, 2026-11-26, review round 8, tasks.md 3r):** the peer firewall is removed entirely, with
+its nft table, boot unit, sync timer and service, role defaults and etcd's `Requires=`, `After=` and
+`ExecStartPre=+` lines. CCattler does not manage host firewalls (the kubeadm model): the installation guide's port
+table says 2380 is reachable from the etcd members only and that firewalling is the operator's job. SA-L1 becomes an
+accepted risk until M181 (design/threat-model.md, design/security-model.md). The text below is kept as the record of
+the superseded decision.
+
 Every node's etcd client certificate comes from the etcd access CA, which etcd's peer port also trusts, so the
 etcd-cluster role limits 2380/tcp to the etcd members with an nftables table (SA-L1). Anything that flushes the
 ruleset while etcd runs removes that rule: nftables' first start, a reload, restart or stop, a manual
@@ -218,12 +225,16 @@ and the two `cca server` exit rows record user decision 1 and SA3-L2. Their word
 
 - **[Ansible-built clusters]** The templates change with this release, and the deploy testbed builds fresh clusters,
   so the full run tests the new layout of the controlplane and worker roles (baremetal-deploy.yml). The HA roles
-  (ha-controlplane, etcd-cluster: peer firewall, sync timer, etcd's `ExecStartPre=+`) run only through ha-deploy.yml
+  (ha-controlplane, etcd-cluster: the drop-in on the etcd access CA) run only through ha-deploy.yml
   (e2e-ha.yml): the template tests and systemd models prove them, and the next E2E HA run verifies them on a host.
 - **[Users who pinned ca.pem for TLS gates]** Their clients must trust `gate-https-ca.pem` on new clusters. This goes in
   the changelog and the guide.
 - **[Old clusters stay exposed to the etcd/API identity mix]** The gate hole closes with D3, and old clusters get the
   warning. Node certificates remain etcd root clients there, as before. That is accepted under user decision 1.
+- **[etcd peer port trusts worker certificates]** Until M181, etcd's peer port 2380 trusts the etcd access CA, which
+  also signs workers' etcd client certificates, so a worker can reach 2380 if the operator leaves it open. CCattler
+  does not firewall it (D8 superseded, user decision 2026-11-26); the port table in the installation guide says 2380
+  is for etcd members only. Accepted risk, narrower than before M280, when every cluster certificate was accepted.
 
 ## Migration Plan
 

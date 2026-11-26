@@ -148,3 +148,17 @@ For high availability:
 - 3 or 5 control-plane nodes with leader election
 - Controllers are stateless — multiple copies share state, automatic failover
 - etcd cluster provides distributed consensus
+
+Ports of a multi-node control plane (`ha-deploy.yml`). CCattler does not firewall them: limiting who reaches each
+port is the operator's job (as with kubeadm). The full table is in
+[Installation: Ports and firewalling](../installation.md#ports-and-firewalling).
+
+| Port | Service | Reachable from |
+|---|---|---|
+| 2379/tcp | etcd clients | the API servers and the agents |
+| 2380/tcp | etcd peers | the etcd members only |
+| 9770/tcp | CCattler API | agents, CLI users and the other API servers |
+| 443/tcp, 8080/tcp | gates (agent gate proxy, HTTPS and HTTP) | the clients of your gates |
+
+Until M181, etcd's peer port 2380 trusts the etcd access CA, which also signs workers' etcd client certificates, so
+a worker can reach 2380 if the operator leaves it open.

@@ -55,6 +55,11 @@ PKI" ([runtime-invariant-flows.md](runtime-invariant-flows.md)).
   accepted etcd client certificate, the server's or any node's, has full etcd access, and a compromised node, gate
   nodes included, keeps store access through its own node etcd client certificate. The new CommonNames are distinct
   identities, not separately authorized ones; M181 (Store Access Isolation) adds etcd roles per identity.
+- **etcd peer port, accepted risk until M181 (user decision 2026-11-26).** Until M181, etcd's peer port 2380 trusts
+  the etcd access CA, which also signs workers' etcd client certificates, so a worker can reach 2380 if the operator
+  leaves it open; this is narrower than before M280, when every cluster certificate was accepted. CCattler does not
+  firewall host ports (as with kubeadm): the port table in website/installation.md says 2380 is for etcd members
+  only, and firewalling is the operator's job.
 - **Old clusters: a window of up to 90 days.** Gate certificates issued before the upgrade still carry ClientAuth and stay valid until they expire, up to 90 days (gateCertificateTTL): nothing revokes them, and their keys are already on every gate node. Until then they authenticate to the API as `node:<gate host>` and to etcd as a root client. The remedy is to re-initialize the cluster with `cca init` (user decision: no migration); otherwise wait out the 90 days, and meanwhile audit gate hosts named like `ccattler-server` or a node ID.
 - **Old clusters** keep one CA (`ca.pem`) and get the gate fix only; `cca server` warns at every start until the
   cluster is re-initialized with `cca init`.

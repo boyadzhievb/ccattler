@@ -75,6 +75,12 @@ keeps reading and writing the whole store through its own node etcd client certi
 Access Isolation) closes this with etcd roles per identity. Old single-CA clusters additionally keep node certificates
 from the cluster CA as etcd clients until they are re-initialized.
 
+**etcd peer port, accepted risk until M181 (user decision 2026-11-26, was SA-L1):** until M181, etcd's peer port 2380
+trusts the etcd access CA, which also signs workers' etcd client certificates, so a worker can reach 2380 if the
+operator leaves it open; this is narrower than before M280, when every cluster certificate was accepted. CCattler
+manages no host firewall (as with kubeadm): the port table in website/installation.md says 2380 is reachable from
+the etcd members only, and firewalling is the operator's job.
+
 ### T2: Command Injection via Runtime Exec (HIGH)
 
 **Attack surface:** User-supplied values flow into os/exec calls:
