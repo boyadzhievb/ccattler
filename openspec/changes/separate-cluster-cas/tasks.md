@@ -132,6 +132,11 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     127.0.0.1:2379, the two PKI tests with TLS etcd) PASS with etcd v3.5.36 (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/etcd-integration-final.txt).
 - [ ] 3.2 Deploy check `deploy-run:gate-cert-not-client`: on the deploy cluster, a gate certificate and key presented
   to etcd and to the API fail the TLS handshake. Then `install-host:three-cas` on a fresh VM with the guide.
+  - **The deploy part is DONE** in run 45819982283 (a5fe10a), 14:35:12: "T19 PASS (deploy-run:gate-cert-not-client):
+    etcd and the API refuse tls-auto's gate certificate and a ClientAuth certificate from the gate CA at the
+    handshake; the same gate pair loads against the gate listener; the node etcd client certificate is accepted".
+    "Gate TLS checks PASSED (T1–T19)"; 0 "T19 SKIP" lines.
+  - **Open:** `install-host:three-cas` on a fresh VM.
 - [x] 3.3 Independent review: `security-audit` and `code-reviewer`, with a patterns review.
   - **What the user decided:** "do 2" (2026-11-25), full rigor for security core code.
   - **"No round cap" was the main session's reading,** not the user's words. The user corrected it on 2026-11-26:
@@ -143,7 +148,13 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     - the small review of the removal approved (above), and its doc fixes landed in f1c3755.
   - **Evidence:** every verdict and finding table is in this file; the reports are in the scratchpad
     m280-*-r*.txt files.
-- [ ] 3.4 One full Deploy Testbed run (job summary `full run`); record the run ID.
+- [x] 3.4 One full Deploy Testbed run (job summary `full run`); record the run ID.
+  **Run 45819982283** (workflow_dispatch on a5fe10a, 2026-11-26): completed success.
+  - **Run summary:** RUN_KIND full, DEPLOY_OUTCOME success, REPLAY_OUTCOME success.
+  - **whoami churn:** 4 distinct IDs, within the bound of 6.
+  - **The replay:** includes the user-token revocation checks (deleted-user-token-refused,
+    recreated-user-old-token-refused).
+  - **Both "SKIP (deferred to M281)" lines are present.** Log saved as scratchpad run-45819982283.log.
 
 ### 3b. Review round 1 (2026-11-25, on bc9343a..81a186d)
 
@@ -284,7 +295,9 @@ never depended on caddy-sync.
   ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also `--build-tags
   etcd_integration` on cmd/cca and store); `go test -count=1 ./...` exit 0; `-race` on security, controllers, cmd/cca
   exit 0.
-- [ ] **Only the deploy run proves:** `sudo cca status`/`scale`/`get` and the helper curl over ssh on the real hosts
+- [x] (run 45819982283 deployed, checked and replayed through the helper: deploy and replay success; both SKIP lines
+  present; the HA tests' reads are verified when E2E HA next runs, per 3p CR7-F1) **Only the deploy run proves:**
+  `sudo cca status`/`scale`/`get` and the helper curl over ssh on the real hosts
   (vmherd quoting, curl `-H @-` on the images), the Ansible status tasks and the worker registration wait, the HA tests'
   per-replica reads, and the two `SKIP (deferred to M281)` lines in the job log.
 
