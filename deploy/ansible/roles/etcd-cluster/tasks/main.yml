@@ -90,24 +90,28 @@
     enabled: true
     daemon_reload: true
 
-# "systemctl restart nftables" flushes the ruleset while etcd keeps running
-# (SA4-L4). This unit is part of nftables.service: it is restarted with it and
-# runs after it, re-applying the peer rules. etcd does not require it, so an
-# nftables restart never restarts etcd.
+# "systemctl restart nftables" and "systemctl reload nftables" flush the ruleset
+# while etcd keeps running (SA4-L4, SA5-L2). This unit is part of
+# nftables.service: it is restarted with it (PartOf=), reloaded with it
+# (ReloadPropagatedFrom=, ExecReload=) and runs after it, re-applying the peer
+# rules. etcd does not require it, so an nftables restart never restarts etcd.
+# A manual "nft flush ruleset" bypasses systemd and stays an operator action.
 - name: Install the unit that re-applies the etcd peer port firewall after nftables restarts
   copy:
     dest: /etc/systemd/system/ccattler-etcd-peer-firewall-reload.service
     mode: "0644"
     content: |
       [Unit]
-      Description=CCattler: re-apply the etcd peer port firewall when nftables restarts
+      Description=CCattler: re-apply the etcd peer port firewall when nftables restarts or reloads
       PartOf=nftables.service
+      ReloadPropagatedFrom=nftables.service
       After=nftables.service
 
       [Service]
       Type=oneshot
       RemainAfterExit=true
       ExecStart=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
+      ExecReload=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
 
       [Install]
       WantedBy=nftables.service

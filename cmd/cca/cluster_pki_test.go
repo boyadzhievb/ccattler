@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"io"
 	"maps"
 	"net"
@@ -135,10 +136,27 @@ func requestPrincipalWithClientCertificate(t *testing.T, serverURL string, serve
 	return string(responseBody), nil
 }
 
+// certificateRefusalAlerts are the TLS alerts, as crypto/tls names a received
+// one, that mean the server refused the client certificate (CR5-S3). Any other
+// alert (handshake failure, protocol version, internal error) is not a refusal.
+var certificateRefusalAlerts = map[string]bool{
+	"tls: bad certificate":               true,
+	"tls: unknown certificate authority": true,
+	"tls: certificate required":          true,
+}
+
+// isCertificateRefusalAlert reports whether connectionError is a TLS alert
+// received from the peer that refuses the client certificate.
+func isCertificateRefusalAlert(connectionError error) bool {
+	var operationError *net.OpError
+	return errors.As(connectionError, &operationError) && operationError.Op == "remote error" &&
+		operationError.Err != nil && certificateRefusalAlerts[operationError.Err.Error()]
+}
+
 // tlsServerRefusesClientCertificate reports whether the TLS server at hostPort
-// refuses clientCertificate at the TLS layer: a TLS alert during the handshake
-// (TLS 1.2) or on the first read after it (TLS 1.3), not an HTTP status. The
-// server is verified against serverRootsPEM; the second result is what was seen.
+// refuses clientCertificate at the TLS layer: a certificate-related TLS alert
+// during the handshake (TLS 1.2) or on the first read after it (TLS 1.3), not an
+// HTTP status. The second result is what was seen (server roots: serverRootsPEM).
 func tlsServerRefusesClientCertificate(t *testing.T, hostPort string, serverRootsPEM []byte,
 	clientCertificate tls.Certificate) (bool, string) {
 	t.Helper()
@@ -150,7 +168,7 @@ func tlsServerRefusesClientCertificate(t *testing.T, hostPort string, serverRoot
 		&tls.Config{RootCAs: serverRoots, MinVersion: tls.VersionTLS12,
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &clientCertificate, nil }})
 	if dialError != nil {
-		return strings.Contains(dialError.Error(), "remote error: tls:"), dialError.Error()
+		return isCertificateRefusalAlert(dialError), dialError.Error()
 	}
 	defer func() { _ = tlsConnection.Close() }()
 	_ = tlsConnection.SetDeadline(time.Now().Add(clusterPKITestRequestTimeout))
@@ -158,7 +176,7 @@ func tlsServerRefusesClientCertificate(t *testing.T, hostPort string, serverRoot
 	responseStart := make([]byte, 12)
 	readBytes, readError := io.ReadFull(tlsConnection, responseStart)
 	if readError != nil {
-		return strings.Contains(readError.Error(), "remote error: tls:"), readError.Error()
+		return isCertificateRefusalAlert(readError), readError.Error()
 	}
 	return false, "response " + string(responseStart[:readBytes])
 }

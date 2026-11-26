@@ -530,6 +530,35 @@ Both verdicts approve with LOW findings only: security-audit (m280-security-audi
 | Codex | "curl exit 56 is generic" | Rejected: the exit 35/56 rule was accepted in round 4 (SA3-L3); T19's positive controls hit the same endpoints first; the Go tests check the TLS alert |
 | Not findings | M63c (check moved before any write) and R5f/R5g (defensive branches) survive; no observable effect | Recorded |
 
+### 3m. Rework round 6 (2026-11-26, lead-developer, on 494d07e; outputs in scratchpad rw6-*.txt)
+
+A reboot cleared the scratchpad before this round, so the reviewers' round-5 harnesses were gone. They were rebuilt in
+`rw6harness/` (T19 stub harness `t19stub.sh`, dash interrupt test `dashinterrupt.sh`) and `rw6systemd/model.sh`
+(user-level systemd model rendered from the role's unit). Red is the 494d07e file run through the same harness.
+
+| ID | Red | Fix and green |
+|---|---|---|
+| Stop-time / SA5-L1b / CR5-L1 | `t19stub.sh` on 494d07e: a three-CA PKI without `gate-https-ca-key.pem` logs "T19 SKIP (gate CA client)" and T19 PASS, exit 0 (`rw6-t19-harness.txt`) | Remote script prints `single-ca` only when `ca.pem` exists and `cluster-identity-ca.pem` does not (the `pki_file_remote_expression` rule); a three-CA cluster without the gate CA key prints "mint-failed: three-CA layout without …/gate-https-ca-key.pem" and T19 FAILs. Green: three-CA PASS, single-CA SKIP + PASS, no-key FAIL |
+| CR5-L2 | Same harness on 494d07e, single-CA: the PASS line after the SKIP still names "a ClientAuth certificate from the gate CA" | `gate_tls_check_gate_ca_client_refused` returns 1 after its SKIP line; the caller drops the gate-CA claim. Green: single-CA PASS line names only the gate certificate |
+| SA5-L1a / CR5-S2 | `dashinterrupt.sh` on 494d07e (dash, curl blocked, signal to the process group): TERM, HUP, INT and PIPE each leave key.pem, certificate.pem, request.pem in the temp dir (`rw6-dash-interrupt.txt`) | `trap "exit 1" HUP INT TERM PIPE` next to the EXIT trap. Green: no file left for all four signals |
+| SA5-L2 | `TestEtcdStartsOnlyAfterThePeerFirewall`: "lacks ReloadPropagatedFrom=nftables.service", "lacks ExecReload=…" (`rw6-red-reload.txt`); `rw6systemd/model.sh` on the 494d07e unit: `systemctl reload` of the model nftables logs "flush" only (`rw6-systemd-model.txt`) | Reload unit has `ReloadPropagatedFrom=nftables.service` and `ExecReload=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft`; the test requires both. Green: test ok; model reload logs "flush apply", restart "flush apply". A manual `nft flush ruleset` is documented as an operator action (role task comment, PKI_GRAPH row) |
+| CR5-S1 | `t19stub.sh` on 494d07e, unreadable gate CA: "mint-failed" with no reason | Each openssl step writes its stderr to a root-only file; failure prints "mint-failed: <step>: <first error line>" (self-signature and subject lines skipped). Green: "mint-failed: sign: Could not find CA certificate from …"; no "BEGIN" in any harness output |
+| CR5-S3 | New `TestTLSRefusalCountsOnlyCertificateAlerts` on 494d07e's helper: handshake_failure, protocol_version and internal_error counted as refusals (`rw6-red-alert.txt`) | `isCertificateRefusalAlert`: a received alert (`net.OpError` "remote error") that is bad certificate, unknown CA or certificate required. Green (`rw6-green-alert.txt`); the real-etcd and API refusal tests still pass |
+
+Checks: gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also
+`--build-tags etcd_integration` on cmd/cca and store) (`rw6-checks.txt`); `go test -count=1 ./...` exit 0, 20
+packages ok, no known-flaky failure (`rw6-full-test.txt`); `-race` on security, controllers, cmd/cca ok
+(`rw6-race.txt`); etcd_integration (ETCD_BIN v3.5.36, re-downloaded, SHA256SUMS verified; plain etcd on
+127.0.0.1:2379 for store): store and cmd/cca ok (`rw6-etcd-integration.txt`); shellcheck gate_tls_checks.sh 1
+(pre-existing SC2034); `ansible-playbook --syntax-check` on the 7 playbooks ok (the two rotate-root-key-* files
+are included task lists); `openspec validate separate-cluster-cas --strict` valid.
+
+**Open, needs a decision (not covered by 3l):** SA5-L2's second case, a first `systemctl start nftables` while the
+reload unit is already active (nftables inactive when the role ran), still flushes the peer rule without re-applying
+it: `rw6systemd/model-first-start.sh` logs "flush" only (`rw6-systemd-first-start.txt`). `ReloadPropagatedFrom=`
+does not cover a start. Options need the main session or the user (e.g. `BindsTo=`/`Requisite=` changes how the role
+starts the unit, or start nftables in the role).
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

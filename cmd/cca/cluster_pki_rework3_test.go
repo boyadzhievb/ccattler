@@ -347,10 +347,10 @@ func TestAnsibleUnitsFollowTheClusterPKILayout(t *testing.T) {
 	}
 }
 
-// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5, SA3-L4, SA4-L3, SA4-L4): the
-// etcd drop-in requires and follows the peer-firewall unit and reloads its rules
-// as root before every start; a reload unit, part of nftables.service and not
-// required by etcd, re-applies them after an nftables restart.
+// TestEtcdStartsOnlyAfterThePeerFirewall (SA2-L5, SA3-L4, SA4-L3, SA4-L4, SA5-L2):
+// the etcd drop-in requires and follows the peer-firewall unit and reloads its
+// rules as root before every start; a reload unit, part of nftables.service and
+// not required by etcd, re-applies them after an nftables restart or reload.
 func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
 	const firewallUnit = "ccattler-etcd-peer-firewall.service"
 	const reloadUnit = "ccattler-etcd-peer-firewall-reload.service"
@@ -376,10 +376,11 @@ func TestEtcdStartsOnlyAfterThePeerFirewall(t *testing.T) {
 	if firewallUnitExec == "" || !slices.Contains(strings.Split(serviceSection, "\n"), "ExecStartPre=+"+firewallUnitExec) {
 		t.Errorf("etcd drop-in [Service] lacks ExecStartPre=+%s before ExecStart:\n%s", firewallUnitExec, serviceSection)
 	}
-	// SA4-L4: the reload unit restarts with nftables and re-applies the same file.
+	// SA4-L4, SA5-L2: the reload unit restarts and reloads with nftables and re-applies the same file.
 	reloadUnitText, _ := ansibleTaskField(t, roleTasksPath,
 		"Install the unit that re-applies the etcd peer port firewall after nftables restarts", "copy", "content").(string)
-	for _, wantLine := range []string{"PartOf=nftables.service", "After=nftables.service", "ExecStart=" + firewallUnitExec, "WantedBy=nftables.service"} {
+	for _, wantLine := range []string{"PartOf=nftables.service", "ReloadPropagatedFrom=nftables.service", "After=nftables.service",
+		"ExecStart=" + firewallUnitExec, "ExecReload=" + firewallUnitExec, "WantedBy=nftables.service"} {
 		if !slices.Contains(strings.Split(reloadUnitText, "\n"), wantLine) {
 			t.Errorf("%s lacks %q:\n%s", reloadUnit, wantLine, reloadUnitText)
 		}

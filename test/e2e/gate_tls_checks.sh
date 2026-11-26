@@ -299,10 +299,10 @@ gate_tls_check_gate_cert_not_client() {
     [[ "$probe_result" == "200 0" ]] || fail "gate-tls T19: API /healthz unreachable without a client certificate (positive control: $probe_result)"
     probe_result=$(gate_tls_client_probe "https://${CTRL_IP}:9770/healthz" "$cluster_ca" "$gate_pair_flags")
     gate_tls_handshake_refused "$probe_result" || fail "gate-tls T19: the API did not refuse the gate certificate at the handshake ($probe_result)"
-    gate_tls_check_gate_ca_client_refused
-    log "  T19 PASS (deploy-run:gate-cert-not-client): etcd and the API refuse tls-auto's gate certificate and a" \
-        "ClientAuth certificate from the gate CA at the handshake; the same gate pair loads against the gate listener;" \
-        "the node etcd client certificate is accepted"
+    local gate_ca_client_claim=" and a ClientAuth certificate from the gate CA"
+    gate_tls_check_gate_ca_client_refused || gate_ca_client_claim=""
+    log "  T19 PASS (deploy-run:gate-cert-not-client): etcd and the API refuse tls-auto's gate certificate${gate_ca_client_claim}" \
+        "at the handshake; the same gate pair loads against the gate listener; the node etcd client certificate is accepted"
 }
 
 # gate_tls_gate_ca_client_remote_command prints a command for the control node
@@ -310,12 +310,14 @@ gate_tls_check_gate_cert_not_client() {
 # gate HTTPS CA in a root-only mktemp -d directory, checks it (openssl verify,
 # key matches), presents it to etcd :2379 and the API :9770 and prints one
 # "<http code> <curl exit>" line for each. Key and certificate are never printed
-# and are removed on exit. Prints "single-ca" when the cluster has no gate CA key
-# (before M280), "mint-failed" when the certificate cannot be made.
+# and are removed on exit, also when interrupted (HUP, INT, TERM, PIPE).
+# Prints "single-ca" only for the single-CA layout (ca.pem and no
+# cluster-identity-ca.pem, as pki_file_remote_expression decides), and
+# "mint-failed: <step>: <openssl's error line>" when the certificate cannot be made.
 gate_tls_gate_ca_client_remote_command() {
     # $1 PKI directory, $2 control-plane IP, $3 curl timeout (seconds)
     # shellcheck disable=SC2016 # expanded by the remote sh, not here
-    local remote_script='pki=$1; host=$2; timeout=$3; [ -f "$pki/gate-https-ca-key.pem" ] || { echo single-ca; exit 0; }; umask 077; work=$(mktemp -d) || exit 1; trap "rm -f \"$work\"/key.pem \"$work\"/request.pem \"$work\"/extensions.cnf \"$work\"/certificate.pem; rmdir \"$work\"" EXIT; printf "extendedKeyUsage=clientAuth\n" > "$work/extensions.cnf"; serial=$(od -An -N8 -tx1 /dev/urandom | tr -d " \n"); { openssl ecparam -name prime256v1 -genkey -noout -out "$work/key.pem" && openssl req -new -key "$work/key.pem" -subj /CN=t19-gate-ca-client -out "$work/request.pem" && openssl x509 -req -in "$work/request.pem" -CA "$pki/gate-https-ca.pem" -CAkey "$pki/gate-https-ca-key.pem" -set_serial "0x$serial" -days 1 -extfile "$work/extensions.cnf" -out "$work/certificate.pem" && openssl verify -CAfile "$pki/gate-https-ca.pem" -purpose sslclient "$work/certificate.pem" && [ "$(openssl x509 -noout -pubkey -in "$work/certificate.pem")" = "$(openssl pkey -pubout -in "$work/key.pem")" ]; } >/dev/null 2>&1 || { echo mint-failed; exit 0; }; for target in "2379/health etcd-access-ca.pem" "9770/healthz cluster-identity-ca.pem"; do set -- $target; curl -s -o /dev/null -w "%{http_code}" --max-time "$timeout" --cacert "$pki/$2" --cert "$work/certificate.pem" --key "$work/key.pem" "https://$host:$1"; echo " $?"; done'
+    local remote_script='pki=$1; host=$2; timeout=$3; if [ -f "$pki/ca.pem" ] && [ ! -f "$pki/cluster-identity-ca.pem" ]; then echo single-ca; exit 0; fi; [ -f "$pki/gate-https-ca-key.pem" ] || { echo "mint-failed: three-CA layout without $pki/gate-https-ca-key.pem"; exit 0; }; umask 077; work=$(mktemp -d) || { echo "mint-failed: mktemp -d"; exit 0; }; trap "rm -f \"$work\"/key.pem \"$work\"/request.pem \"$work\"/extensions.cnf \"$work\"/certificate.pem \"$work\"/openssl-errors.txt; rmdir \"$work\"" EXIT; trap "exit 1" HUP INT TERM PIPE; mint_failed() { echo "mint-failed: $1: $(grep -v -e "^$" -e "self-signature ok" -e "^subject=" "$work/openssl-errors.txt" | head -n 1)"; exit 0; }; printf "extendedKeyUsage=clientAuth\n" > "$work/extensions.cnf"; serial=$(od -An -N8 -tx1 /dev/urandom | tr -d " \n"); openssl ecparam -name prime256v1 -genkey -noout -out "$work/key.pem" >/dev/null 2>"$work/openssl-errors.txt" || mint_failed key; openssl req -new -key "$work/key.pem" -subj /CN=t19-gate-ca-client -out "$work/request.pem" >/dev/null 2>"$work/openssl-errors.txt" || mint_failed request; openssl x509 -req -in "$work/request.pem" -CA "$pki/gate-https-ca.pem" -CAkey "$pki/gate-https-ca-key.pem" -set_serial "0x$serial" -days 1 -extfile "$work/extensions.cnf" -out "$work/certificate.pem" >/dev/null 2>"$work/openssl-errors.txt" || mint_failed sign; openssl verify -CAfile "$pki/gate-https-ca.pem" -purpose sslclient "$work/certificate.pem" >"$work/openssl-errors.txt" 2>&1 || mint_failed verify; [ "$(openssl x509 -noout -pubkey -in "$work/certificate.pem" 2>/dev/null)" = "$(openssl pkey -pubout -in "$work/key.pem" 2>/dev/null)" ] || { echo "mint-failed: key-match: the certificate does not match its key"; exit 0; }; for target in "2379/health etcd-access-ca.pem" "9770/healthz cluster-identity-ca.pem"; do set -- $target; curl -s -o /dev/null -w "%{http_code}" --max-time "$timeout" --cacert "$pki/$2" --cert "$work/certificate.pem" --key "$work/key.pem" "https://$host:$1"; echo " $?"; done'
     local quoted_arguments
     printf -v quoted_arguments ' %q' "$CLUSTER_PKI_DIRECTORY" "$CTRL_IP" "$GATE_TLS_HANDSHAKE_TIMEOUT"
     printf 'sudo sh -c %q gate-ca-client%s' "$remote_script" "$quoted_arguments"
@@ -324,16 +326,18 @@ gate_tls_gate_ca_client_remote_command() {
 # gate_tls_check_gate_ca_client_refused is the CA-separation part of T19
 # (SA4-L1): a ClientAuth certificate from the gate HTTPS CA must be refused at
 # the handshake (curl exit 35 or 56) by etcd and the API, so T19 does not rest
-# on the real gate certificate's missing ClientAuth alone. A cluster from before
-# M280 has one CA for everything (no separation to prove) and is skipped with a log line.
+# on the real gate certificate's missing ClientAuth alone. A single-CA cluster
+# from before M280 has no separation to prove: it logs a SKIP and returns 1, so
+# the caller's PASS line does not claim the check (CR5-L2). A three-CA cluster
+# that cannot mint the certificate (gate CA key missing) fails T19.
 gate_tls_check_gate_ca_client_refused() {
     local probe_output
     probe_output=$(ssh_vm "$CTRL_NODE" "$(gate_tls_gate_ca_client_remote_command)" 2>/dev/null | tr -d '\r' || true)
     if [[ "$probe_output" == "single-ca" ]]; then
         log "  T19 SKIP (gate CA client): single-CA cluster from before M280, the gate CA is the cluster CA"
-        return 0
+        return 1
     fi
-    [[ "$probe_output" != "mint-failed" && -n "$probe_output" ]] \
+    [[ "$probe_output" != mint-failed* && -n "$probe_output" ]] \
         || fail "gate-tls T19: could not mint a gate-CA client certificate on $CTRL_NODE (${probe_output:-no output})"
     local etcd_result api_result
     etcd_result=$(sed -n 1p <<< "$probe_output")
