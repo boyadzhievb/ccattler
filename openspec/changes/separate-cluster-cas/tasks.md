@@ -686,6 +686,13 @@ packages ok, no known-flaky failure (`rw8-full-test.txt`); `-race` on security, 
 (`rw8-etcd-integration.txt`); shellcheck gate_tls_checks.sh only the pre-existing SC2034; `ansible-playbook
 --syntax-check` on the 7 playbooks ok (`rw8-ansible.txt`); `openspec validate separate-cluster-cas --strict` valid.
 
+**Stop-time check (Codex, 2026-11-26), CONFIRMED (wording):** "at most one interval plus the timer accuracy (about
+31 s)" omits the sync command's own run time. A normal `nft -f` takes milliseconds; a hung one is cut off by
+`TimeoutStartSec` (20 s), and the timer fires again on the next tick.
+- **Fix (rework 9, batched with review round 8):** the wording becomes "one interval plus the timer accuracy plus the
+  `nft` run time: normally about 31 s, at most interval + accuracy + start timeout if `nft` hangs", wherever the
+  bound is stated.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:
