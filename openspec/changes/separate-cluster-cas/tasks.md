@@ -500,6 +500,36 @@ single-CA cluster (no gate CA key) is accepted. Such a cluster has one CA and no
 1: no migration). The closing full run builds a fresh three-CA cluster, and its log must show T19's gate-CA client
 check ran and passed, not skipped. Check this when recording 3.4.
 
+**Stop-time check (Codex, 2026-11-25), CONFIRMED by the main session:** T19's remote script treats a missing
+`gate-https-ca-key.pem` as a pre-M280 cluster and returns `single-ca`, which the caller logs as a SKIP
+(gate_tls_checks.sh:318, :332). A broken three-CA cluster missing its gate CA key would therefore pass without
+proving separation.
+- **Fix (rework 6, batched with review round 5):** decide the generation by the same rule as the layout detection.
+  `single-ca` only when `ca.pem` exists and `cluster-identity-ca.pem` does not; a three-CA cluster missing the gate
+  CA key FAILS T19.
+- **Test:** the stub harness covers both cases.
+
+### 3l. Review round 5 (2026-11-25, on 3b06fe3..8b2ccfc)
+
+Both verdicts approve with LOW findings only: security-audit (m280-security-audit-r5.txt) and code-reviewer
+(m280-code-review-r5.txt, Codex job review-mwwcd0zp-gjkjy7).
+- **Live T19 runs:** it passes on a correct cluster and FAILs in every broken-trust setup: etcd trusting the gate CA,
+  the API trusting it, or both.
+- **All round-4 mutations are caught.**
+- **The closing run cannot take the SKIP path:** the PKI is wiped, setup.sh installs the gate CA key, and the
+  `cca server` preflight requires it.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| Stop-time / SA5-L1b / CR5-L1 | T19 decides "pre-M280" by the gate CA key alone; a three-CA cluster missing it SKIPs | Fix: `single-ca` only when `ca.pem` exists and `cluster-identity-ca.pem` does not; a three-CA cluster without the gate CA key FAILs |
+| CR5-L2 | After a SKIP, the T19 PASS line still names the gate-CA check | Fix: the PASS line names only what ran |
+| SA5-L1a / CR5-S2 | dash skips the EXIT trap on TERM/HUP/PIPE, so an interrupted T19 leaves the minted pair in the root-only temp dir | Fix: also `trap "exit 1" HUP INT TERM PIPE` |
+| SA5-L2 | `systemctl reload nftables` (and a first start while the reload unit is active) flushes the peer rule; nothing re-applies it | Fix: `ReloadPropagatedFrom=nftables.service` plus `ExecReload=` on the reload unit; extend the template test. A manual `nft flush ruleset` stays an operator action (documented) |
+| CR5-S1 | "mint-failed" gives no reason | Fix: return openssl's error line (it never contains key material) |
+| CR5-S3 | `tlsServerRefusesClientCertificate` counts any TLS alert as a refusal | Fix: require a certificate-related alert (bad certificate, unknown CA, certificate required) |
+| Codex | "curl exit 56 is generic" | Rejected: the exit 35/56 rule was accepted in round 4 (SA3-L3); T19's positive controls hit the same endpoints first; the Go tests check the TLS alert |
+| Not findings | M63c (check moved before any write) and R5f/R5g (defensive branches) survive; no observable effect | Recorded |
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:
