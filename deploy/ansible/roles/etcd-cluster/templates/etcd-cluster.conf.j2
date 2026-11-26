@@ -11,7 +11,8 @@
 # only that the unit ran once, not that the table is still loaded. nft -f
 # replaces the table atomically, so a reload is idempotent. "+" runs it as root
 # whatever User= the etcd unit has (SA4-L3). A flush while etcd runs is
-# repaired within one interval by ccattler-etcd-peer-firewall-sync.timer.
+# repaired by ccattler-etcd-peer-firewall-sync.timer: the rule is missing for
+# at most one interval plus the timer accuracy (about 31 s by default).
 [Unit]
 Requires=ccattler-etcd-peer-firewall.service
 After=ccattler-etcd-peer-firewall.service

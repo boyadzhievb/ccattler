@@ -94,11 +94,13 @@
 # first start, a reload, restart or stop of nftables.service, a manual
 # "nft flush ruleset" (SA4-L4, SA5-L2). Instead of following nftables.service,
 # a timer re-applies the rules every etcd_peer_firewall_sync_interval (user
-# decision "go for a", the kube-proxy model): the longest exposure is one
-# interval. nft -f replaces the table atomically, so a re-apply is idempotent.
-# The service has no RemainAfterExit, so every timer tick runs it again. The
-# role never enables or starts nftables.service, whose "flush ruleset" would
-# also wipe the cca agent's data-plane tables.
+# decision "go for a", the kube-proxy model): the rule is missing for at most
+# one interval plus the timer accuracy (about 31 s by default). nft -f replaces
+# the table atomically, so a re-apply is idempotent. The service has no
+# RemainAfterExit, so every timer tick runs it again, and a start timeout
+# shorter than the interval, so a hung nft cannot stop the timer (SA7-L1). The
+# role never enables, starts or depends on nftables.service, whose ruleset flush
+# would also wipe the cca agent's data-plane tables.
 - name: Install the service that re-applies the etcd peer port firewall
   copy:
     dest: /etc/systemd/system/ccattler-etcd-peer-firewall-sync.service
@@ -109,6 +111,7 @@
 
       [Service]
       Type=oneshot
+      TimeoutStartSec={{ etcd_peer_firewall_sync_start_timeout }}
       ExecStart=/usr/sbin/nft -f /etc/ccattler/etcd-peer-firewall.nft
 
 - name: Install the timer that re-applies the etcd peer port firewall

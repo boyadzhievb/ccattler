@@ -194,7 +194,7 @@ on a new three-CA cluster.
 | SA-M2 / CR-M3 | `TestEnrollmentRefusesReservedNodeIDs`: "node ID "cca-server" enrolled; it is reserved" | `security.CCAServerEtcdClientName` reserved; `ValidateNodeIdentity` used by enrollment and cca init; the server's etcd CN is built from it. Green |
 | SA-L3 | `TestInitRefusesReservedOrInvalidNodeIDs`: cca init accepted ccattler-server, cca-server, Bad_Node, -ctrl | `parseInitCommandArgs` validates `--node-id` (after the hostname default). Green |
 | CR-M4 | Mutations M12, M13, M14, M15, M16, M18 each applied and restored; each fails its test (`rw-mutations.txt`) | New tests: `TestServerWiresGateCAIntoRouteTLS` (M12, via new `buildRouteTLSController`), `TestServerEnrollmentIssuesEtcdClientCertificates` (M13, `buildEnrollmentService`), `TestJoinEnrollmentRequestCarriesEtcdCSR` (M14, `buildJoinEnrollmentRequest`), `TestSetupScriptInstallsEveryInitFileWithItsMode` (M15, M16), `TestCLIEtcdDefaultsPreferM280Files` (M18). Green |
-| SA-L1 | `TestAnsibleEtcdPeerPortLimitedToMembers`: no peer firewall template | etcd-cluster role: nftables table `inet ccattler_etcd_peers` drops 2380/tcp from non-members, loaded by `ccattler-etcd-peer-firewall.service` before etcd and at boot. Template rendered with jinja2 (3 members); `ansible-playbook --syntax-check ha-deploy.yml` passes. Green. Not run on hosts: deploy run |
+| SA-L1 | `TestAnsibleEtcdPeerPortLimitedToMembers`: no peer firewall template | etcd-cluster role: nftables table `inet ccattler_etcd_peers` drops 2380/tcp from non-members, loaded by `ccattler-etcd-peer-firewall.service` before etcd and at boot. Template rendered with jinja2 (3 members); `ansible-playbook --syntax-check ha-deploy.yml` passes. Green. Not run on hosts by the deploy run (corrected in rework 8, CR7-F1: baremetal-deploy.yml does not use the etcd-cluster role); proven by the template tests and systemd models, verified on a host at the next E2E HA run (ha-deploy.yml through e2e-ha.yml) |
 | SA-L2 / CR-L5 | `TestServerWarnsOnEverySingleCACase`: no warning for auto --tls, gate CA = cluster CA, etcd CA bundle with the cluster CA, no --etcd-ca | `singleCAClusterWarning` compares every certificate of the files (bundles) and warns when a CA is missing or shared, and for auto --tls. Green |
 | SA-L4 | `TestEtcdClientNetworkWarningStatesResidualTrust`: warning said "until M280 is fixed" | Text names M181 residual trust. `TestInitWarnsOnWideEtcdClientCIDR` now looks for "M181" instead of "M280" (same assertion, the reviewed text) |
 | CR-L6 | `TestEnrollmentRefusesMissingEtcdCSR` (build: undefined `ErrEtcdClientCSRRequired`); `TestEnrollWithoutEtcdCSRNamesServerVersion`: "HTTP 200, error """ | Enrollment refuses with `ErrEtcdClientCSRRequired` before the token is consumed; `/api/enroll` adds "install cca <server version> … and run cca join again". Green |
@@ -368,8 +368,9 @@ milestone").
   test); the deploy run starts the server with a valid flag only.
 
 Only the deploy run proves: T19 against the real etcd and API; the caddy-sync stop on the testbed host; layout
-detection on real hosts (fresh three-CA run; a pre-M280 cluster only through `--from-release`); the etcd drop-in's
-`Requires=` at boot.
+detection on real hosts (fresh three-CA run; a pre-M280 cluster only through `--from-release`). Corrected in
+rework 8 (CR7-F1): the etcd drop-in's `Requires=` at boot belongs to the etcd-cluster role, which the deploy run does
+not use; the template tests prove it, and the next E2E HA run verifies it on a host.
 
 **Stop-time check (Codex, 2026-11-25), CONFIRMED by the main session: an invalid node certificate is detected only
 after startup side effects.** The 3g exit sits in `configureAndStartAPIServer` (command_server.go:711-714). By then
@@ -493,7 +494,9 @@ packages ok (`rw5-full-test.txt`); `-race` on security, controllers, cmd/cca ok 
 (ETCD_BIN v3.5.36; plain etcd on 127.0.0.1:2379 for store): store and cmd/cca ok, 400 PASS
 (`rw5-etcd-integration.txt`); shellcheck: local_admin_access.sh 0, gate_tls_checks.sh 1 (pre-existing SC2034);
 `ansible-playbook --syntax-check` on the 6 playbooks ok; `openspec validate separate-cluster-cas --strict` valid.
-Only the deploy run proves the T19 mint on the real control node and the reload unit on a real nftables restart.
+Only the deploy run proves the T19 mint on the real control node. Corrected in rework 8 (CR7-F1): the reload unit
+(since replaced by the sync timer) is in the etcd-cluster role, which the deploy run does not use; the role is proven by
+the template tests and systemd models and verified on a host at the next E2E HA run.
 
 **Main session on rework 5 (2026-11-25):** the agent's own choice "T19 SKIP (gate CA client)" on a pre-M280
 single-CA cluster (no gate CA key) is accepted. Such a cluster has one CA and no separation to prove (user decision
@@ -559,8 +562,9 @@ re-syncing instead of trusting.** This supersedes both the conditional start bel
   `-sync.service`; name corrected in rework 7, because a timer named after the boot unit would trigger that
   RemainAfterExit unit only once), every 30 s, plus at boot) runs
   `nft -f /etc/ccattler/etcd-peer-firewall.nft`, the atomic, idempotent table replace.
-- **What it covers:** nftables' first start, reload, restart and stop, and a manual `nft flush ruleset`. The
-  longest exposure is one interval; this is documented.
+- **What it covers:** nftables' first start, reload, restart and stop, and a manual `nft flush ruleset`. The rule
+  is missing for at most one interval plus the timer accuracy (about 31 s by default; wording corrected in rework 8);
+  this is documented.
 - **What is removed:** the reload unit (`PartOf=`, `ReloadPropagatedFrom=`, `ExecReload=`) and any start condition.
 - **What stays:** etcd's `ExecStartPre=+` (etcd never starts without the rule) and the firewall unit at boot.
 - **What the role never does:** enable or start `nftables.service`, whose `flush ruleset` would wipe the cca agent's
@@ -625,7 +629,8 @@ packages ok, no known-flaky failure (`rw7-full-test.txt`); `-race` on security, 
 cmd/cca ok (`rw7-etcd-integration.txt`); shellcheck gate_tls_checks.sh only the pre-existing SC2034;
 `ansible-playbook --syntax-check` on the 7 playbooks ok (`rw7-ansible.txt`); `openspec validate
 separate-cluster-cas --strict` valid. Hosts that ran rework 5 or 6 keep a stale, harmless reload unit file; the
-role does not remove it (testbed runs wipe the cluster).
+role does not remove it. Corrected reason (rework 8, CR7-F4): the cleanup role removes only the cca and etcd units and
+HA VMs are reused, so the file can stay; it was never released and applies the same rule.
 
 **Stop-time check (Codex, 2026-11-26), CONFIRMED:** the "longest exposure is one interval" wording is overstated.
 `AccuracySec=1s` lets systemd fire up to 1 s late, so a flush just after a tick leaves the rule missing for up to
@@ -640,6 +645,46 @@ interval + AccuracySec, plus the nft run time (about 31 s with the defaults).
 - **No removal task for the reload unit:** it only ever existed in unreleased reworks 5 and 6, so at most on
   testbed VMs. It applies the same rule and does no harm, and a removal task for a never-released artifact would be
   dead weight in the role.
+
+### 3p. Review round 7 (2026-11-26, on 30d1931..da458db)
+
+Both verdicts approve the code: security-audit (m280-security-audit-r7.txt, audit-r7/) and code-reviewer
+(m280-code-review-r7.txt, cr-r7-mutations.txt, Codex). The systemd 257 models show the timer firing through failing
+runs, a missing rule file and daemon reloads, and the rule coming back after a first start, stop, reload or flush.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| CR7-F1 (MEDIUM, evidence) | The closing Deploy Testbed run never runs the etcd-cluster role: it uses baremetal-deploy.yml (cluster_test.sh:245-246); only ha-deploy.yml through the manual e2e-ha.yml does. The claims at the old tasks.md :197 and :496 that the deploy run proves the timer, the peer firewall and `ExecStartPre=+` are wrong | Fix: correct those claims. The role's behaviour is proven by the template tests and the systemd models; on a real host it is verified on the next E2E HA run as it occurs (the user's standing rule: one dispatch, other CI scenarios verified as they occur). Not a closing condition of M280 |
+| Stop-time | The exposure bound is interval plus AccuracySec (about 31 s), not one interval | Fix the wording everywhere (recorded above) |
+| SA7-L1 | A oneshot has no start timeout, so a hung `nft` stops the timer forever | Fix: `TimeoutStartSec=` shorter than the interval on the sync service, as a role default |
+| SA7-L2 | The timer test does not forbid `Unit=`; pointing it at the boot unit (RemainAfterExit) passes | Fix: forbid `Unit=` |
+| SA7-L3 / CR7-F3 | The nftables test only checks systemd tasks; a `command`/`shell` enabling nftables or running `nft flush ruleset`, or `Wants=nftables.service` inside a unit, passes | Fix: no task content may mention `nftables.service` or `flush ruleset` |
+| CR7-F2 | The tests find the units by task name and never check the copy destinations | Fix: assert both `/etc/systemd/system/ccattler-etcd-peer-firewall-sync.{service,timer}` |
+| CR7-F4 | The reason for keeping the old reload unit ("testbed runs wipe the cluster") is wrong; the cleanup role removes only cca and etcd units, and HA VMs are reused | Fix: correct the reason. The decision stands: never released, harmless |
+| Suggestions | The nft template hardcodes "every 30 s"; the raw alert code 116 appears twice; the empty-certificate test starts an unused server; the timer decision belongs in design.md | Fix all four (design.md gets a D8 for the peer-rule reconcile timer) |
+| Codex | "Upgrade leaves the reload unit enabled" | Rejected as a defect (never released, harmless, accepted choice); its factual part is CR7-F4 |
+
+### 3q. Rework round 8 (2026-11-26, lead-developer, on 0225604; outputs in scratchpad rw8-*.txt)
+
+Red is the reviewers' mutation run on da458db (`cr-r7-mutations.txt`: R1, R2, R11 NOT CAUGHT; `audit-r7/mutation-timer-unit.txt`, `audit-r7/mutation-nft-command.txt`: pass); green is `rw8mut.sh` (their `cr-r7mut.sh` plus R12-R17) on a copy of this tree (`rw8src/`), `rw8-mutations.txt`: baseline pass, R1-R17 all caught.
+
+| ID | Fix and green |
+|---|---|
+| CR7-F1 | Corrected in place: the SA-L1 row (3c), the "Only the deploy run proves" note (3g) and the rework-5 closing line (3k) no longer claim the deploy run proves the etcd-cluster role; design.md's Ansible risk names which roles the deploy run uses. The role is proven by the template tests and systemd models and verified on a host at the next E2E HA run. PKI_GRAPH made no such claim |
+| Stop-time (bound) | "at most one interval plus the timer accuracy (about 31 s by default)" in the role comment, role defaults, the etcd drop-in comment, the nft template header, PKI_GRAPH, this file's decision block and design.md D8 |
+| SA7-L1 | `TimeoutStartSec={{ etcd_peer_firewall_sync_start_timeout }}` (role default 20s) on the sync service; `TestEtcdPeerFirewallSyncTimer` requires it and a positive timeout below the interval. R15 (line removed), R16 (30s) caught |
+| SA7-L2 | The timer test forbids `Unit=` in any section. R12 (`Unit=ccattler-etcd-peer-firewall.service`) caught |
+| SA7-L3 / CR7-F3 | `TestEtcdRoleLeavesNftablesServiceAlone` scans every task's YAML (module, command, shell, unit content) for the word nftables and for `flush ruleset`. R11, R13 (`command: systemctl enable --now nftables`), R14 (`shell: nft flush ruleset`), R17 (`Wants=nftables.service` in the service) caught |
+| CR7-F2 | Both copy destinations asserted (`/etc/systemd/system/ccattler-etcd-peer-firewall-sync.{service,timer}`). R1, R2 caught |
+| CR7-F4 | Reason corrected in 3o: the cleanup role removes only the cca and etcd units and HA VMs are reused; the unit stays because it was never released and applies the same rule |
+| Suggestions | nft template header uses `{{ etcd_peer_firewall_sync_interval }}` (the timer test renders it with the role defaults); `tlsAlertCertificateRequired` constant; the empty-certificate test dials nothing (`unreachableTLSAddress`), R9 still caught; design.md D8 records the peer-rule reconcile timer (user decision 2026-11-26) |
+
+Checks: gofmt clean; `go vet ./...` with and without `-tags etcd_integration` clean; golangci-lint 0 issues (also
+`--build-tags etcd_integration` on cmd/cca and store) (`rw8-checks.txt`); `go test -count=1 ./...` exit 0, 20
+packages ok, no known-flaky failure (`rw8-full-test.txt`); `-race` on security, controllers, cmd/cca ok
+(`rw8-race.txt`); etcd_integration (same ETCD_BIN; plain etcd on 127.0.0.1:2379 for store): store and cmd/cca ok
+(`rw8-etcd-integration.txt`); shellcheck gate_tls_checks.sh only the pre-existing SC2034; `ansible-playbook
+--syntax-check` on the 7 playbooks ok (`rw8-ansible.txt`); `openspec validate separate-cluster-cas --strict` valid.
 
 ## Workflow follow-up
 

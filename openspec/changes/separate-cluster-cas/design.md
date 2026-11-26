@@ -180,6 +180,23 @@ It keeps running. D3 still applies.
 It is written from today's code first (task 1.0), so it shows the single-CA problem, and updated with each task. A
 short Flow "Cluster PKI" in runtime-invariant-flows.md links to it.
 
+### D8. The etcd peer rule is reconciled by a timer (user decision "go for a", 2026-11-26, during apply)
+Every node's etcd client certificate comes from the etcd access CA, which etcd's peer port also trusts, so the
+etcd-cluster role limits 2380/tcp to the etcd members with an nftables table (SA-L1). Anything that flushes the
+ruleset while etcd runs removes that rule: nftables' first start, a reload, restart or stop, a manual
+`nft flush ruleset`. Following `nftables.service` with a reload unit missed the first start (rework 6).
+- **The decision:** re-sync instead of trusting, as kube-proxy does. `ccattler-etcd-peer-firewall-sync.timer` runs
+  `ccattler-etcd-peer-firewall-sync.service` (oneshot, no `RemainAfterExit`, `TimeoutStartSec=` shorter than the
+  interval) at boot and every `etcd_peer_firewall_sync_interval` (30 s, role default). `nft -f` replaces the table
+  atomically, so each run is idempotent.
+- **The bound:** the rule is missing for at most one interval plus the timer accuracy (about 31 s by default).
+- **What stays:** the boot firewall unit, and etcd's `Requires=` on it plus `ExecStartPre=+`, so etcd never starts
+  without the rule.
+- **What the role never does:** enable, start or depend on `nftables.service`, whose `flush ruleset` would also wipe
+  the cca agent's data-plane tables.
+- **Evidence:** template tests (`TestEtcdPeerFirewallSyncTimer`, `TestEtcdRoleLeavesNftablesServiceAlone`) and
+  systemd models; on a host at the next E2E HA run (the deploy run does not use this role).
+
 ## Failure cases
 
 Rows changed during apply (main session, 2026-11-25, finding CR3-L4): the HA-secondary row follows CR-L7 and SA2-L3,
@@ -200,7 +217,9 @@ and the two `cca server` exit rows record user decision 1 and SA3-L2. Their word
 ## Risks / Trade-offs
 
 - **[Ansible-built clusters]** The templates change with this release, and the deploy testbed builds fresh clusters,
-  so the full run tests the new layout.
+  so the full run tests the new layout of the controlplane and worker roles (baremetal-deploy.yml). The HA roles
+  (ha-controlplane, etcd-cluster: peer firewall, sync timer, etcd's `ExecStartPre=+`) run only through ha-deploy.yml
+  (e2e-ha.yml): the template tests and systemd models prove them, and the next E2E HA run verifies them on a host.
 - **[Users who pinned ca.pem for TLS gates]** Their clients must trust `gate-https-ca.pem` on new clusters. This goes in
   the changelog and the guide.
 - **[Old clusters stay exposed to the etcd/API identity mix]** The gate hole closes with D3, and old clusters get the

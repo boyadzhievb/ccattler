@@ -4,11 +4,14 @@
 package main
 
 import (
+	"fmt"
 	"maps"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +22,13 @@ const etcdPeerFirewallSyncUnit = "ccattler-etcd-peer-firewall-sync"
 
 // etcdPeerFirewallSyncWantInterval is the re-apply interval the user decided.
 const etcdPeerFirewallSyncWantInterval = "30s"
+
+// etcdPeerFirewallSyncUnitDirectory is where the role installs the sync units.
+const etcdPeerFirewallSyncUnitDirectory = "/etc/systemd/system/"
+
+// nftablesServicePattern matches any mention of the nftables service (unit
+// name or "systemctl … nftables"); the etcd-cluster role must never touch it.
+var nftablesServicePattern = regexp.MustCompile(`(?i)\bnftables\b`)
 
 // etcdPeerFirewallCommand returns the nft command of the boot firewall unit,
 // which the sync service and etcd's ExecStartPre must run unchanged.
@@ -85,10 +95,20 @@ func TestEtcdPeerFirewallSyncTimer(t *testing.T) {
 		t.Errorf("etcd_peer_firewall_sync_interval = %v, want %s", roleDefaults["etcd_peer_firewall_sync_interval"], etcdPeerFirewallSyncWantInterval)
 	}
 	firewallCommand := etcdPeerFirewallCommand(t, roleTasksPath)
-	serviceText, _ := ansibleTaskField(t, roleTasksPath, "Install the service that re-applies the etcd peer port firewall", "copy", "content").(string)
+	const serviceTaskName = "Install the service that re-applies the etcd peer port firewall"
+	const timerTaskName = "Install the timer that re-applies the etcd peer port firewall"
+	// CR7-F2: the units the start task names are the files the copy tasks install.
+	for taskName, wantDestination := range map[string]string{serviceTaskName: etcdPeerFirewallSyncUnit + ".service", timerTaskName: etcdPeerFirewallSyncUnit + ".timer"} {
+		if destination := ansibleTaskField(t, roleTasksPath, taskName, "copy", "dest"); destination != etcdPeerFirewallSyncUnitDirectory+wantDestination {
+			t.Errorf("task %q installs %v, want %s%s", taskName, destination, etcdPeerFirewallSyncUnitDirectory, wantDestination)
+		}
+	}
+	serviceText, _ := ansibleTaskField(t, roleTasksPath, serviceTaskName, "copy", "content").(string)
 	serviceSections := systemdUnitSections(renderAnsibleText(t, serviceText, "three_ca", roleDefaults))
 	requireUnitSettings(t, etcdPeerFirewallSyncUnit+".service", serviceSections,
-		map[string][]string{"Unit": {}, "Service": {"Type=oneshot", "ExecStart=" + firewallCommand}})
+		map[string][]string{"Unit": {}, "Service": {"Type=oneshot", "ExecStart=" + firewallCommand,
+			"TimeoutStartSec=" + fmt.Sprint(roleDefaults["etcd_peer_firewall_sync_start_timeout"])}})
+	requireStartTimeoutBelowInterval(t, roleDefaults)
 	for sectionName, sectionLines := range serviceSections {
 		for _, sectionLine := range sectionLines {
 			if strings.HasPrefix(sectionLine, "RemainAfterExit=") {
@@ -96,10 +116,26 @@ func TestEtcdPeerFirewallSyncTimer(t *testing.T) {
 			}
 		}
 	}
-	timerText, _ := ansibleTaskField(t, roleTasksPath, "Install the timer that re-applies the etcd peer port firewall", "copy", "content").(string)
-	requireUnitSettings(t, etcdPeerFirewallSyncUnit+".timer", systemdUnitSections(renderAnsibleText(t, timerText, "three_ca", roleDefaults)),
+	timerText, _ := ansibleTaskField(t, roleTasksPath, timerTaskName, "copy", "content").(string)
+	timerSections := systemdUnitSections(renderAnsibleText(t, timerText, "three_ca", roleDefaults))
+	requireUnitSettings(t, etcdPeerFirewallSyncUnit+".timer", timerSections,
 		map[string][]string{"Unit": {}, "Timer": {"OnBootSec=" + etcdPeerFirewallSyncWantInterval,
 			"OnUnitActiveSec=" + etcdPeerFirewallSyncWantInterval, "AccuracySec=1s"}, "Install": {"WantedBy=timers.target"}})
+	// SA7-L2: the timer runs the service of its own name, never another unit (the
+	// boot unit has RemainAfterExit and would run only once).
+	for sectionName, sectionLines := range timerSections {
+		for _, sectionLine := range sectionLines {
+			if strings.HasPrefix(sectionLine, "Unit=") {
+				t.Errorf("%s.timer [%s] has %s: it must run %s.service", etcdPeerFirewallSyncUnit, sectionName, sectionLine, etcdPeerFirewallSyncUnit)
+			}
+		}
+	}
+	// The nft template's header names the interval from the same role default.
+	firewallRules := runAnsibleRenderWithVariables(t, "template", filepath.Join(roleDirectory, "templates", "etcd-peer-firewall.nft.j2"),
+		"three_ca", "ctrl", roleDefaults)
+	if !strings.Contains(firewallRules, "every\n# "+etcdPeerFirewallSyncWantInterval+" by") {
+		t.Errorf("etcd-peer-firewall.nft.j2 does not name the %s interval:\n%s", etcdPeerFirewallSyncWantInterval, firewallRules)
+	}
 	const startTaskName = "Start the etcd peer port firewall timer now and at boot"
 	if timerName := ansibleTaskField(t, roleTasksPath, startTaskName, "systemd", "name"); timerName != etcdPeerFirewallSyncUnit+".timer" {
 		t.Errorf("task %q manages %v, want %s.timer", startTaskName, timerName, etcdPeerFirewallSyncUnit)
@@ -112,9 +148,22 @@ func TestEtcdPeerFirewallSyncTimer(t *testing.T) {
 	}
 }
 
-// TestEtcdRoleLeavesNftablesServiceAlone (user decision "go for a"): the role
-// never enables, starts or follows nftables.service, whose "flush ruleset"
-// would wipe the cca agent's tables, and no longer installs the reload unit.
+// requireStartTimeoutBelowInterval (SA7-L1) fails the test unless the sync
+// service's start timeout is shorter than the timer interval, so a hung nft
+// is killed before the next tick instead of stopping the timer.
+func requireStartTimeoutBelowInterval(t *testing.T, roleDefaults map[string]any) {
+	t.Helper()
+	startTimeout, timeoutError := time.ParseDuration(fmt.Sprint(roleDefaults["etcd_peer_firewall_sync_start_timeout"]))
+	syncInterval, intervalError := time.ParseDuration(fmt.Sprint(roleDefaults["etcd_peer_firewall_sync_interval"]))
+	if timeoutError != nil || intervalError != nil || startTimeout <= 0 || startTimeout >= syncInterval {
+		t.Errorf("etcd_peer_firewall_sync_start_timeout %v must be a positive duration below the interval %v (%v, %v)",
+			roleDefaults["etcd_peer_firewall_sync_start_timeout"], roleDefaults["etcd_peer_firewall_sync_interval"], timeoutError, intervalError)
+	}
+}
+
+// TestEtcdRoleLeavesNftablesServiceAlone (user decision "go for a", SA7-L3,
+// CR7-F3): no task of the role (module, command, shell or unit text) mentions
+// nftables or a ruleset flush, and the reload unit is gone.
 func TestEtcdRoleLeavesNftablesServiceAlone(t *testing.T) {
 	roleTasksPath := filepath.Join(ansibleRolesDirectory, "etcd-cluster", "tasks", "main.yml")
 	var taskList []map[string]any
@@ -122,16 +171,14 @@ func TestEtcdRoleLeavesNftablesServiceAlone(t *testing.T) {
 		t.Fatal(decodeError)
 	}
 	for _, task := range taskList {
-		for _, serviceModule := range []string{"systemd", "service", "ansible.builtin.systemd", "ansible.builtin.service"} {
-			moduleArguments, _ := task[serviceModule].(map[string]any)
-			if unitName, _ := moduleArguments["name"].(string); strings.HasPrefix(unitName, "nftables") {
-				t.Errorf("task %q manages %s", task["name"], unitName)
-			}
-		}
 		taskYAML, _ := yaml.Marshal(task)
-		for _, removedSetting := range []string{"peer-firewall-reload", "PartOf=nftables", "ReloadPropagatedFrom=", "WantedBy=nftables"} {
-			if strings.Contains(string(taskYAML), removedSetting) {
-				t.Errorf("task %q still has %q (the reload unit was replaced by the timer)", task["name"], removedSetting)
+		if nftablesMention := nftablesServicePattern.FindString(string(taskYAML)); nftablesMention != "" {
+			t.Errorf("task %q mentions %q: the role must never enable, start or depend on nftables.service", task["name"], nftablesMention)
+		}
+		for _, forbiddenText := range []string{"flush ruleset", "peer-firewall-reload", "PartOf=", "ReloadPropagatedFrom="} {
+			if strings.Contains(string(taskYAML), forbiddenText) {
+				t.Errorf("task %q has %q (the timer replaced the reload unit; a ruleset flush would wipe the agent's tables)",
+					task["name"], forbiddenText)
 			}
 		}
 	}

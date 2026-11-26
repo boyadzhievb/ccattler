@@ -22,6 +22,14 @@ var tlsAlertRecordHeader = []byte{0x15, 0x03, 0x03, 0x00, 0x02}
 // tlsAlertLevelFatal is the TLS alert level that ends the connection.
 const tlsAlertLevelFatal = 0x02
 
+// tlsAlertCertificateRequired is the certificate_required alert (RFC 8446),
+// which Go's TLS 1.3 server sends when the client sent no certificate.
+const tlsAlertCertificateRequired = 116
+
+// unreachableTLSAddress is an address nothing listens on (port 0): the
+// empty-certificate test must fail before any connection is made.
+const unreachableTLSAddress = "127.0.0.1:0"
+
 // serveOneTLSAlert accepts one connection on listener, reads the ClientHello and
 // answers with a fatal TLS alert of alertDescription, as a server does when it
 // ends the handshake.
@@ -56,7 +64,7 @@ func TestTLSRefusalCountsOnlyCertificateAlerts(t *testing.T) {
 	}{
 		{"bad_certificate", 42, true},
 		{"unknown_ca", 48, true},
-		{"certificate_required", 116, true},
+		{"certificate_required", tlsAlertCertificateRequired, true},
 		{"handshake_failure", 40, false},
 		{"protocol_version", 70, false},
 		{"internal_error", 80, false},
@@ -104,24 +112,18 @@ func (fatalRecordingTB *fatalRecordingTB) Fatalf(format string, arguments ...any
 
 // TestTLSRefusalRejectsAnEmptyClientCertificate (SA6): a server answers an
 // empty client certificate with certificate_required, so the refusal helper
-// fails the test instead of counting that as proof of CA separation.
+// fails the test, before it dials, instead of counting that as proof.
 func TestTLSRefusalRejectsAnEmptyClientCertificate(t *testing.T) {
 	serverCA, caError := security.NewCertificateAuthority(security.ClusterIdentityCertificateAuthority, clusterPKITestTTL)
 	if caError != nil {
 		t.Fatal(caError)
 	}
-	listener, listenError := net.Listen("tcp", "127.0.0.1:0")
-	if listenError != nil {
-		t.Fatal(listenError)
-	}
-	defer func() { _ = listener.Close() }()
-	serveOneTLSAlert(t, listener, 116) // certificate_required, as Go sends for an empty certificate
 	recordingTB := &fatalRecordingTB{TB: t}
 	helperReturned := false
 	helperDone := make(chan struct{})
 	go func() {
 		defer close(helperDone)
-		tlsServerRefusesClientCertificate(recordingTB, listener.Addr().String(), serverCA.CACertificatePEM(), tls.Certificate{})
+		tlsServerRefusesClientCertificate(recordingTB, unreachableTLSAddress, serverCA.CACertificatePEM(), tls.Certificate{})
 		helperReturned = true
 	}()
 	<-helperDone
