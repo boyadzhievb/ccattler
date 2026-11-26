@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.98.0-beta <Badge type="tip" text="latest" /> {#v1-98-0-beta}
+## v1.99.0-beta <Badge type="tip" text="latest" /> {#v1-99-0-beta}
+
+**2026-11-26** — Every Cluster-CA Certificate Is an etcd Root Client.
+
+- **Every Cluster-CA Certificate Is an etcd Root Client** (M280) — Security fix (found in the M279 security audit, 2026-11-24): gate certificates were issued by the cluster CA with client authentication, and etcd and the API trusted every certificate from that CA, so a gate key was enough to read and write the whole fact store, and a gate named `ccattler-server` was cluster-admin. Gate certificates are now server-only in every cluster. New clusters made by `cca init` have three CAs (`cluster-identity-ca.pem`, `etcd-access-ca.pem`, `gate-https-ca.pem`) and one certificate per process, with self-explanatory file names and a description line in each file; etcd trusts only its own CA, and `cca join` gives each node its own etcd client certificate. Clients of TLS gates now trust `gate-https-ca.pem`. Clusters from earlier releases keep their files, `cca server` warns at every start that they share one CA, and gate certificates issued before the upgrade stay valid as client certificates for up to 90 days; re-initializing with `cca init` separates the CAs. Until M181 every accepted etcd client certificate still has full etcd access, and firewalling etcd's peer port 2380 is the operator's job (see the new port table in the installation guide). User tokens from `cca user token` do not yet survive a server restart (M283).
+
+---
+
+## v1.98.0-beta {#v1-98-0-beta}
 
 **2026-11-25** — RHEL-Family Install Works.
 

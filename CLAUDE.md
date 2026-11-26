@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M279 — RHEL-Family Install Works (v1.98.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M280 — Every Cluster-CA Certificate Is an etcd Root Client (v1.99.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
