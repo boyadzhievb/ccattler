@@ -83,10 +83,11 @@ func newStreamTestHarness(t *testing.T) *streamTestHarness {
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
 	flakyStore := &flakyAuthStore{StateStore: factStore, failedRead: make(chan struct{}, streamMaxConsecutiveUnavailable)}
-	workloadIssuer, issuerError := security.NewWorkloadTokenIssuer("https://cca.stream.test")
-	if issuerError != nil {
-		t.Fatal(issuerError)
+	signingKey, keyError := security.GenerateOIDCKeyPair()
+	if keyError != nil {
+		t.Fatal(keyError)
 	}
+	workloadIssuer := security.NewWorkloadTokenIssuerWithKey("https://cca.stream.test", signingKey)
 	oidcConfig := security.OIDCConfig{Issuer: workloadIssuer.IssuerURL(), Audience: "ccattler", ClaimMapping: security.ClaimMapping{PrincipalClaim: "sub", TeamClaim: "team"}}
 	userTokens := security.NewLocalUserRecordAuthenticator(security.NewBearerTokenAuthenticator(security.NewOIDCAuthenticator(oidcConfig, workloadIssuer.PublicKey())), flakyStore)
 	apiAuthorizer := security.NewAPIAuthorizer()
@@ -95,7 +96,7 @@ func newStreamTestHarness(t *testing.T) *streamTestHarness {
 	apiServer.SetAPIAuthorizer(apiAuthorizer)
 	apiServer.SetAuthenticatorChain(security.NewAuthenticatorChain(userTokens, streamTestAdminAuthenticator{}))
 	apiServer.SetRequirePrincipal(true)
-	apiServer.SetUserTokenIssuer(security.NewUserTokenIssuer(workloadIssuer))
+	apiServer.SetUserTokenIssuer(security.NewUserTokenIssuerWithKey(workloadIssuer.IssuerURL(), signingKey))
 	apiServer.SetAuditStore(factStore)
 	apiServer.streamReauthorizationInterval = streamTestInterval
 	httpServer := httptest.NewServer(apiServer.Handler())

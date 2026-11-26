@@ -4,16 +4,35 @@
 package security
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"testing"
 	"time"
 )
 
+// newWorkloadTokenIssuerForTest creates an issuer on a fresh P-256 key, as
+// tests need one without a cluster signing identity.
+func newWorkloadTokenIssuerForTest(issuerURL string) (*WorkloadTokenIssuer, error) {
+	signingKey, generateError := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if generateError != nil {
+		return nil, generateError
+	}
+	return NewWorkloadTokenIssuerWithKey(issuerURL, signingKey), nil
+}
+
+// newUserTokenIssuerForTest creates a user token issuer on the workload
+// issuer's key and issuer URL.
+func newUserTokenIssuerForTest(workloadIssuer *WorkloadTokenIssuer) *UserTokenIssuer {
+	return NewUserTokenIssuerWithKey(workloadIssuer.issuerURL, workloadIssuer.signingKey)
+}
+
 func TestMintUserTokenRoundTrip(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create workload issuer: %v", issuerError)
 	}
-	userIssuer := NewUserTokenIssuer(workloadIssuer)
+	userIssuer := newUserTokenIssuerForTest(workloadIssuer)
 
 	tokenString, mintError := userIssuer.MintUserToken("alice", "payments", []string{"developers"}, 8*time.Hour, 0)
 	if mintError != nil {
@@ -58,11 +77,11 @@ func TestMintUserTokenRoundTrip(t *testing.T) {
 }
 
 func TestMintUserTokenWithoutTeam(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create workload issuer: %v", issuerError)
 	}
-	userIssuer := NewUserTokenIssuer(workloadIssuer)
+	userIssuer := newUserTokenIssuerForTest(workloadIssuer)
 
 	tokenString, mintError := userIssuer.MintUserToken("bob", "", nil, 0, 0)
 	if mintError != nil {
@@ -84,11 +103,11 @@ func TestMintUserTokenWithoutTeam(t *testing.T) {
 }
 
 func TestMintUserTokenEmptyUsername(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create workload issuer: %v", issuerError)
 	}
-	userIssuer := NewUserTokenIssuer(workloadIssuer)
+	userIssuer := newUserTokenIssuerForTest(workloadIssuer)
 
 	_, mintError := userIssuer.MintUserToken("", "payments", nil, time.Hour, 0)
 	if mintError == nil {
@@ -97,11 +116,11 @@ func TestMintUserTokenEmptyUsername(t *testing.T) {
 }
 
 func TestMintUserTokenDefaultTTL(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create workload issuer: %v", issuerError)
 	}
-	userIssuer := NewUserTokenIssuer(workloadIssuer)
+	userIssuer := newUserTokenIssuerForTest(workloadIssuer)
 
 	tokenString, mintError := userIssuer.MintUserToken("carol", "frontend", nil, 0, 0)
 	if mintError != nil {
@@ -118,7 +137,7 @@ func TestMintUserTokenDefaultTTL(t *testing.T) {
 		t.Fatalf("validate user token: %v", validateError)
 	}
 
-	expectedExpiry := time.Now().Add(defaultUserTokenTTL)
+	expectedExpiry := time.Now().Add(DefaultUserTokenTTL)
 	timeDiff := authResult.ExpiresAt.Sub(expectedExpiry)
 	if timeDiff < -5*time.Second || timeDiff > 5*time.Second {
 		t.Errorf("expiry off by %v from expected default TTL", timeDiff)
@@ -126,7 +145,7 @@ func TestMintUserTokenDefaultTTL(t *testing.T) {
 }
 
 func TestUserTokenIssuerWithExistingKey(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create workload issuer: %v", issuerError)
 	}

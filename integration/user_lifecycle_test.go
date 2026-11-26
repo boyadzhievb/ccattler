@@ -44,10 +44,11 @@ func newUserLifecycleHarness(t *testing.T) *userLifecycleHarness {
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
-	workloadIssuer, issuerError := security.NewWorkloadTokenIssuer("https://cca.lifecycle.test")
-	if issuerError != nil {
-		t.Fatal(issuerError)
+	signingKey, keyError := security.GenerateOIDCKeyPair()
+	if keyError != nil {
+		t.Fatal(keyError)
 	}
+	workloadIssuer := security.NewWorkloadTokenIssuerWithKey("https://cca.lifecycle.test", signingKey)
 	internalConfig := security.OIDCConfig{Issuer: workloadIssuer.IssuerURL(), Audience: "ccattler", ClaimMapping: security.ClaimMapping{PrincipalClaim: "sub", TeamClaim: "team"}}
 	userTokenAuthenticator := security.NewLocalUserRecordAuthenticator(security.NewBearerTokenAuthenticator(security.NewOIDCAuthenticator(internalConfig, workloadIssuer.PublicKey())), factStore)
 	authenticatorChain := security.NewAuthenticatorChain(userTokenAuthenticator, &lifecycleAdminAuthenticator{})
@@ -58,7 +59,7 @@ func newUserLifecycleHarness(t *testing.T) *userLifecycleHarness {
 	apiServer.SetAPIAuthorizer(apiAuthorizer)
 	apiServer.SetAuthenticatorChain(authenticatorChain)
 	apiServer.SetRequirePrincipal(true)
-	apiServer.SetUserTokenIssuer(security.NewUserTokenIssuer(workloadIssuer))
+	apiServer.SetUserTokenIssuer(security.NewUserTokenIssuerWithKey(workloadIssuer.IssuerURL(), signingKey))
 	return &userLifecycleHarness{t: t, factStore: factStore, apiServer: apiServer, apiAuthorizer: apiAuthorizer, authController: controllers.NewAuthController(apiAuthorizer), authenticator: authenticatorChain}
 }
 

@@ -41,7 +41,7 @@ func newClaimOrderedChain(t *testing.T) *claimOrderedChain {
 	if localError != nil {
 		t.Fatal(localError)
 	}
-	internalIssuer, _ := NewWorkloadTokenIssuer("https://cca.internal")
+	internalIssuer, _ := newWorkloadTokenIssuerForTest("https://cca.internal")
 	externalKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	externalIssuer := NewWorkloadTokenIssuerWithKey("https://idp.example.com", externalKey)
 
@@ -54,7 +54,7 @@ func newClaimOrderedChain(t *testing.T) *claimOrderedChain {
 	return &claimOrderedChain{
 		chain:            chain,
 		localToken:       localAuthenticator.expectedTokenHex,
-		userTokenIssuer:  NewUserTokenIssuer(internalIssuer),
+		userTokenIssuer:  newUserTokenIssuerForTest(internalIssuer),
 		externalIssuer:   externalIssuer,
 		webhookCallCount: webhookCallCount,
 		webhookServer:    webhookServer,

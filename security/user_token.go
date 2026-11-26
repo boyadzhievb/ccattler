@@ -13,8 +13,12 @@ import (
 	"time"
 )
 
-// defaultUserTokenTTL is the default expiry for user authentication tokens.
-const defaultUserTokenTTL = 8 * time.Hour
+// DefaultUserTokenTTL is the lifetime of a user token minted without a TTL.
+const DefaultUserTokenTTL = 8 * time.Hour
+
+// DefaultMaxUserTokenTTL is the longest user token lifetime POST
+// /api/user/token mints unless --max-user-token-ttl says otherwise (M283 D5).
+const DefaultMaxUserTokenTTL = 24 * time.Hour
 
 // userTokenAudience is the audience claim for all user tokens.
 const userTokenAudience = "ccattler"
@@ -23,27 +27,17 @@ const userTokenAudience = "ccattler"
 // user record a token was minted from (auth/user/{name}).
 const UserRecordRevisionClaim = "cca_user_rev"
 
-// UserTokenIssuer mints signed JWTs for human user authentication. It reuses
-// the same ES256 signing key as the WorkloadTokenIssuer so the server's
-// OIDCAuthenticator can validate both workload and user tokens.
+// UserTokenIssuer mints signed JWTs for human user authentication. It signs
+// with the cluster's active token signing key (TokenSigningIdentity), like
+// the WorkloadTokenIssuer, so the internal authenticator verifies both.
 type UserTokenIssuer struct {
 	signingKey *ecdsa.PrivateKey // ECDSA P-256 private key for signing tokens.
 	issuerURL  string            // OIDC issuer URL (matches the server's identity).
 	keyID      string            // Key ID included in the JWT header for key selection.
 }
 
-// NewUserTokenIssuer creates a user token issuer from a WorkloadTokenIssuer,
-// sharing the same signing key and issuer URL.
-func NewUserTokenIssuer(workloadIssuer *WorkloadTokenIssuer) *UserTokenIssuer {
-	return &UserTokenIssuer{
-		signingKey: workloadIssuer.signingKey,
-		issuerURL:  workloadIssuer.issuerURL,
-		keyID:      workloadIssuer.keyID,
-	}
-}
-
 // NewUserTokenIssuerWithKey creates a user token issuer from an existing ECDSA
-// private key. Used when the signing key is loaded from persistent storage.
+// private key: the cluster's active signing key (BuildUserTokenIssuer).
 func NewUserTokenIssuerWithKey(issuerURL string, signingKey *ecdsa.PrivateKey) *UserTokenIssuer {
 	return &UserTokenIssuer{
 		signingKey: signingKey,
@@ -60,7 +54,7 @@ func (userTokenIssuer *UserTokenIssuer) MintUserToken(username string, team stri
 		return "", fmt.Errorf("user token: username is required")
 	}
 	if tokenTTL <= 0 {
-		tokenTTL = defaultUserTokenTTL
+		tokenTTL = DefaultUserTokenTTL
 	}
 
 	currentTime := time.Now()

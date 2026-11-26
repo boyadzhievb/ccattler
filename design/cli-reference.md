@@ -11,7 +11,7 @@ cca apply [--simulate] <file> # send config to POST /api/apply (+ referenced fil
                               # an unreachable API is an error; --store/--endpoints removed (M219)
 cca run [--watch] <file>      # start real OS processes
 cca run-container [--watch] <file>  # start real Docker containers
-cca server [flags]            # start control plane (--secret-root-key <file> | --root-key-provider aws-kms|gcp-kms --root-key-id <id>; --keyring-retire-grace <duration>, default 168h, minimum 1h)
+cca server [flags]            # start control plane (--secret-root-key <file> | --root-key-provider aws-kms|gcp-kms --root-key-id <id>; --keyring-retire-grace <duration>, default 168h, minimum 1h; --token-issuer-url <url>, stored at the first start; --max-user-token-ttl <duration>, default 24h, minimum 8h)
 cca agent --node-id <id>      # start node agent (--storage-backend local|nfs --storage-dir <path>)
 cca token create/list/revoke  # join tokens via /api/node/join-token (cluster.admin)
 cca join <server> <token>     # join node to cluster

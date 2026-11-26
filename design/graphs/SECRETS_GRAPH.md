@@ -42,6 +42,8 @@ Cloud providers register by name ("aws-kms", "gcp-kms") through `RegisterCloudKe
 ```
 executeServerCommand [cmd/cca/command_server.go:343]
   keyringCodec := startSecretEnvelopeCodec(ctx, factStore, cfg); NewSecretStore(factStore, keyringCodec)
+  API replicas: establishServerTokenSigningIdentity(keyringCodec) → keyring/token-signing/ (Flow 37, AUTHN_GRAPH
+               "Token Signing Identity"); error → exit, before the controllers and the API start
   keyringCodec → startControllersWithLeaderElection (route-tls, gate-key-migration, keyring-migration, keyring-rotation)
                → configureAndStartAPIServer → SetKeyringAdministration(keyringCodec, version)
 startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go:28]
@@ -64,6 +66,9 @@ startSecretEnvelopeCodec                                [cmd/cca/server_secret_k
 └── any error → exitWithSecretKeyError                   [no silent key generation]
 
 keyring/legacy (authority): none | present → migrating → retired   [advanceLegacyKeyState, security/keyring_migration.go:112]
+encryptedStorePrefixes [security/keyring.go:78] = secrets/, credentials/, keyring/token-signing/key/ (M283 D4)
+  storedEnvelopeArea(key) [:82] → (in an encrypted area, base64 = secrets/ only); used by PlanKEKRewrapBatch,
+  PlanLegacyMigrationBatch, countV1Envelopes; checkRetirementStoreConditions and refuseKeyringRebootstrap scan the list
 KeyringEnvelopeCodec.SealEnvelopeForKey [security/envelope_codec.go:111] → legacy present ? SealEnvelope(legacy) : sealEnvelopeV2(active KEK, AAD=storeKey)
 KeyringEnvelopeCodec.OpenEnvelopeForKey [:125] → isEnvelopeV2 ? openEnvelopeV2Payload(KEK[version]) : legacy (refused once retired)
 Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, SealSecretValue(codec, storeKey, ...),
@@ -93,7 +98,7 @@ KeyringRotationController.Reconcile [controllers/keyring_rotation.go:92] (leader
 │   │   put kek/{target} + kek/{target}/state = pending (runner: create-only)
 │   └── else → ProveKEKVersion [security/keyring_rotation.go:197] → switchActiveKEK [:155]:
 │       put keyring/active = target, target active, previous draining (one group)
-├── PlanKEKRewrapBatch(facts, active, 40) [security/keyring_rotation.go:225]
+├── PlanKEKRewrapBatch(facts, active, 40) [security/keyring_rotation.go:225]   [secrets/, credentials/, keyring/token-signing/key/]
 │   ├── rewrapEnvelopeV2 [security/envelope_v2.go:85] (DEK re-wrapped; nonce, ciphertext, AAD unchanged)
 │   └── unreadable → recordUnreadable [:188] (count + first 10 keys)
 ├── no rewrites → planVersionTransitions [:169] (ReplicasNotOnKEK [security/keyring_rotation.go:289])
@@ -103,7 +108,8 @@ KeyringRotationController.Reconcile [controllers/keyring_rotation.go:92] (leader
 └── planRotationStatus [:221]: rewrapped, remaining, unreadable_count, unreadable_keys;
     no rewrites ∧ no draining version awaiting reports (hasDrainingKEKVersionAwaitingReplicas [:261]) →
     delete intent, state completed (unreadable-only versions stay draining); unchanged status not written
-Write domain: keyring-rotation → keyring/kek/, keyring/active, secrets/, credentials/, intent/keyring/rotation, observed/keyring/rotation
+Write domain: keyring-rotation → keyring/kek/, keyring/active, secrets/, credentials/, keyring/token-signing/key/,
+  intent/keyring/rotation, observed/keyring/rotation   (never keyring/token-signing/initialized or /active)
 
 Legacy key migration (M177 step 3, Flow 29 steps 5–6):
 cca secret migrate-keys --confirm-backup → executeSecretMigrateKeys → postSecretAdminRequest
@@ -115,13 +121,15 @@ POST /api/secret/migrate-keys → handleSecretMigrateKeys [api/keyring_migration
 ├── unmet → writeKeyringGateRefusal (409 {error, unmet[]})
 └── StartLegacyMigration(principal) [:93] → advanceLegacyKeyState(present → migrating,
     + intent/keyring/legacy_migration + migration {state: in_progress}); writes are v2
-KeyringMigrationController.Reconcile [controllers/keyring_migration.go:63] (leader; Watch secrets/, credentials/, keyring/legacy, observed/keyring/migration)
+KeyringMigrationController.Reconcile [controllers/keyring_migration.go:64] (leader; Watch secrets/, credentials/,
+  keyring/token-signing/key/, keyring/legacy, observed/keyring/migration)
 ├── keyring/legacy ≠ migrating → no changes
 ├── PlanLegacyMigrationBatch(facts, 50) [security/keyring_migration.go:149]   [v1 → open(legacy) → sealEnvelopeV2(AAD = key)]
 │   unreadable v1 counted, never rewritten or deleted
 └── puts rewrites (runner revision guard per key) + migration {migrated, legacy_v1_envelope_count, unreadable_count}
     count 0 → completed; v1 found while completed → in_progress again
-Write domain: keyring-migration → secrets/, credentials/, observed/keyring/migration   [controllers/topological_sort.go]
+Write domain: keyring-migration → secrets/, credentials/, keyring/token-signing/key/, observed/keyring/migration
+  [controllers/topological_sort.go; TestKeyringOperationsCoverTokenSigningKey]
 
 Legacy key retirement (M177 step 4, Flow 29 step 7):
 cca secret retire-legacy-key → executeSecretRetireLegacyKey → postSecretAdminRequest
@@ -130,7 +138,7 @@ POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey [api/keyring_
 │   ├── keyring/legacy = migrating; migration completed with count 0
 │   ├── checkReplicaReports("", migrating) → every live replica acts on migrating (seals v2)
 │   └── checkRetirementStoreConditions
-│       ├── countV1Envelopes (full scan secrets/ + credentials/)
+│       ├── countV1Envelopes (full scan of encryptedStorePrefixes: secrets/, credentials/, keyring/token-signing/key/)
 │       ├── plaintext desired|derived/route/*/tls/key facts
 │       └── nodesHoldingLegacyKeyFile = NodesNotReporting(legacy_key_file, absent) − API replicas
 ├── unmet → writeKeyringGateRefusal (409)
@@ -264,6 +272,7 @@ Server-side `lang.Diff(..., allowLocalFiles=false)`, `applyDirect` and the polic
 | Key Pattern | Where Written |
 |---|---|
 | `secrets/{name}` | SecretStore.PutSecret, keyring migration and rotation controllers |
+| `keyring/token-signing/key/{kid}` | createTokenSigningIdentity (once, raw keyring envelope, AAD = this key); re-wrapped by keyring-rotation, moved to v2 by keyring-migration (M283) |
 | `desired/secret_generation/{name}` | SecretStore.PutSecret only, on a changed value (M236); kept by DeleteSecret as a tombstone; read by the agent's config hash; hidden from /api/state, admin-only to write |
 
 ---

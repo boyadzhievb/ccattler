@@ -130,6 +130,28 @@ func KeyKeyringKEKRetiringSince(kekVersion int) string {
 	return fmt.Sprintf("%s%d/retiring_since", ScanKeyringKEKs, kekVersion)
 }
 
+// PrefixTokenSigning is the keyring area of the cluster's API token signing
+// identity (M283, Flow 37); like all of keyring/, never served by an API.
+const PrefixTokenSigning = PrefixKeyring + "/token-signing/"
+
+// KeyTokenSigningInitialized is the signing identity's marker, JSON
+// {issuer_url, created}: present means the identity was created once and a
+// missing key is a loss, never a fresh start.
+const KeyTokenSigningInitialized = PrefixTokenSigning + "initialized"
+
+// KeyTokenSigningActive holds the kid of the key that signs new tokens.
+const KeyTokenSigningActive = PrefixTokenSigning + "active"
+
+// ScanTokenSigningKeys lists the sealed signing keys; every one verifies.
+const ScanTokenSigningKeys = PrefixTokenSigning + "key/"
+
+// KeyTokenSigningKey returns the store path of a signing key: a keyring
+// envelope of its PKCS#8 private key, bound to this path.
+// Path: keyring/token-signing/key/{kid}
+func KeyTokenSigningKey(keyID string) string {
+	return ScanTokenSigningKeys + keyID
+}
+
 // KeyObservedKeyringMigration holds the legacy key migration status as JSON
 // (state, legacy_v1_envelope_count, unreadable_count, ...).
 const KeyObservedKeyringMigration = PrefixObserved + "/keyring/migration"

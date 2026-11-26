@@ -143,15 +143,15 @@ type LegacyMigrationBatch struct {
 }
 
 // PlanLegacyMigrationBatch re-encrypts up to batchLimit v1 envelopes found in
-// facts (secrets/ base64-encoded, credentials/ raw) as v2 under the active KEK,
+// facts (secrets/ base64, credentials/ and signing keys raw) as v2 (active KEK),
 // bound to their own store key (R8). Unreadable v1 envelopes are counted, never
 // skipped silently or deleted.
 func (keyringCodec *KeyringEnvelopeCodec) PlanLegacyMigrationBatch(ctx context.Context, facts []store.Fact, batchLimit int) (LegacyMigrationBatch, error) {
 	var migrationBatch LegacyMigrationBatch
 	snapshot := keyringCodec.currentSnapshot()
 	for _, fact := range facts {
-		isSecretValue := strings.HasPrefix(fact.Key, SecretStorePrefix)
-		if !isSecretValue && !strings.HasPrefix(fact.Key, CredentialStorePrefix) {
+		isEnvelope, isSecretValue := storedEnvelopeArea(fact.Key)
+		if !isEnvelope {
 			continue
 		}
 		envelope, isV1 := decodeStoredEnvelope(fact.Value, isSecretValue)

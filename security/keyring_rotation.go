@@ -219,7 +219,7 @@ func (keyringCodec *KeyringEnvelopeCodec) CreateWrappedKEK(ctx context.Context) 
 }
 
 // PlanKEKRewrapBatch re-wraps up to batchLimit v2 envelopes found in facts
-// (secrets/ base64-encoded, credentials/ raw) whose KEK version is not
+// (secrets/ base64, credentials/ and token signing keys raw) whose KEK is not
 // activeKEKVersion, and counts the envelopes naming each version afterwards.
 // Envelopes it cannot re-wrap are counted, never rewritten or deleted.
 func (keyringCodec *KeyringEnvelopeCodec) PlanKEKRewrapBatch(ctx context.Context, facts []store.Fact, activeKEKVersion int, batchLimit int) (KEKRewrapBatch, error) {
@@ -229,8 +229,8 @@ func (keyringCodec *KeyringEnvelopeCodec) PlanKEKRewrapBatch(ctx context.Context
 	}
 	rewrapBatch := KEKRewrapBatch{EnvelopesByKEKVersion: make(map[int]int)}
 	for _, fact := range facts {
-		isSecretValue := strings.HasPrefix(fact.Key, SecretStorePrefix)
-		if !isSecretValue && !strings.HasPrefix(fact.Key, CredentialStorePrefix) {
+		isEnvelope, isSecretValue := storedEnvelopeArea(fact.Key)
+		if !isEnvelope {
 			continue
 		}
 		envelope, isV1 := decodeStoredEnvelope(fact.Value, isSecretValue)

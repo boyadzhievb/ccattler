@@ -1692,7 +1692,7 @@ func TestPrincipalContext(t *testing.T) {
 }
 
 func TestWorkloadTokenIssuerCreation(t *testing.T) {
-	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1708,7 +1708,7 @@ func TestWorkloadTokenIssuerCreation(t *testing.T) {
 }
 
 func TestMintWorkloadToken(t *testing.T) {
-	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1741,7 +1741,7 @@ func TestMintWorkloadToken(t *testing.T) {
 }
 
 func TestMintWorkloadTokenIncludesKeyID(t *testing.T) {
-	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1772,7 +1772,7 @@ func TestMintWorkloadTokenIncludesKeyID(t *testing.T) {
 }
 
 func TestOIDCDiscoveryDocument(t *testing.T) {
-	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1790,7 +1790,7 @@ func TestOIDCDiscoveryDocument(t *testing.T) {
 }
 
 func TestJWKSDocument(t *testing.T) {
-	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1819,7 +1819,7 @@ func TestJWKSDocument(t *testing.T) {
 }
 
 func TestJWKSVerifiesMintedToken(t *testing.T) {
-	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1850,7 +1850,7 @@ func TestJWKSVerifiesMintedToken(t *testing.T) {
 }
 
 func TestWorkloadTokenIssuerWithExistingKey(t *testing.T) {
-	originalIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	originalIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}

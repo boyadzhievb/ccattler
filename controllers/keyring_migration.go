@@ -26,10 +26,10 @@ type LegacyEnvelopeMigrationPlanner interface {
 	PlanLegacyMigrationBatch(ctx context.Context, facts []store.Fact, batchLimit int) (security.LegacyMigrationBatch, error)
 }
 
-// KeyringMigrationController re-encrypts v1 envelopes under secrets/ and
-// credentials/ as v2 after the migration gate (Flow 29 step 6), in bounded
-// batches guarded by each envelope's revision, and persists the progress.
-// It resumes from the remaining v1 envelopes after a crash.
+// KeyringMigrationController re-encrypts v1 envelopes under secrets/,
+// credentials/ and keyring/token-signing/key/ as v2 after the migration gate
+// (Flow 29 step 6), in batches guarded by each envelope's revision, and
+// persists the progress; it resumes from the remaining v1 envelopes.
 type KeyringMigrationController struct {
 	migrationPlanner LegacyEnvelopeMigrationPlanner // migrationPlanner opens v1 and seals v2 envelopes.
 }
@@ -45,12 +45,13 @@ func (keyringMigrationController *KeyringMigrationController) Name() string {
 	return "keyring-migration"
 }
 
-// Watch returns the envelope areas, the authoritative keyring state and the
-// migration status.
+// Watch returns the envelope areas (secrets, credentials, token signing
+// keys), the authoritative keyring state and the migration status.
 func (keyringMigrationController *KeyringMigrationController) Watch() []string {
 	return []string{
 		security.SecretStorePrefix,
 		security.CredentialStorePrefix,
+		types.ScanTokenSigningKeys,
 		types.KeyKeyringLegacy,
 		types.KeyObservedKeyringMigration,
 	}

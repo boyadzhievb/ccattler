@@ -17,14 +17,14 @@ import (
 // wrapped by the user-record check over a memory store, and the issuer.
 func newLocalUserTestAuthenticator(t *testing.T) (Authenticator, *UserTokenIssuer, store.StateStore) {
 	t.Helper()
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://cca.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://cca.test")
 	if issuerError != nil {
 		t.Fatal(issuerError)
 	}
 	internalConfig := OIDCConfig{Issuer: workloadIssuer.IssuerURL(), Audience: "ccattler", ClaimMapping: ClaimMapping{PrincipalClaim: "sub", TeamClaim: "team"}}
 	internalAuthenticator := NewBearerTokenAuthenticator(NewOIDCAuthenticator(internalConfig, workloadIssuer.PublicKey()))
 	factStore := store.NewMemoryStore()
-	return NewLocalUserRecordAuthenticator(internalAuthenticator, factStore), NewUserTokenIssuer(workloadIssuer), factStore
+	return NewLocalUserRecordAuthenticator(internalAuthenticator, factStore), newUserTokenIssuerForTest(workloadIssuer), factStore
 }
 
 // authenticateUserToken runs the authenticator on a request carrying token.

@@ -1094,7 +1094,7 @@ func TestOIDCDiscoveryEndpoint(t *testing.T) {
 
 	apiServer := NewServer(factStore)
 	configureTestAuth(apiServer)
-	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1135,7 +1135,7 @@ func TestOIDCJWKSEndpoint(t *testing.T) {
 
 	apiServer := NewServer(factStore)
 	configureTestAuth(apiServer)
-	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1373,7 +1373,7 @@ func TestOIDCEndpointsMethodNotAllowed(t *testing.T) {
 
 	apiServer := NewServer(factStore)
 	configureTestAuth(apiServer)
-	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -1842,4 +1842,14 @@ func TestEnrollWithoutEtcdCSRNamesServerVersion(t *testing.T) {
 	if httpResponse.StatusCode == http.StatusOK || !strings.Contains(enrollResponse.Error, "v9.9.9-test") {
 		t.Fatalf("old cca join: HTTP %d, error %q; want a refusal naming v9.9.9-test", httpResponse.StatusCode, enrollResponse.Error)
 	}
+}
+
+// newWorkloadTokenIssuerForTest creates a workload token issuer on a fresh
+// P-256 key; production issuers come from the cluster's signing identity.
+func newWorkloadTokenIssuerForTest(issuerURL string) (*security.WorkloadTokenIssuer, error) {
+	signingKey, keyError := security.GenerateOIDCKeyPair()
+	if keyError != nil {
+		return nil, keyError
+	}
+	return security.NewWorkloadTokenIssuerWithKey(issuerURL, signingKey), nil
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func TestOIDCDiscoveryClientFetchAndCacheKeys(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create issuer: %v", issuerError)
 	}
@@ -101,7 +101,7 @@ func TestOIDCDiscoveryClientKeyNotFound(t *testing.T) {
 }
 
 func TestParseJWKEntryValidEC(t *testing.T) {
-	workloadIssuer, issuerError := NewWorkloadTokenIssuer("https://ccattler.test")
+	workloadIssuer, issuerError := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if issuerError != nil {
 		t.Fatalf("create issuer: %v", issuerError)
 	}

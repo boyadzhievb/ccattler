@@ -50,7 +50,7 @@ func (keyringCodec *KeyringEnvelopeCodec) CheckLegacyRetirementGate(ctx context.
 // for plaintext gate key facts and for nodes that still hold the legacy file.
 func (keyringCodec *KeyringEnvelopeCodec) checkRetirementStoreConditions(ctx context.Context) ([]string, error) {
 	var unmetConditions []string
-	envelopeFacts, scanError := scanStorePrefixes(ctx, keyringCodec.factStore, SecretStorePrefix, CredentialStorePrefix)
+	envelopeFacts, scanError := scanStorePrefixes(ctx, keyringCodec.factStore, encryptedStorePrefixes...)
 	if scanError != nil {
 		return nil, scanError
 	}
@@ -76,11 +76,16 @@ func (keyringCodec *KeyringEnvelopeCodec) checkRetirementStoreConditions(ctx con
 	return unmetConditions, nil
 }
 
-// countV1Envelopes counts v1 envelopes among secret and credential facts.
+// countV1Envelopes counts v1 envelopes among the facts of the encrypted
+// store areas (secrets, credentials, token signing keys).
 func countV1Envelopes(envelopeFacts []store.Fact) int {
 	v1EnvelopeCount := 0
 	for _, envelopeFact := range envelopeFacts {
-		if _, isV1 := decodeStoredEnvelope(envelopeFact.Value, strings.HasPrefix(envelopeFact.Key, SecretStorePrefix)); isV1 {
+		isEnvelope, isSecretValue := storedEnvelopeArea(envelopeFact.Key)
+		if !isEnvelope {
+			continue
+		}
+		if _, isV1 := decodeStoredEnvelope(envelopeFact.Value, isSecretValue); isV1 {
 			v1EnvelopeCount++
 		}
 	}

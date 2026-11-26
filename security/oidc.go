@@ -37,22 +37,50 @@ type ClaimMapping struct {
 	RoleClaim      string // JWT claim to use as role attribute (default: "role")
 }
 
+// JWTVerificationKeyResolver returns the public key that verifies a JWT whose
+// header names keyID ("kid"; "" when absent), or an error to refuse it.
+type JWTVerificationKeyResolver interface {
+	// VerificationKeyForKeyID returns the verifying key for keyID.
+	VerificationKeyForKeyID(keyID string) (*ecdsa.PublicKey, error)
+}
+
+// singleVerificationKey verifies every token with one key, whatever its kid:
+// the external OIDC provider's first JWKS key.
+type singleVerificationKey struct {
+	verifyingKey crypto.PublicKey // verifyingKey must be an ECDSA public key.
+}
+
+// VerificationKeyForKeyID returns the one key; a non-ECDSA key refuses.
+func (singleKey singleVerificationKey) VerificationKeyForKeyID(string) (*ecdsa.PublicKey, error) {
+	ecdsaKey, isECDSA := singleKey.verifyingKey.(*ecdsa.PublicKey)
+	if !isECDSA {
+		return nil, fmt.Errorf("oidc: verifying key is not ECDSA")
+	}
+	return ecdsaKey, nil
+}
+
 // OIDCAuthenticator validates JWT tokens and extracts principal identities
 // and attributes for use with the RBAC/ABAC authorizers.
 type OIDCAuthenticator struct {
-	config       OIDCConfig
-	verifyingKey crypto.PublicKey
+	config           OIDCConfig                 // config is the expected issuer, audience and claim mapping.
+	verificationKeys JWTVerificationKeyResolver // verificationKeys selects the verifying key by the token's kid.
 }
 
-// NewOIDCAuthenticator creates an authenticator with the given config and
-// public key for signature verification.
+// NewOIDCAuthenticator creates an authenticator that verifies every token
+// with one public key (the external OIDC provider's).
 func NewOIDCAuthenticator(config OIDCConfig, verifyingKey crypto.PublicKey) *OIDCAuthenticator {
+	return NewOIDCAuthenticatorWithKeyResolver(config, singleVerificationKey{verifyingKey: verifyingKey})
+}
+
+// NewOIDCAuthenticatorWithKeyResolver creates an authenticator that picks the
+// verifying key by the token's kid (the cluster's own key set, M283 D3).
+func NewOIDCAuthenticatorWithKeyResolver(config OIDCConfig, verificationKeys JWTVerificationKeyResolver) *OIDCAuthenticator {
 	if config.ClaimMapping.PrincipalClaim == "" {
 		config.ClaimMapping.PrincipalClaim = "sub"
 	}
 	return &OIDCAuthenticator{
-		config:       config,
-		verifyingKey: verifyingKey,
+		config:           config,
+		verificationKeys: verificationKeys,
 	}
 }
 
@@ -87,10 +115,9 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 	return authenticator.constructAuthenticationResultFromClaims(claims, expiresAt)
 }
 
-// parseAndVerifyJWTSignature splits a JWT token string into its three parts,
-// validates the header algorithm is ES256, and verifies the ECDSA signature
-// using the configured public key. Returns the raw JSON bytes of the claims
-// payload on success.
+// parseAndVerifyJWTSignature splits a JWT into its three parts, checks the
+// algorithm is ES256 and verifies the ECDSA signature with the key resolved
+// from the header's kid. Returns the raw JSON claims on success.
 func (authenticator *OIDCAuthenticator) parseAndVerifyJWTSignature(tokenString string) ([]byte, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
@@ -103,8 +130,9 @@ func (authenticator *OIDCAuthenticator) parseAndVerifyJWTSignature(tokenString s
 	}
 
 	var header struct {
-		Algorithm string `json:"alg"`
-		Type      string `json:"typ"`
+		Algorithm string `json:"alg"` // Algorithm must be ES256.
+		Type      string `json:"typ"` // Type is the token type, normally "JWT".
+		KeyID     string `json:"kid"` // KeyID selects the verifying key; "" when absent.
 	}
 	if unmarshalErr := json.Unmarshal(headerJSON, &header); unmarshalErr != nil {
 		return nil, fmt.Errorf("oidc: parse header: %w", unmarshalErr)
@@ -120,9 +148,9 @@ func (authenticator *OIDCAuthenticator) parseAndVerifyJWTSignature(tokenString s
 		return nil, fmt.Errorf("oidc: decode signature: %w", err)
 	}
 
-	ecdsaKey, ok := authenticator.verifyingKey.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("oidc: verifying key is not ECDSA")
+	ecdsaKey, keyError := authenticator.verificationKeys.VerificationKeyForKeyID(header.KeyID)
+	if keyError != nil {
+		return nil, keyError
 	}
 
 	payloadHash := sha256.Sum256([]byte(signedPayload))

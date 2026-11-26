@@ -319,6 +319,7 @@ func TestServerFlagsEveryFlagReachesItsField(testContext *testing.T) {
 		"--oidc-issuer", "https://issuer.example", "--oidc-client-id", "cca-client",
 		"--oidc-claim-team", "groups", "--authn-webhook-url", "https://authn.example/check",
 		"--cluster-cidr", "10.50.0.0/16", "--vip-cidr", "10.60.0.0/24",
+		"--token-issuer-url", "https://ctrl-1:9770", "--max-user-token-ttl", "36h",
 	)
 	expectedConfig := serverCommandConfig{ //nolint:gosec // G101: key file paths, not credentials
 		storeBackend: "etcd", etcdEndpoints: "10.0.0.1:2379", storeKeyPrefix: "/cca-test/",
@@ -331,9 +332,32 @@ func TestServerFlagsEveryFlagReachesItsField(testContext *testing.T) {
 		authnWebhookURL: "https://authn.example/check", clusterCIDR: "10.50.0.0/16", vipCIDR: "10.60.0.0/24",
 		secretRootKeyPath: "/keys/root.key", rootKeyProviderName: "aws-kms",
 		rootKeyID: "alias/ccattler-secrets", keyringRetireGrace: 48 * time.Hour,
+		tokenIssuerURL: "https://ctrl-1:9770", maxUserTokenTTL: 36 * time.Hour,
 	}
 	if !reflect.DeepEqual(parsedConfig, expectedConfig) {
 		testContext.Errorf("parsed server flags differ:\n got  %+v\n want %+v", parsedConfig, expectedConfig)
+	}
+}
+
+// TestServerTokenFlagsRefuseBadValues: --token-issuer-url must be an
+// absolute http(s) URL without a path, and --max-user-token-ttl a duration
+// of at least the 8h default lifetime; 24h is the default maximum (M283).
+func TestServerTokenFlagsRefuseBadValues(testContext *testing.T) {
+	refusedFlags := [][]string{
+		{"--token-issuer-url", "ctrl-1:9770"},
+		{"--token-issuer-url", "ftp://ctrl-1:9770"},
+		{"--token-issuer-url", "https://ctrl-1:9770/"},
+		{"--token-issuer-url", "https://ctrl-1:9770?x=1"},
+		{"--max-user-token-ttl", "soon"},
+		{"--max-user-token-ttl", "1h"},
+	}
+	for _, refusedFlag := range refusedFlags {
+		if _, parseError := parseServerCommandArgs(append([]string{"--store", "memory"}, refusedFlag...)); parseError == nil {
+			testContext.Errorf("%v accepted, want an error", refusedFlag)
+		}
+	}
+	if defaultConfig := mustParseServerFlags(testContext, "--store", "memory"); defaultConfig.maxUserTokenTTL != 24*time.Hour || defaultConfig.tokenIssuerURL != "" {
+		testContext.Errorf("token flag defaults: max %s, issuer %q; want 24h and none", defaultConfig.maxUserTokenTTL, defaultConfig.tokenIssuerURL)
 	}
 }
 

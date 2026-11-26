@@ -242,6 +242,37 @@ else
 fi
 
 # ============================================================
+# Check 6b: ha:user-token-cross-replica (M283) — a user token minted on
+# replica 1 works on replica 2 (one signing key in the keyring), and both
+# replicas publish the same JWKS. The test token is short-lived; it is passed
+# in the remote command like the other test tokens, never the admin token.
+# ============================================================
+log "Check 6b: user token accepted by another replica (ha:user-token-cross-replica)"
+HA_TOKEN_USER="e2e-ha-admin"
+CTRL1_CCA="$(local_admin_cca_remote_command "https://${CTRL1_IP}:9770" user delete "$HA_TOKEN_USER") >/dev/null 2>&1;"
+CTRL1_CCA+=" $(local_admin_cca_remote_command "https://${CTRL1_IP}:9770" user create "$HA_TOKEN_USER") >/dev/null &&"
+CTRL1_CCA+=" $(local_admin_cca_remote_command "https://${CTRL1_IP}:9770" role grant "user:${HA_TOKEN_USER}" --capability cluster.admin --scope cluster) >/dev/null"
+HA_USER_TOKEN=""
+if ssh_vm "${CTRL_NAMES[0]}" "$CTRL1_CCA"; then
+    HA_USER_TOKEN=$(ssh_vm "${CTRL_NAMES[0]}" "$(local_admin_cca_remote_command "https://${CTRL1_IP}:9770" user token "$HA_TOKEN_USER" --ttl 1h)" | tr -d '\r\n')
+fi
+if [[ -z "$HA_USER_TOKEN" ]]; then
+    fail "ha:user-token-cross-replica: no user token minted on ${CTRL_NAMES[0]}"
+elif ssh_vm "${CTRL_NAMES[1]}" "CCA_TOKEN=$(printf '%q' "$HA_USER_TOKEN") CCA_API=https://${CTRL2_IP}:9770 /usr/local/bin/cca status >/dev/null"; then
+    pass "ha:user-token-cross-replica: token from ${CTRL_NAMES[0]} accepted by ${CTRL_NAMES[1]}"
+else
+    fail "ha:user-token-cross-replica: token from ${CTRL_NAMES[0]} refused by ${CTRL_NAMES[1]}"
+fi
+JWKS_CTRL1=$(api_curl "${CTRL1_IP}" "/oidc/jwks" || echo "ctrl-1 unreachable")
+JWKS_CTRL2=$(api_curl "${CTRL2_IP}" "/oidc/jwks" || echo "ctrl-2 unreachable")
+if [[ "$JWKS_CTRL1" == "$JWKS_CTRL2" && "$JWKS_CTRL1" == *'"kid"'* ]]; then
+    pass "ha:user-token-cross-replica: /oidc/jwks identical on ${CTRL_NAMES[0]} and ${CTRL_NAMES[1]}"
+else
+    fail "ha:user-token-cross-replica: /oidc/jwks differs: ${JWKS_CTRL1} vs ${JWKS_CTRL2}"
+fi
+ssh_vm "${CTRL_NAMES[0]}" "$(local_admin_cca_remote_command "https://${CTRL1_IP}:9770" user delete "$HA_TOKEN_USER") >/dev/null 2>&1" || true
+
+# ============================================================
 # Check 7: VIP routing — curl whoami VIP from each worker node
 # ============================================================
 log "Check 7: VIP routing"

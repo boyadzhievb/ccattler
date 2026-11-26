@@ -136,6 +136,12 @@ type serverCommandConfig struct {
 	// keyringRetireGrace is how long a retiring KEK version is kept before it
 	// is deleted (--keyring-retire-grace, Flow 30).
 	keyringRetireGrace time.Duration
+	// tokenIssuerURL is the cluster token issuer (--token-issuer-url): stored at
+	// the first start; a later start with a different one refuses (M283).
+	tokenIssuerURL string
+	// maxUserTokenTTL is the longest lifetime POST /api/user/token mints
+	// (--max-user-token-ttl, default 24h).
+	maxUserTokenTTL time.Duration
 }
 
 // parseServerCommandArgs parses the flags following "server". An unknown flag,
@@ -149,6 +155,7 @@ func parseServerCommandArgs(args []string) (serverCommandConfig, error) {
 		listenAddress:      "0.0.0.0:" + defaultAPIListenPort,
 		secretRootKeyPath:  security.DefaultSecretRootKeyPath,
 		keyringRetireGrace: controllers.DefaultKeyringRetireGrace,
+		maxUserTokenTTL:    security.DefaultMaxUserTokenTTL,
 	}
 	explicitListenProvided := false
 
@@ -156,6 +163,7 @@ func parseServerCommandArgs(args []string) (serverCommandConfig, error) {
 	registerServerListenerFlags(flagSet, &parsedConfig, &explicitListenProvided)
 	registerServerIdentityFlags(flagSet, &parsedConfig)
 	registerServerSecretKeyFlags(flagSet, &parsedConfig)
+	registerServerTokenFlags(flagSet, &parsedConfig)
 	if parseError := parseDaemonFlagSet(flagSet, args); parseError != nil {
 		return parsedConfig, parseError
 	}
@@ -336,6 +344,12 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	// migration (Flow 29).
 	keyringCodec := startSecretEnvelopeCodec(ctx, factStore, parsedConfig)
 	secretStore := security.NewSecretStore(factStore, keyringCodec)
+	// The API's token signing identity lives in the keyring (Flow 37): loaded
+	// before anything serves; a lost or unreadable one stops the server.
+	var tokenSigningIdentity *security.TokenSigningIdentity
+	if runAPIServer {
+		tokenSigningIdentity = establishServerTokenSigningIdentity(ctx, factStore, keyringCodec, parsedConfig)
+	}
 
 	if runControllers {
 		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, keyringCodec)
@@ -343,7 +357,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 
 	if runAPIServer {
 		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig,
-			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore, keyringCodec, verifiedIdentity)
+			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore, keyringCodec, verifiedIdentity, tokenSigningIdentity)
 	}
 
 	printStartupBannerAndAwaitShutdown(ctx, parsedConfig, runAPIServer)
@@ -451,8 +465,9 @@ func resolveServerTLSConfiguration(ctx context.Context, parsedConfig serverComma
 	return nil, nil, false
 }
 
-// resolveServerIssuerURL derives the OIDC issuer URL from the server's listen
-// address. This URL appears in JWT "iss" claims and OIDC discovery documents.
+// resolveServerIssuerURL derives an issuer URL from the server's listen
+// address: the cluster token issuer stored at the first start when
+// --token-issuer-url is not set (Flow 37); later starts use the stored one.
 func resolveServerIssuerURL(parsedConfig serverCommandConfig) string {
 	scheme := "http"
 	if parsedConfig.tlsEnabled {
@@ -474,7 +489,7 @@ func resolveServerIssuerURL(parsedConfig serverCommandConfig) string {
 // internal JWT, external OIDC, webhook. Each claims only its own credential
 // shape or issuer, so the webhook (last) never sees local or internal tokens.
 // Returns the chain and the server's own principal ("" without TLS).
-func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer, workloadTokenIssuer *security.WorkloadTokenIssuer, factStore store.StateStore, parsedConfig serverCommandConfig) (*security.AuthenticatorChain, string) {
+func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer, tokenSigningIdentity *security.TokenSigningIdentity, factStore store.StateStore, parsedConfig serverCommandConfig) (*security.AuthenticatorChain, string) {
 	var chainAuthenticators []security.Authenticator
 	if serverTLSConfig != nil {
 		chainAuthenticators = append(chainAuthenticators, security.NewMTLSAuthenticator())
@@ -494,7 +509,7 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 		os.Exit(1)
 	}
 
-	chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, factStore, parsedConfig)
+	chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, tokenSigningIdentity, factStore, parsedConfig)
 	authenticatorChain := security.NewAuthenticatorChain(chainAuthenticators...)
 	return authenticatorChain, bindServerPrincipal(serverTLSConfig, rbacAuthorizer)
 }
@@ -537,24 +552,13 @@ func serverLeafCertificateForEnrollment(serverTLSConfig *tls.Config) *x509.Certi
 }
 
 // appendBearerTokenAuthenticators adds the JWT and webhook authenticators in
-// claim order: internal JWT (tokens from this server's issuer), external OIDC
-// (tokens from --oidc-issuer), then the webhook for any remaining bearer token.
-func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, workloadTokenIssuer *security.WorkloadTokenIssuer, factStore store.StateStore, parsedConfig serverCommandConfig) []security.Authenticator {
-	if workloadTokenIssuer != nil {
-		internalOIDCConfig := security.OIDCConfig{
-			Issuer:   workloadTokenIssuer.IssuerURL(),
-			Audience: "ccattler",
-			ClaimMapping: security.ClaimMapping{
-				PrincipalClaim: "sub",
-				TeamClaim:      "team",
-			},
-		}
-		internalJWTAuthenticator := security.NewBearerTokenAuthenticator(
-			security.NewOIDCAuthenticator(internalOIDCConfig, workloadTokenIssuer.PublicKey()),
-		)
+// claim order: internal JWT (the cluster's stored issuer, key by kid), external
+// OIDC (--oidc-issuer), then the webhook for any remaining bearer token.
+func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, tokenSigningIdentity *security.TokenSigningIdentity, factStore store.StateStore, parsedConfig serverCommandConfig) []security.Authenticator {
+	if tokenSigningIdentity != nil {
 		// A user token counts only while its user record exists and predates
 		// it: deleting or re-creating a user revokes its tokens (M216).
-		chainAuthenticators = append(chainAuthenticators, security.NewLocalUserRecordAuthenticator(internalJWTAuthenticator, factStore))
+		chainAuthenticators = append(chainAuthenticators, tokenSigningIdentity.BuildInternalTokenAuthenticator(factStore))
 	}
 	if parsedConfig.oidcIssuerURL != "" {
 		externalOIDCAuthenticator := buildExternalOIDCAuthenticator(parsedConfig)
@@ -623,17 +627,9 @@ func configureAndStartAPIServer(
 	secretStore *security.SecretStore,
 	keyringCodec *security.KeyringEnvelopeCodec,
 	verifiedIdentity *verifiedNodeIdentity,
+	tokenSigningIdentity *security.TokenSigningIdentity,
 ) {
-
-	issuerURL := resolveServerIssuerURL(parsedConfig)
-	workloadTokenIssuer, issuerError := security.NewWorkloadTokenIssuer(issuerURL)
-	if issuerError != nil {
-		fmt.Fprintf(os.Stderr, "error creating token issuer: %v\n", issuerError)
-		os.Exit(1)
-	}
-	userTokenIssuer := security.NewUserTokenIssuer(workloadTokenIssuer)
-
-	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer, workloadTokenIssuer, factStore, parsedConfig)
+	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer, tokenSigningIdentity, factStore, parsedConfig)
 
 	// API-layer capability authorizer. Maps builtin roles to capability grants.
 	apiAuthorizer := security.NewAPIAuthorizer()
@@ -656,8 +652,7 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
 	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
 	statusAPIServer.SetAgentDebugClientTLS(buildMTLSClientTLSConfig(serverTLSConfig))
-	statusAPIServer.SetWorkloadTokenIssuer(workloadTokenIssuer)
-	statusAPIServer.SetUserTokenIssuer(userTokenIssuer)
+	attachTokenSigningIdentity(statusAPIServer, tokenSigningIdentity, parsedConfig)
 
 	if parsedConfig.oidcIssuerURL != "" && parsedConfig.oidcClientID != "" {
 		statusAPIServer.SetExternalOIDCConfig(parsedConfig.oidcIssuerURL, parsedConfig.oidcClientID)

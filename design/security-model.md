@@ -92,6 +92,20 @@ a result wins; if it returns nil/nil, the next authenticator tries.
 mTLS → Webhook → ExternalOIDC → InternalJWT → LocalToken
 ```
 
+### Internal JWT Signing Key (M283, Flow 37)
+
+- **One signing identity per cluster.** The ES256 private key that signs `cca user token` and workload tokens is
+  created once by the first `cca server`, sealed in the keyring (`keyring/token-signing/key/{kid}`) and loaded by every
+  replica and every restart, together with the cluster issuer URL (`--token-issuer-url`, else the first replica's
+  listen address). A missing, corrupt or unopenable key on an initialized cluster stops `cca server`; it never makes
+  a new one.
+- **Verification by `kid`:** the internal authenticator picks the public key by the token's `kid` from the stored set
+  and refuses an unknown one; `/oidc/jwks` publishes the whole set.
+- **Lifetime:** `POST /api/user/token` refuses a TTL above `--max-user-token-ttl` (default 24 h).
+- **No rotation command yet.** A leaked signing key can only be replaced by re-initializing the cluster until the
+  rotation milestone adds a coordinated key rotation; the KEK and root-key rotations re-wrap the sealed key but do
+  not change it.
+
 ### OIDC Browser Login (M153)
 
 - `OIDCAuthenticator` validates JWTs with ES256 (`security/oidc.go`)

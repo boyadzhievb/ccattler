@@ -15,7 +15,7 @@ import (
 
 func newTestBroker(t *testing.T) *CredentialBrokerController {
 	t.Helper()
-	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.test")
+	tokenIssuer, err := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestCredentialBrokerGarbageCollectsStoppedInstance(t *testing.T) {
 
 func TestCredentialBrokerErrorOnMissingAdapter(t *testing.T) {
 	testContext := context.Background()
-	tokenIssuer, _ := security.NewWorkloadTokenIssuer("https://ccattler.test")
+	tokenIssuer, _ := newWorkloadTokenIssuerForTest("https://ccattler.test")
 	brokerController := NewCredentialBrokerController(tokenIssuer)
 	// No adapters registered
 
@@ -252,4 +252,14 @@ func changesToMap(changes []Change) map[string]string {
 		}
 	}
 	return result
+}
+
+// newWorkloadTokenIssuerForTest creates a workload token issuer on a fresh
+// P-256 key; production issuers come from the cluster's signing identity.
+func newWorkloadTokenIssuerForTest(issuerURL string) (*security.WorkloadTokenIssuer, error) {
+	signingKey, keyError := security.GenerateOIDCKeyPair()
+	if keyError != nil {
+		return nil, keyError
+	}
+	return security.NewWorkloadTokenIssuerWithKey(issuerURL, signingKey), nil
 }

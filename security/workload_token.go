@@ -5,13 +5,13 @@ package security
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"time"
 )
 
@@ -19,36 +19,22 @@ import (
 // providers trust these tokens via OIDC discovery, allowing workloads to
 // assume cloud IAM roles without static credentials.
 type WorkloadTokenIssuer struct {
-	signingKey *ecdsa.PrivateKey
-	issuerURL  string
-	keyID      string
+	signingKey    *ecdsa.PrivateKey           // signingKey is the active ECDSA P-256 key that signs.
+	issuerURL     string                      // issuerURL is the "iss" claim and the discovery issuer.
+	keyID         string                      // keyID is the signing key's kid.
+	publishedKeys map[string]*ecdsa.PublicKey // publishedKeys are the public keys the JWKS lists, by kid.
 }
 
-// NewWorkloadTokenIssuer creates an issuer with a freshly generated ECDSA P-256
-// signing key. The issuerURL must match the OIDC discovery document's "issuer"
-// field (e.g. "https://ccattler.example.com").
-func NewWorkloadTokenIssuer(issuerURL string) (*WorkloadTokenIssuer, error) {
-	signingKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate signing key: %w", err)
-	}
-
-	keyID := computeKeyID(&signingKey.PublicKey)
-
-	return &WorkloadTokenIssuer{
-		signingKey: signingKey,
-		issuerURL:  issuerURL,
-		keyID:      keyID,
-	}, nil
-}
-
-// NewWorkloadTokenIssuerWithKey creates an issuer using an existing ECDSA
-// private key. Used when the signing key is loaded from persistent storage.
+// NewWorkloadTokenIssuerWithKey creates an issuer on an existing ECDSA
+// private key that publishes only that key; the cluster's issuer comes from
+// TokenSigningIdentity.BuildWorkloadTokenIssuer, which publishes the key set.
 func NewWorkloadTokenIssuerWithKey(issuerURL string, signingKey *ecdsa.PrivateKey) *WorkloadTokenIssuer {
+	keyID := computeKeyID(&signingKey.PublicKey)
 	return &WorkloadTokenIssuer{
-		signingKey: signingKey,
-		issuerURL:  issuerURL,
-		keyID:      computeKeyID(&signingKey.PublicKey),
+		signingKey:    signingKey,
+		issuerURL:     issuerURL,
+		keyID:         keyID,
+		publishedKeys: map[string]*ecdsa.PublicKey{keyID: &signingKey.PublicKey},
 	}
 }
 
@@ -140,24 +126,29 @@ type OIDCDiscoveryResponse struct {
 	IDTokenSigningAlgValues []string `json:"id_token_signing_alg_values_supported"`
 }
 
-// JWKSDocument returns the JSON Web Key Set containing the public signing key.
-// Cloud providers fetch this to verify workload token signatures.
+// JWKSDocument returns the JSON Web Key Set of every published public key in
+// kid order, so every replica serves the same document. Cloud providers and
+// other verifiers fetch it to check token signatures.
 func (issuer *WorkloadTokenIssuer) JWKSDocument() JWKSResponse {
-	publicKey := &issuer.signingKey.PublicKey
-
-	return JWKSResponse{
-		Keys: []JWKEntry{
-			{
-				KeyType:   "EC",
-				Use:       "sig",
-				Algorithm: "ES256",
-				KeyID:     issuer.keyID,
-				Curve:     "P-256",
-				X:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.X, 32)), //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
-				Y:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.Y, 32)), //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
-			},
-		},
+	keyIDs := make([]string, 0, len(issuer.publishedKeys))
+	for keyID := range issuer.publishedKeys {
+		keyIDs = append(keyIDs, keyID)
 	}
+	sort.Strings(keyIDs)
+	jwksDocument := JWKSResponse{Keys: make([]JWKEntry, 0, len(keyIDs))}
+	for _, keyID := range keyIDs {
+		publicKey := issuer.publishedKeys[keyID]
+		jwksDocument.Keys = append(jwksDocument.Keys, JWKEntry{
+			KeyType:   "EC",
+			Use:       "sig",
+			Algorithm: "ES256",
+			KeyID:     keyID,
+			Curve:     "P-256",
+			X:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.X, 32)), //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
+			Y:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.Y, 32)), //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
+		})
+	}
+	return jwksDocument
 }
 
 // JWKSResponse is the JSON structure returned by the /oidc/jwks endpoint.

@@ -1981,3 +1981,37 @@ RouteTLSController → gate certificate ServerAuth only; re-issue when it carrie
   store access through its own etcd client certificate.
 - Behaviour: `openspec/specs/cluster-pki`, `host-setup`. Files, usages, trust and one-liners:
   [graphs/PKI_GRAPH.md](graphs/PKI_GRAPH.md).
+
+## Flow 37: Token Signing Key (M283)
+
+**Chain:** keyring ready (Flow 29, root check) → `LoadOrCreateTokenSigningIdentity` → `TokenSigningIdentity` →
+issuers (sign with the active key) and the internal authenticator (verify by `kid`) → `/oidc/jwks` and discovery.
+Keyring operations (Flow 30) carry the sealed key.
+
+```
+cca server (API replicas; after startSecretEnvelopeCodec, before the controllers and the API)
+  Scan keyring/token-signing/ ONCE (one consistent read, never Get-then-Scan: the M284 race)
+  ├── initialized present → open active + every key/{kid} (OpenEnvelopeForKey, AAD = store key; P-256; kid matches)
+  │     explicit --token-issuer-url ≠ stored issuer_url → exit naming both
+  │     active, its key, or any envelope missing/corrupt/unopenable → exit naming the key (never a new identity)
+  ├── no marker, but active or key/* present → exit: lost marker, restore keyring/ from an etcd backup
+  └── empty → generate P-256, seal for key/{kid}, ONE txn (initialized, active, key/{kid}; each compared absent)
+        won or lost → re-read once (lost: the winner's key is loaded, the local key is discarded)
+        still no marker after the re-read → exit
+TokenSigningIdentity → BuildWorkloadTokenIssuer (JWKS = every key, kid order; discovery = stored issuer)
+                     → BuildUserTokenIssuer (POST /api/user/token; TTL ≤ --max-user-token-ttl, default 24h)
+                     → BuildInternalTokenAuthenticator (iss = stored issuer, aud ccattler, key by kid, M216 user revision)
+KEK rotation   → PlanKEKRewrapBatch re-wraps key/{kid} and counts it before KEK retirement (write domain: key/ only)
+Legacy migration → v1 key/{kid} → v2; retirement's full scan counts it (encryptedStorePrefixes)
+Root key rotation → nothing: it re-wraps the KEKs only
+```
+
+- **Upgrade:** the first start of the M283 release finds no marker and creates the identity; tokens from earlier
+  releases (per-process keys) stop working once. In a rolling HA upgrade an old replica keeps its own key and per-host
+  issuer until it is upgraded (start-new-then-stop-old).
+- **No watch yet:** keys do not change after bootstrap until the rotation milestone; a KEK re-wrap changes only the
+  envelope, never the key held in memory.
+- **Confinement:** the private key exists in memory in `cca server` and as a keyring envelope under `keyring/`, which
+  no API serves; the JWKS carries public keys only.
+- Behaviour: `openspec/specs/api-token-signing`. Calls and keys: [graphs/AUTHN_GRAPH.md](graphs/AUTHN_GRAPH.md)
+  "Token Signing Identity", [graphs/SECRETS_GRAPH.md](graphs/SECRETS_GRAPH.md) "Secret keyring and envelope codec".

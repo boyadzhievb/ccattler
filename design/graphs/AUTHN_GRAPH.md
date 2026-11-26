@@ -25,13 +25,16 @@ AuthenticatorChain.Authenticate(request)                       :39
 │   │   └── mismatch → error "invalid token"                   [claimed: hard deny]
 │   └── return {Principal: "user:local-admin", Groups: ["platform"]}
 │
-├── BearerTokenAuthenticator.Authenticate(request)             [3rd internal JWT, 4th external OIDC; security/authn_bearer.go]
+├── LocalUserRecordAuthenticator → BearerTokenAuthenticator    [3rd internal JWT: TokenSigningIdentity.BuildInternalTokenAuthenticator, M283]
+│   BearerTokenAuthenticator.Authenticate(request)             [4th external OIDC; security/authn_bearer.go]
 │   ├── looksLikeJWT(token) false → nil, nil
-│   ├── unverifiedJWTIssuer(token) != config.Issuer → nil, nil [not this issuer → next]
+│   ├── unverifiedJWTIssuer(token) != config.Issuer → nil, nil [not this issuer → next; internal = the cluster's stored issuer]
 │   └── oidcAuthenticator.Authenticate(token)                  [claimed: error on failure]
-│       ├── parseAndVerifyJWTSignature                         [security/oidc.go:92, ES256]
+│       ├── parseAndVerifyJWTSignature                         [security/oidc.go:121, ES256]
+│       │   └── verificationKeys.VerificationKeyForKeyID(kid)  [internal: stored key set, unknown/no kid → refuse; external: one key]
 │       ├── extractAndValidateJWTClaims                        [iss, aud, exp]
 │       └── constructAuthenticationResultFromClaims            [principal = "user:" + sub]
+│   internal only: user record auth/user/{sub} at the token's revision (M216) else refuse
 │
 ├── WebhookAuthenticator.Authenticate(request)                 [5th, only with --authn-webhook-url; security/authn_webhook.go:71]
 │   ├── lookupCache(tokenString)                               [skipped when freshAuthenticationRequested(ctx): stream re-checks]
@@ -131,37 +134,68 @@ ReadLocalToken()                                               [:144]
 └── os.ReadFile("/etc/ccattler/local-token")                   [CLI reads for bearer auth]
 ```
 
+### Token Signing Identity (security/token_signing_key.go, M283, Flow 37)
+
+One signing identity per cluster, sealed in the keyring; every API replica loads it at start.
+```
+executeServerCommand [cmd/cca/command_server.go:302] (API replicas, after startSecretEnvelopeCodec, before controllers/API)
+└── establishServerTokenSigningIdentity [cmd/cca/server_token_signing.go:65]  [error → exit 1; prints kid + issuer only]
+    └── loadServerTokenSigningIdentity [:58] (--token-issuer-url, resolveServerIssuerURL as the first-start default)
+        └── LoadOrCreateTokenSigningIdentity(ctx, store, codec, explicit, default)   [:55; at most 2 reads]
+            ├── readTokenSigningArea [:83]   ONE Scan(keyring/token-signing/) → marker, active, key/{kid}
+            ├── marker → openTokenSigningIdentity [:158]
+            │   ├── marker JSON {issuer_url, created}; explicit ≠ stored → error naming both
+            │   ├── active missing / key/{active} missing → error naming the key
+            │   └── every key (kid order): openTokenSigningKey [:197]
+            │       OpenEnvelopeForKey(key/{kid}) → PKCS#8 → ECDSA P-256 → computeKeyID = kid, else error
+            ├── no marker: refuseWithoutMarker [:109] (active or key/* present → error, never re-create)
+            └── empty: createTokenSigningIdentity [:120]
+                generate P-256, SealEnvelopeForKey(key/{kid}), Txn[initialized, active, key/{kid} all rev 0]
+                won or lost → loop: re-read (lost → the winner's key; never "incomplete" from a partial read)
+TokenSigningIdentity
+├── VerificationKeyForKeyID(kid) [:230]        stored public key; "" or unknown kid → error
+├── BuildWorkloadTokenIssuer() [:243]          NewWorkloadTokenIssuerWithKey + publishedKeys = every key
+├── BuildUserTokenIssuer() [:250]              NewUserTokenIssuerWithKey(stored issuer, active key)
+└── BuildInternalTokenAuthenticator(store) [:257]
+    NewLocalUserRecordAuthenticator(NewBearerTokenAuthenticator(NewOIDCAuthenticatorWithKeyResolver(
+      {iss: stored, aud: ccattler, sub/team}, identity)), store)
+configureAndStartAPIServer → buildServerAuthenticatorAndBindings → appendBearerTokenAuthenticators [command_server.go:557]
+                           → attachTokenSigningIdentity [server_token_signing.go:78]
+                             (SetWorkloadTokenIssuer, SetUserTokenIssuer, SetMaxUserTokenTTL)
+```
+
 ### User Token (security/user_token.go)
 
 ```
-NewUserTokenIssuer(workloadIssuer)                             [:33]
-└── shares signingKey, issuerURL, keyID from WorkloadTokenIssuer
+NewUserTokenIssuerWithKey(issuerURL, signingKey)               [:41, from BuildUserTokenIssuer]
 
-UserTokenIssuer.MintUserToken(username, team, groups, TTL)     [:54]
+UserTokenIssuer.MintUserToken(username, team, groups, TTL)     [:52]
 ├── claims: iss, sub=username, aud="ccattler", iat, exp
 │   + optional: team, groups
-├── signJWT(header, claims)                                    [:88]
-│   └── ES256 sign with shared ECDSA P-256 key
-└── default TTL: 8 hours
+├── signJWT(header, claims)                                    [:89]
+│   └── ES256 sign with the cluster's active key, header kid
+└── default TTL: DefaultUserTokenTTL 8 h
+
+POST /api/user/token → handleUserToken [api/server.go:2150] (cluster.admin)
+└── parseUserTokenTTL [:2218]   "" → default; > --max-user-token-ttl (DefaultMaxUserTokenTTL 24 h) → 400 naming it
 ```
 
 ### Workload Token (security/workload_token.go)
 
 ```
-NewWorkloadTokenIssuer(issuerURL)                              [:30]
-├── ecdsa.GenerateKey(P-256)
-└── computeKeyID(&publicKey)                                   [:181, SHA256 of X||Y → base64url[:8]]
+NewWorkloadTokenIssuerWithKey(issuerURL, signingKey)           [:31, from BuildWorkloadTokenIssuer]
+└── computeKeyID(&publicKey)                                   [:172, SHA256 of X||Y → base64url[:8]]
 
-WorkloadTokenIssuer.MintWorkloadToken(spiffeID, audience, TTL) [:58]
+WorkloadTokenIssuer.MintWorkloadToken(spiffeID, audience, TTL) [:44]
 ├── claims: iss, sub=spiffeID, aud, iat, exp
 ├── header: alg=ES256, typ=JWT, kid=keyID
 └── ecdsa.Sign(hash) → IEEE P1363 signature
 
-WorkloadTokenIssuer.OIDCDiscoveryDocument()                    [:123]
-└── returns OIDCDiscoveryResponse{issuer, jwks_uri, ...}
+WorkloadTokenIssuer.OIDCDiscoveryDocument()                    [:109]
+└── returns OIDCDiscoveryResponse{issuer (stored), jwks_uri, ...}
 
-WorkloadTokenIssuer.JWKSDocument()                             [:145]
-└── returns JWKSResponse{Keys: [{EC, P-256, X, Y, kid}]}
+WorkloadTokenIssuer.JWKSDocument()                             [:132]
+└── returns JWKSResponse{Keys: every published key in kid order [{EC, P-256, X, Y, kid}]}
 ```
 
 ---
@@ -171,19 +205,23 @@ WorkloadTokenIssuer.JWKSDocument()                             [:145]
 ### OIDCAuthenticator (security/oidc.go)
 
 ```
-OIDCAuthenticator.Authenticate(tokenString)                    [:74]
-├── parseAndVerifyJWTSignature(tokenString)                    [:92]
-│   ├── split 3 parts, decode header, verify alg=="ES256"
-│   ├── verifyECDSASignature(ecdsaKey, hash, sig)             [:228]
+NewOIDCAuthenticator(config, key)                              [:71]  external OIDC: singleVerificationKey (any kid)
+NewOIDCAuthenticatorWithKeyResolver(config, resolver)          [:77]  internal: TokenSigningIdentity (key by kid)
+
+OIDCAuthenticator.Authenticate(tokenString)                    [:104]
+├── parseAndVerifyJWTSignature(tokenString)                    [:121]
+│   ├── split 3 parts, decode header {alg, typ, kid}, verify alg=="ES256"
+│   ├── verificationKeys.VerificationKeyForKeyID(kid)          [JWTVerificationKeyResolver; error → refuse]
+│   ├── verifyECDSASignature(ecdsaKey, hash, sig)             [:256]
 │   │   └── r,s from IEEE P1363 → ecdsa.Verify
 │   └── decode + return claimsJSON
-├── extractAndValidateJWTClaims(claimsJSON)                    [:161]
+├── extractAndValidateJWTClaims(claimsJSON)                    [:189]
 │   ├── verify iss
 │   ├── empty configured Audience → refuse every token (M228)
-│   ├── audienceClaimContains(claims["aud"], Audience)         [:144]  aud: string or list of strings
+│   ├── audienceClaimContains(claims["aud"], Audience)         [:172]  aud: string or list of strings
 │   ├── verify exp
 │   └── return claims, expiresAt
-└── constructAuthenticationResultFromClaims(claims, expiresAt) [:192]
+└── constructAuthenticationResultFromClaims(claims, expiresAt) [:220]
     ├── "user:" + claims[PrincipalClaim]
     └── team/role attributes from claim mapping
 ```
@@ -391,6 +429,8 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | `bootstrap/used` | GenerateBootstrapToken, ValidateBootstrapToken |
 | `enrollment/token/{hash}` | EnrollNode (validateJoinToken) |
 | `enrollment/node/{id}` | IsNodeEnrolled, ListEnrolledNodes |
+| `keyring/token-signing/` (one Scan: `initialized`, `active`, `key/{kid}`) | readTokenSigningArea (M283) |
+| `auth/user/{name}` | LocalUserRecordAuthenticator (internal JWTs, M216) |
 
 ### Writes (security layer)
 | Key Pattern | Where Written |
@@ -400,6 +440,7 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | `bootstrap/used` | ValidateBootstrapToken |
 | `enrollment/token/{hash}` | GenerateJoinToken |
 | `enrollment/node/{id}` | commitEnrollment |
+| `keyring/token-signing/initialized`, `active`, `key/{kid}` | createTokenSigningIdentity, once, all compared absent (M283); `key/{kid}` re-wrapped by keyring-rotation and keyring-migration (SECRETS_GRAPH) |
 
 ---
 
@@ -416,6 +457,16 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | `audienceClaimContains` | extractAndValidateJWTClaims |
 | `constructAuthenticationResultFromClaims` | OIDCAuthenticator.Authenticate |
 | `verifyECDSASignature` | parseAndVerifyJWTSignature |
+| `TokenSigningIdentity.VerificationKeyForKeyID` | parseAndVerifyJWTSignature (internal authenticator) |
+| `LoadOrCreateTokenSigningIdentity` | loadServerTokenSigningIdentity (cmd/cca) |
+| `readTokenSigningArea`, `openTokenSigningIdentity`, `createTokenSigningIdentity` | LoadOrCreateTokenSigningIdentity |
+| `openTokenSigningKey` | openTokenSigningIdentity |
+| `BuildWorkloadTokenIssuer`, `BuildUserTokenIssuer` | attachTokenSigningIdentity (cmd/cca) |
+| `BuildInternalTokenAuthenticator` | appendBearerTokenAuthenticators (cmd/cca) |
+| `NewWorkloadTokenIssuerWithKey` | BuildWorkloadTokenIssuer |
+| `NewUserTokenIssuerWithKey` | BuildUserTokenIssuer |
+| `NewOIDCAuthenticatorWithKeyResolver` | BuildInternalTokenAuthenticator, NewOIDCAuthenticator |
+| `parseUserTokenTTL` | handleUserToken (api/server.go) |
 | `looksLikeJWT` | BearerTokenAuthenticator.Authenticate |
 | `LocalTokenAuthenticator.Authenticate` | AuthenticatorChain (2nd) |
 | `WebhookAuthenticator.Authenticate` | AuthenticatorChain (5th, last) |
@@ -452,7 +503,9 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | defaultWebhookTimeout | 5s | security/authn_webhook.go:17 |
 | defaultWebhookCacheTTL | 2min | security/authn_webhook.go:21 |
 | localTokenExpiry | 24h | security/authn_local_token.go:40 |
-| defaultUserTokenTTL | 8h | security/user_token.go:17 |
+| DefaultUserTokenTTL | 8h | security/user_token.go:17 |
+| DefaultMaxUserTokenTTL | 24h (`--max-user-token-ttl`, minimum 8h) | security/user_token.go:21 |
+| tokenSigningBootstrapReads | 2 | security/token_signing_key.go:25 |
 | defaultBrowserFlowTimeout | 5min | security/oidc_browser_flow.go:23 |
 | defaultJWKSRefreshInterval | 1h | security/oidc_discovery.go:21 |
 | defaultJWKSFetchTimeout | 10s | security/oidc_discovery.go:25 |
@@ -472,7 +525,9 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | security/authn_bearer.go:45 | BearerTokenAuthenticator — JWT → OIDC delegation |
 | security/authn_local_token.go:107 | LocalTokenAuthenticator — hex token, constant-time compare |
 | security/authn_webhook.go:71 | WebhookAuthenticator — external endpoint with response cache |
-| security/oidc.go:74 | OIDCAuthenticator — JWT ES256 verification + claim mapping |
+| security/oidc.go:104 | OIDCAuthenticator — JWT ES256 verification (key by kid) + claim mapping |
+| security/token_signing_key.go:55 | LoadOrCreateTokenSigningIdentity — the cluster's signing identity (M283) |
+| cmd/cca/server_token_signing.go | --token-issuer-url, --max-user-token-ttl, identity load and API wiring |
 | security/oidc_browser_flow.go:53 | ExecuteOIDCBrowserFlow — OAuth2 PKCE flow |
 | security/oidc_discovery.go:52 | OIDCDiscoveryClient — JWKS fetch + cache |
 | security/principal.go:28 | Principal struct, context propagation |
@@ -483,5 +538,5 @@ EnrollmentService.ListJoinTokens(ctx)                          [:336]
 | security/enrollment.go:103 | EnrollmentService.GenerateJoinToken |
 | security/bootstrap.go:37 | GenerateBootstrapToken |
 | security/bootstrap.go:64 | ValidateBootstrapToken |
-| security/user_token.go:54 | UserTokenIssuer.MintUserToken |
-| security/workload_token.go:58 | WorkloadTokenIssuer.MintWorkloadToken |
+| security/user_token.go:52 | UserTokenIssuer.MintUserToken |
+| security/workload_token.go:44 | WorkloadTokenIssuer.MintWorkloadToken |

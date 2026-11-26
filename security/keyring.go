@@ -72,9 +72,21 @@ const keyringFirstKEKVersion = 1
 // keyringRootCheckPlaintext is the fixed value sealed in keyring/root_check.
 var keyringRootCheckPlaintext = []byte("ccattler keyring root check v1")
 
-// encryptedStorePrefixes are the store areas holding envelopes; a cluster
-// with any key here is not fresh.
-var encryptedStorePrefixes = []string{SecretStorePrefix, CredentialStorePrefix}
+// encryptedStorePrefixes are the store areas holding envelopes: a cluster
+// with any key here is not fresh, and KEK rotation, legacy migration and
+// retirement cover exactly these (the token signing keys since M283, D4).
+var encryptedStorePrefixes = []string{SecretStorePrefix, CredentialStorePrefix, types.ScanTokenSigningKeys}
+
+// storedEnvelopeArea reports whether storeKey lies in an encrypted store
+// area and whether its value is base64 text (secrets/) rather than raw bytes.
+func storedEnvelopeArea(storeKey string) (isEnvelope bool, isBase64 bool) {
+	for _, encryptedPrefix := range encryptedStorePrefixes {
+		if strings.HasPrefix(storeKey, encryptedPrefix) {
+			return true, encryptedPrefix == SecretStorePrefix
+		}
+	}
+	return false, false
+}
 
 // ErrKeyringRootCheckFailed means this replica's root key differs from the
 // one that created the keyring; the replica must not serve.

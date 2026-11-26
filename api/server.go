@@ -101,6 +101,7 @@ type Server struct {
 	enrollmentService             *security.EnrollmentService
 	workloadTokenIssuer           *security.WorkloadTokenIssuer // workloadTokenIssuer signs workload identity JWTs and serves OIDC discovery.
 	userTokenIssuer               *security.UserTokenIssuer     // userTokenIssuer mints user authentication JWTs for the login flow.
+	maxUserTokenTTL               time.Duration                 // maxUserTokenTTL is the longest lifetime POST /api/user/token mints; 0 means security.DefaultMaxUserTokenTTL.
 	watchMultiplexer              *WatchMultiplexer
 	secretStore                   *security.SecretStore            // secretStore handles encrypted secret CRUD.
 	keyringAdministration         KeyringAdministration            // keyringAdministration runs the legacy key migration and retirement gates (Flow 29).
@@ -174,6 +175,12 @@ func (apiServer *Server) SetWorkloadTokenIssuer(workloadTokenIssuer *security.Wo
 // the user management endpoints for minting user authentication JWTs.
 func (apiServer *Server) SetUserTokenIssuer(userTokenIssuer *security.UserTokenIssuer) {
 	apiServer.userTokenIssuer = userTokenIssuer
+}
+
+// SetMaxUserTokenTTL sets the longest token lifetime POST /api/user/token
+// mints (cca server --max-user-token-ttl, M283 D5).
+func (apiServer *Server) SetMaxUserTokenTTL(maximumTTL time.Duration) {
+	apiServer.maxUserTokenTTL = maximumTTL
 }
 
 // SetServerMode configures the operational mode, which affects health check
@@ -2185,14 +2192,10 @@ func (apiServer *Server) handleUserToken(responseWriter http.ResponseWriter, req
 	}
 	_ = json.Unmarshal(userFact.Value, &userRecord)
 
-	tokenTTL := time.Duration(0)
-	if tokenRequest.TTL != "" {
-		parsedTTL, parseError := time.ParseDuration(tokenRequest.TTL)
-		if parseError != nil {
-			writeJSONError(responseWriter, "invalid ttl: "+parseError.Error(), http.StatusBadRequest)
-			return
-		}
-		tokenTTL = parsedTTL
+	tokenTTL, ttlError := apiServer.parseUserTokenTTL(tokenRequest.TTL)
+	if ttlError != nil {
+		writeJSONError(responseWriter, ttlError.Error(), http.StatusBadRequest)
+		return
 	}
 
 	tokenString, mintError := apiServer.userTokenIssuer.MintUserToken(
@@ -2207,6 +2210,27 @@ func (apiServer *Server) handleUserToken(responseWriter http.ResponseWriter, req
 		"token":    tokenString,
 		"username": tokenRequest.Username,
 	})
+}
+
+// parseUserTokenTTL parses a requested token lifetime: "" is the default
+// (security.DefaultUserTokenTTL); above the maximum (--max-user-token-ttl)
+// it is refused, naming the maximum (M283 D5).
+func (apiServer *Server) parseUserTokenTTL(requestedTTL string) (time.Duration, error) {
+	if requestedTTL == "" {
+		return 0, nil
+	}
+	tokenTTL, parseError := time.ParseDuration(requestedTTL)
+	if parseError != nil {
+		return 0, fmt.Errorf("invalid ttl: %w", parseError)
+	}
+	maximumTTL := apiServer.maxUserTokenTTL
+	if maximumTTL == 0 {
+		maximumTTL = security.DefaultMaxUserTokenTTL
+	}
+	if tokenTTL > maximumTTL {
+		return 0, fmt.Errorf("ttl %s is above the maximum user token lifetime %s (cca server --max-user-token-ttl)", tokenTTL, maximumTTL)
+	}
+	return tokenTTL, nil
 }
 
 // handleAuthWhoami returns the identity of the currently authenticated user.
