@@ -744,6 +744,19 @@ not acted on** (per the user's rule: stop-time findings never trigger work). The
 It existed only in unreleased M280 commits (reworks 1-8), so no user deployment has it; at most a testbed HA VM that
 ran one of those commits.
 
+**The small review of the removal (code-reviewer, 2026-11-26, de884c7..6dffd7e): approve.** The removal is complete
+and safe; the HA playbook syntax check and `go test -short ./cmd/cca/` pass. One doc defect and three wording nits
+were found, all fixed in one docs-only commit with no further review round (user's go, 2026-11-26):
+1. **Defect:** the port tables lacked 15353/udp, the cluster DNS that agents query on the control plane. It is
+   added to both tables; architecture.md no longer calls its table "the full table".
+2. **Gate HTTP port:** 80 without `--proxy-listen`; the Ansible roles use 8080.
+3. **Installation wording:** CCattler restricts no port beyond what `setup.sh` opens in firewalld or ufw (2379 only
+   from `--etcd-client-cidr` networks).
+4. **Threat and security models:** "narrower than before M280" is qualified to three-CA clusters; a single-CA
+   cluster still accepts every cluster certificate on 2380.
+
+Evidence: `go test -short -run 'Doc|Website|Install' ./cmd/cca/` ok.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M280 <version>`. The changelog says:

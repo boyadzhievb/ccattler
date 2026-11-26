@@ -336,15 +336,16 @@ Second run detects the existing inventory and deploys CCattler across your hosts
 
 ### Ports and firewalling
 
-Firewalling is the operator's job: CCattler does not install rules that limit who reaches these ports (as with
-kubeadm). `setup.sh` only opens ports in an active firewalld or ufw, see above.
+Firewalling is the operator's job (as with kubeadm). CCattler restricts no port beyond what `setup.sh` opens in an
+active firewalld or ufw (see above; for 2379 only from the networks given with `--etcd-client-cidr`).
 
 | Port | Service | Reachable from |
 |---|---|---|
 | 2379/tcp | etcd clients | the API servers (control-plane hosts) and the agents on every node |
 | 2380/tcp | etcd peers (multi-node etcd only) | the etcd members only |
 | 9770/tcp | CCattler API (`cca server`) | agents, `cca` CLI users and the other API servers |
-| 443/tcp, 8080/tcp | gates (agent gate proxy: HTTPS with `--proxy-tls-listen`, HTTP with `--proxy-listen`) | the clients of your gates |
+| 15353/udp | cluster DNS (`cca server --dns`) | the agents on every node |
+| 443/tcp, 80/tcp | gates (agent gate proxy: HTTPS with `--proxy-tls-listen`, HTTP with `--proxy-listen`; the Ansible roles use 8080 for HTTP) | the clients of your gates |
 | 4789/udp | VXLAN overlay | the other nodes |
 
 Keep 2380 closed to everything but the etcd members: until M181, etcd's peer port trusts the etcd access CA, which
