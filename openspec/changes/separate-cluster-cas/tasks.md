@@ -132,9 +132,17 @@ Milestone M280. Design: [design.md](design.md). Specs: [cluster-pki](specs/clust
     127.0.0.1:2379, the two PKI tests with TLS etcd) PASS with etcd v3.5.36 (/tmp/claude-1000/-home-bozhan-REPOS-ccattler/5003c5af-85ee-4f73-92c5-22f9f192ac3a/scratchpad/etcd-integration-final.txt).
 - [ ] 3.2 Deploy check `deploy-run:gate-cert-not-client`: on the deploy cluster, a gate certificate and key presented
   to etcd and to the API fail the TLS handshake. Then `install-host:three-cas` on a fresh VM with the guide.
-- [ ] 3.3 Independent review: `security-audit` and `code-reviewer`, with a patterns review, at full rigor: every real finding is fixed, no round cap (user decision 2026-11-25, "do 2": security core code). Earlier draft said: one round; only HIGH and
-  MEDIUM findings are fixed, lows are listed (the user's cap for install work applies here too unless the user says
-  otherwise).
+- [x] 3.3 Independent review: `security-audit` and `code-reviewer`, with a patterns review.
+  - **What the user decided:** "do 2" (2026-11-25), full rigor for security core code.
+  - **"No round cap" was the main session's reading,** not the user's words. The user corrected it on 2026-11-26:
+    stop after each round, at most 2 rounds per milestone (3r).
+  - **Rounds:**
+    - round 1 found HIGH findings (3b), fixed in reworks 1 and 2;
+    - rounds 2 to 8 approved, with LOW findings only (3e, 3h, 3j, 3l, 3n, 3p, 3r);
+    - the peer-firewall LOW loop was ended by the structural cut in 3r;
+    - the small review of the removal approved (above), and its doc fixes landed in f1c3755.
+  - **Evidence:** every verdict and finding table is in this file; the reports are in the scratchpad
+    m280-*-r*.txt files.
 - [ ] 3.4 One full Deploy Testbed run (job summary `full run`); record the run ID.
 
 ### 3b. Review round 1 (2026-11-25, on bc9343a..81a186d)
