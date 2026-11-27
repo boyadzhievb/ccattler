@@ -114,7 +114,26 @@ Graphs to read before the code: design/graphs/AUTHN_GRAPH.md and design/graphs/S
 - **Evidence:** the evidence file (scratchpad m283-security-audit-r1.txt) was lost in a scratchpad reset; the
   findings below are copied from the audit's report.
 
-**code-reviewer:** stopped by the weekly usage limit before it reported; to be rerun as part of round 1.
+**code-reviewer** (rerun 2026-11-27; m283-code-review-r1.txt; Codex job review-mwysipfk-6e2lvt): request changes, for
+SA1-M1 only.
+- **No new HIGH or MEDIUM.** What holds: bootstrap, the lost-race re-read, fail-closed, kid selection, the start order,
+  HA, and the rotation and migration watches and write domains.
+- **Tests:** the M283 tests pass on HEAD; the `etcd_integration` tier passes on a downloaded, SHA-checked etcd
+  v3.5.36.
+- **The deploy check** runs in the default full run (deploy-testbed.yml:13 → cluster_test.sh:1946 →
+  gate_tls_checks.sh:610) and can pass.
+- **Codex's 2 findings** both equal SA1-L5.
+
+More findings (all LOW):
+
+| ID | Finding | Proposed handling |
+|---|---|---|
+| SA1-M1, more evidence | On a legacy-key cluster, an API replica without secret-master.key can neither create nor open the v1 signing key, so the API refuses to start (server_secret_keys.go:60, envelope_codec.go:116-117). Before M283 only secret operations failed there | The same fix: always seal v2 |
+| CR1-L1 (CONFIRMED by mutation) | The cmd/cca tests rebuild the start sequence (server_token_signing_test.go:84-105). Removing `attachTokenSigningIdentity` (command_server.go:655) passes every unit test; removing `SetMaxUserTokenTTL` (server_token_signing.go:81) is caught by nothing, so a custom `--max-user-token-ttl` could be silently ignored | Fix: test through the production start path |
+| CR1-L2 (CONFIRMED by mutation) | No test for an unreadable non-active key; skipping its open error (token_signing_key.go:182-186) passes | Fix, with SA1-L2 |
+| CR1-L3 (CONFIRMED) | The proposal promises a real-etcd restart case; only concurrent start exists (token_signing_key_etcd_test.go:105) | Fix: add the restart case |
+| CR1-L4 (CONFIRMED, pre-existing) | `parseUserTokenTTL` accepts "-1h" and "0s", which `MintUserToken` turns into 8 h | Record |
+| CR1 style (CONFIRMED) | Receivers `identity`, `signingArea` and `singleKey` don't match their types (a CLAUDE.md rule); the same internal-authenticator config is built by hand in 3 places instead of `BuildInternalTokenAuthenticator` | Fix: rule violations, in the same rework |
 
 | ID | Finding | Proposed handling (waits for the user's go) |
 |---|---|---|
