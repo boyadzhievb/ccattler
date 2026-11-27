@@ -102,6 +102,29 @@ Graphs to read before the code: design/graphs/AUTHN_GRAPH.md and design/graphs/S
   - `WorkloadTokenIssuer.PublicKey()` now has only test callers (minor dead code); `KeyID()` and
     `UserTokenIssuer.PublicKey()` were test-only already. Same follow-up.
 
+### 3b. Review round 1 (2026-11-26, on c017fe7..75646c4)
+
+**security-audit:** no CRITICAL or HIGH findings.
+- **What holds, checked in the code and in runs:** bootstrap, fail-closed loading, selection by kid, the issuer
+  refusal, M216 revocation, the keyring operations and the TTL limit.
+- **Red:** the new tests fail to build on c017fe7; with the D4/D5 changes removed, the 6 keyring and TTL tests fail.
+- **Mutations refused:** `alg` none or HS256, a foreign key under the active kid, an unknown, missing or non-string
+  kid. Deleting the marker, the marker and `active`, or `active` alone refuses startup. A lost race always loads the
+  winner's key.
+- **Evidence:** the evidence file (scratchpad m283-security-audit-r1.txt) was lost in a scratchpad reset; the
+  findings below are copied from the audit's report.
+
+**code-reviewer:** stopped by the weekly usage limit before it reported; to be rerun as part of round 1.
+
+| ID | Finding | Proposed handling (waits for the user's go) |
+|---|---|---|
+| SA1-M1 (MEDIUM, CONFIRMED) | On a cluster still on the legacy secret key, the signing key is sealed as a v1 envelope with the legacy key (token_signing_key.go:131 → `SealEnvelopeForKey`, envelope_codec.go:111-120). A probe decrypted the private key with the legacy key alone. Legacy clusters install secret-master.key on nodes, and nodes have full etcd access until M181, so a compromised node can take the signing key. v1 envelopes are also not bound to their store key | Fix: always seal the signing key as v2 with the active KEK, which exists in legacy mode too. Agents never read it. A test proves a legacy-mode cluster stores a v2 envelope |
+| SA1-L1 (CONFIRMED by mutation) | No test covers "key/* present, marker missing": disabling `refuseWithoutMarker` (:109) leaves every test green | Fix: the test for this failure-table row |
+| SA1-L2 (CONFIRMED by mutation) | Removing the kid-matches-key check (:212) or the P-256 check, or falling back to the active key for an unknown kid (:235), leaves the tests green. The code is correct today | Fix: three small tests |
+| SA1-L3 (CONFIRMED, by design) | Deleting all of `keyring/token-signing/` makes the next start create a new identity (D6 cannot tell it apart from a first start after an upgrade); no audit record of creation | Record. Possibly an audit record or log line on creation |
+| SA1-L4 (CONFIRMED) | `--max-user-token-ttl` has no upper bound (server_token_signing.go:34): 87600h is accepted | Record, or a cap |
+| SA1-L5 (CONFIRMED) | Test scripts: gate_tls_checks.sh:524 exits without cleanup on a failed restart; ha_test.sh:261 puts the token in an ssh argv; ha_test.sh:257 aborts under `set -e` before cleanup | Fix: they are this milestone's own check scripts, and the argv leak breaks its own rule |
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M283 <version>`, then archive (sync `api-token-signing`).
