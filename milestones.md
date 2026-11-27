@@ -552,6 +552,23 @@ Found in M232 (task 3.1, verified in the code 2026-11-16) from the MariaDB crash
 
 OpenSpec change: [`crash-loop-backoff`](openspec/changes/crash-loop-backoff/) (checklist in its `tasks.md`). Decided 2026-11-16: back-off in the agent, in place, like Kubernetes' kubelet (option 1). Keeping the IP across in-place restarts is wanted but split off to M237; M233 verifies that old IPs are released meanwhile.
 
+### Phase 287 — T19 Judges a TLS Refusal by curl's Exit Code (M287, test bug)
+
+Found in Deploy Testbed run 45995761994 (2026-11-27, on 91c9e1e, an M283 iteration run). Milestone by user decision
+("yes").
+- **What happened:** gate-tls T19 failed with "etcd did not refuse the gate certificate at the handshake (000 55)".
+  etcd did refuse: curl exit 55 (send error) means the TLS alert arrived while curl was still sending. In the M280
+  closing run, the same refusal arrived during receive (exit 56). T19 accepts only exits 35 and 56 (M280 rework 4,
+  test/e2e/gate_tls_checks.sh).
+- **Classification:** a test bug (the same code passes or fails by timing). Recorded; not rerun until fixed.
+- **Fix:** T19 recognizes a refusal by the TLS alert in curl's error output (`unknown ca`, `bad certificate`,
+  `certificate required`), not by the exit code. Any other failure (timeout, connection refused, DNS) stays a FAIL.
+  The local harness shows both timings counted as a refusal, and a wrong-key or down-endpoint case still failing.
+- **Priority:** it blocks M283's closing run, since T19 runs in every full run. It is done with the M283 rework
+  after the usage reset, before that closing run.
+
+To be proposed as an OpenSpec change (small).
+
 ### Phase 286 — setup.sh Stops Editing the Host Firewall (M286, bug)
 
 Found after the M280 release (2026-11-26). Milestone by user decision ("yes create milestone").
@@ -1712,6 +1729,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M267 — Rebalancing Moves Instances Onto Nodes They Don't Fit | 267 | Bug fix (found in a full deploy run, 2026-11-23): the scheduler's rebalancing chose a target node by instance count alone, so it moved instances onto nodes without room for their CPU or memory; placement then put the replacement back, in an endless loop. A rebalance move now needs the same fit as a placement, a moved instance is never left looking running on its old node, and every agent write of an instance's facts is guarded by its placement and proven by a fault-injection test that fails every write in turn. Also in this release: M275, `types/keys.go` split into one file per subject (no behaviour change). |
 | M280 — Every Cluster-CA Certificate Is an etcd Root Client | 280 | Security fix (found in the M279 security audit, 2026-11-24): gate certificates were issued by the cluster CA with client authentication, and etcd and the API trusted every certificate from that CA, so a gate key was enough to read and write the whole fact store, and a gate named `ccattler-server` was cluster-admin. Gate certificates are now server-only in every cluster. New clusters made by `cca init` have three CAs (`cluster-identity-ca.pem`, `etcd-access-ca.pem`, `gate-https-ca.pem`) and one certificate per process, with self-explanatory file names and a description line in each file; etcd trusts only its own CA, and `cca join` gives each node its own etcd client certificate. Clients of TLS gates now trust `gate-https-ca.pem`. Clusters from earlier releases keep their files, `cca server` warns at every start that they share one CA, and gate certificates issued before the upgrade stay valid as client certificates for up to 90 days; re-initializing with `cca init` separates the CAs. Until M181 every accepted etcd client certificate still has full etcd access, and firewalling etcd's peer port 2380 is the operator's job (see the new port table in the installation guide). User tokens from `cca user token` do not yet survive a server restart (M283). |
 | M283 — API Tokens Survive Restarts and Work on Every Replica | 283 | Security bug fix (found in the M280 rework, 2026-11-25): the API token signing key was created in memory at every server start, so every `cca user token` token died at a restart and worked only on the HA replica that minted it. The key now lives sealed in the keyring in etcd and is shared by every replica; it fails closed when lost; keys rotate by key ID, and tokens have a maximum lifetime (`cca server --max-user-token-ttl`, default 24h). The cluster's token issuer URL is stored at the first start (`--token-issuer-url`, else the first replica's listen address). Tokens issued before this release must be re-created once. |
+| M287 — T19 Judges a TLS Refusal by curl's Exit Code | 287 | Test bug fix (found 2026-11-27, run 45995761994): the deploy check T19 failed when etcd's TLS refusal reached curl during send (exit 55) instead of receive (exit 56). T19 now recognizes the refusal by the TLS alert itself, so timing no longer decides the result. |
 | M284 — Concurrent First Start Can Refuse a Complete Keyring | 284 | Bug fix (found in M280 rework 3, 2026-11-25, to reproduce first): when two control-plane replicas start for the first time at once, one can read the keyring between the other's bootstrap and its own check, and refuse to start with a misleading "restore from backup" error. |
 | M285 — The Rollout Determinism Test Reads the Wall Clock | 285 | Test bug fix (found in M280 rework 4, 2026-11-25): the determinism test leaves the rollout controller on the real clock, so it fails when two reconciles straddle a second; every clock is now injected in that test. |
 | M286 — setup.sh Stops Editing the Host Firewall | 286 | Bug fix (found after M280, 2026-11-26): `setup.sh` from `cca init` changed firewalld and ufw itself and missed 15353/udp, so worker DNS failed on multi-node clusters with a host firewall. It now changes nothing and prints the exact commands for every port the cluster needs, from the same port table as the guide (kubeadm model: firewalling is the operator's job). |
