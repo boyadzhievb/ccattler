@@ -148,6 +148,18 @@ More findings (all LOW):
 round-1 rework as proposed above (every Fix row; the Record rows stay recorded) and review round 2 (the last)
 back to back.
 
+**By-hand check on a real host (main session, 2026-11-27; iteration evidence, not the closing run).**
+- **Host and build:** a fresh Debian 13 VM (192.168.100.103), set up by the guide with a `cca` build of master
+  230cb72 (code as at 75646c4).
+- **Identity:** the server logged "Token signing identity loaded (kid BbZCiiub84s, issuer https://debian1:9770)".
+- **The guide's step 3:**
+  - `cca user create tester`, a direct `--capability cluster.admin` grant, then
+    `export CCA_TOKEN=$(sudo cca user token tester --ttl 1h)`;
+  - `cca status` without sudo succeeded (exit 0);
+  - after `systemctl restart cca-server`, the same token succeeded again (exit 0), and the server loaded the same kid.
+- **TTL limit:** `cca user token tester --ttl 25h` was refused: "ttl 25h0m0s is above the maximum user token
+  lifetime 24h0m0s (cca server --max-user-token-ttl)".
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M283 <version>`, then archive (sync `api-token-signing`).
