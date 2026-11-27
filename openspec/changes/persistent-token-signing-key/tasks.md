@@ -144,6 +144,10 @@ More findings (all LOW):
 | SA1-L4 (CONFIRMED) | `--max-user-token-ttl` has no upper bound (server_token_signing.go:34): 87600h is accepted | Record, or a cap |
 | SA1-L5 (CONFIRMED) | Test scripts: gate_tls_checks.sh:524 exits without cleanup on a failed restart; ha_test.sh:261 puts the token in an ssh argv; ha_test.sh:257 aborts under `set -e` before cleanup | Fix: they are this milestone's own check scripts, and the argv leak breaks its own rule |
 
+**User decision (2026-11-27, "a"):** wait for the weekly usage reset (Nov 29, 20:00 Europe/Sofia), then run the
+round-1 rework as proposed above (every Fix row; the Record rows stay recorded) and review round 2 (the last)
+back to back.
+
 ## Workflow follow-up
 
 - Release with `scripts/release.sh M283 <version>`, then archive (sync `api-token-signing`).
